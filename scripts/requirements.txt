@@ -1,0 +1,6 @@
+torch
+numpy
+python-chess
+huggingface-hub
+onnx
+onnxscript

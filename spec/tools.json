@@ -1,0 +1,2235 @@
+{
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Create a new chess game and return its game_id. The server is the authoritative source of board state — never track the board yourself. Optionally pass a FEN to start from a custom position.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "fen": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "create_game",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "game_id": {
+            "type": "string"
+          },
+          "revision": {
+            "const": 0,
+            "type": "number"
+          }
+        },
+        "required": [
+          "game_id",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "title": "Create Chess Game"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Delete a game and free its session.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "game_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_game",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "deleted": {
+            "const": true,
+            "type": "boolean"
+          },
+          "game_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id",
+          "deleted"
+        ],
+        "type": "object"
+      },
+      "title": "Delete Chess Game"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Import a PGN into a new game. Returns a new game_id with the position after all PGN moves. Rejects malformed or illegal PGN.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "pgn": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pgn"
+        ],
+        "type": "object"
+      },
+      "name": "game_import_pgn",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "castling": {
+            "additionalProperties": false,
+            "properties": {
+              "blackKingside": {
+                "type": "boolean"
+              },
+              "blackQueenside": {
+                "type": "boolean"
+              },
+              "whiteKingside": {
+                "type": "boolean"
+              },
+              "whiteQueenside": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "whiteKingside",
+              "whiteQueenside",
+              "blackKingside",
+              "blackQueenside"
+            ],
+            "type": "object"
+          },
+          "fen": {
+            "type": "string"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "history": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "isCheck": {
+            "type": "boolean"
+          },
+          "isCheckmate": {
+            "type": "boolean"
+          },
+          "isDraw": {
+            "type": "boolean"
+          },
+          "isDrawByFiftyMoves": {
+            "type": "boolean"
+          },
+          "isGameOver": {
+            "type": "boolean"
+          },
+          "isInsufficientMaterial": {
+            "type": "boolean"
+          },
+          "isStalemate": {
+            "type": "boolean"
+          },
+          "isThreefoldRepetition": {
+            "type": "boolean"
+          },
+          "lastMove": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "san": {
+                    "type": "string"
+                  },
+                  "uci": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "san",
+                  "uci"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "moveNumber": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "revision": {
+            "const": 0,
+            "type": "number"
+          },
+          "turn": {
+            "enum": [
+              "w",
+              "b"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id",
+          "fen",
+          "turn",
+          "revision",
+          "isCheck",
+          "isCheckmate",
+          "isStalemate",
+          "isDraw",
+          "isGameOver",
+          "isInsufficientMaterial",
+          "isThreefoldRepetition",
+          "isDrawByFiftyMoves",
+          "moveNumber",
+          "history",
+          "lastMove",
+          "castling"
+        ],
+        "type": "object"
+      },
+      "title": "Import Chess PGN"
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List all legal moves in the current position (SAN, UCI, piece, capture, promotion).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "game_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "type": "object"
+      },
+      "name": "game_legal_moves",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "moves": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "captured": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "p",
+                        "n",
+                        "b",
+                        "r",
+                        "q",
+                        "k"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "from": {
+                  "pattern": "^[a-h][1-8]$",
+                  "type": "string"
+                },
+                "isCapture": {
+                  "type": "boolean"
+                },
+                "isCheck": {
+                  "type": "boolean"
+                },
+                "piece": {
+                  "enum": [
+                    "p",
+                    "n",
+                    "b",
+                    "r",
+                    "q",
+                    "k"
+                  ],
+                  "type": "string"
+                },
+                "promotion": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "n",
+                        "b",
+                        "r",
+                        "q"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "san": {
+                  "type": "string"
+                },
+                "to": {
+                  "pattern": "^[a-h][1-8]$",
+                  "type": "string"
+                },
+                "uci": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "san",
+                "uci",
+                "from",
+                "to",
+                "piece",
+                "captured",
+                "promotion",
+                "isCapture",
+                "isCheck"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "game_id",
+          "revision",
+          "count",
+          "moves"
+        ],
+        "type": "object"
+      },
+      "title": "List Legal Chess Moves"
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Export the current game as PGN.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "game_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "type": "object"
+      },
+      "name": "game_pgn",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "game_id": {
+            "type": "string"
+          },
+          "pgn": {
+            "type": "string"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "game_id",
+          "revision",
+          "pgn"
+        ],
+        "type": "object"
+      },
+      "title": "Export Chess PGN"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Play a move (SAN like 'e4' or UCI like 'e2e4') and return the resulting state. This is the ONLY tool that mutates the game. expected_revision is required: pass the revision from your most recent game_state/move_candidates read. If the game has advanced since then, the move is rejected with STALE_POSITION.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "expected_revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "move": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id",
+          "move",
+          "expected_revision"
+        ],
+        "type": "object"
+      },
+      "name": "game_play_move",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "castling": {
+            "additionalProperties": false,
+            "properties": {
+              "blackKingside": {
+                "type": "boolean"
+              },
+              "blackQueenside": {
+                "type": "boolean"
+              },
+              "whiteKingside": {
+                "type": "boolean"
+              },
+              "whiteQueenside": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "whiteKingside",
+              "whiteQueenside",
+              "blackKingside",
+              "blackQueenside"
+            ],
+            "type": "object"
+          },
+          "fen": {
+            "type": "string"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "history": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "isCheck": {
+            "type": "boolean"
+          },
+          "isCheckmate": {
+            "type": "boolean"
+          },
+          "isDraw": {
+            "type": "boolean"
+          },
+          "isDrawByFiftyMoves": {
+            "type": "boolean"
+          },
+          "isGameOver": {
+            "type": "boolean"
+          },
+          "isInsufficientMaterial": {
+            "type": "boolean"
+          },
+          "isStalemate": {
+            "type": "boolean"
+          },
+          "isThreefoldRepetition": {
+            "type": "boolean"
+          },
+          "lastMove": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "san": {
+                    "type": "string"
+                  },
+                  "uci": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "san",
+                  "uci"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "move": {
+            "type": "string"
+          },
+          "moveNumber": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turn": {
+            "enum": [
+              "w",
+              "b"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id",
+          "move",
+          "fen",
+          "turn",
+          "revision",
+          "isCheck",
+          "isCheckmate",
+          "isStalemate",
+          "isDraw",
+          "isGameOver",
+          "isInsufficientMaterial",
+          "isThreefoldRepetition",
+          "isDrawByFiftyMoves",
+          "moveNumber",
+          "history",
+          "lastMove",
+          "castling"
+        ],
+        "type": "object"
+      },
+      "title": "Play Chess Move"
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return the authoritative state of a game: FEN, turn, revision, check/mate/draw flags, move history, last move, castling rights. Use this instead of remembering the board. Set include_ascii=true to also get a board diagram.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "game_id": {
+            "type": "string"
+          },
+          "include_ascii": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "type": "object"
+      },
+      "name": "game_state",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "board": {
+            "type": "string"
+          },
+          "castling": {
+            "additionalProperties": false,
+            "properties": {
+              "blackKingside": {
+                "type": "boolean"
+              },
+              "blackQueenside": {
+                "type": "boolean"
+              },
+              "whiteKingside": {
+                "type": "boolean"
+              },
+              "whiteQueenside": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "whiteKingside",
+              "whiteQueenside",
+              "blackKingside",
+              "blackQueenside"
+            ],
+            "type": "object"
+          },
+          "fen": {
+            "type": "string"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "history": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "isCheck": {
+            "type": "boolean"
+          },
+          "isCheckmate": {
+            "type": "boolean"
+          },
+          "isDraw": {
+            "type": "boolean"
+          },
+          "isDrawByFiftyMoves": {
+            "type": "boolean"
+          },
+          "isGameOver": {
+            "type": "boolean"
+          },
+          "isInsufficientMaterial": {
+            "type": "boolean"
+          },
+          "isStalemate": {
+            "type": "boolean"
+          },
+          "isThreefoldRepetition": {
+            "type": "boolean"
+          },
+          "lastMove": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "san": {
+                    "type": "string"
+                  },
+                  "uci": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "san",
+                  "uci"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "moveNumber": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turn": {
+            "enum": [
+              "w",
+              "b"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id",
+          "fen",
+          "turn",
+          "revision",
+          "isCheck",
+          "isCheckmate",
+          "isStalemate",
+          "isDraw",
+          "isGameOver",
+          "isInsufficientMaterial",
+          "isThreefoldRepetition",
+          "isDrawByFiftyMoves",
+          "moveNumber",
+          "history",
+          "lastMove",
+          "castling"
+        ],
+        "type": "object"
+      },
+      "title": "Get Chess Game State"
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Return the Maia3 human-like move probability distribution for the current position, conditioned on a target Elo. Higher probability = more human-typical at that rating. This is NOT move quality — a high-probability move can still be objectively bad.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "elo": {
+            "default": 1500,
+            "maximum": 2600,
+            "minimum": 600,
+            "type": "integer"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "oppo_elo": {
+            "maximum": 2600,
+            "minimum": 600,
+            "type": "integer"
+          },
+          "top_n": {
+            "default": 5,
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "type": "object"
+      },
+      "name": "human_move_distribution",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "elo": {
+            "type": "number"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "moves": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "prob": {
+                  "type": "number"
+                },
+                "san": {
+                  "type": "string"
+                },
+                "uci": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "uci",
+                "san",
+                "prob"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "oppo_elo": {
+            "type": "number"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "game_id",
+          "elo",
+          "oppo_elo",
+          "revision",
+          "moves"
+        ],
+        "type": "object"
+      },
+      "title": "Estimate Human Chess Moves"
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "The primary move-selection tool. Combine Stockfish objective evaluation (moverCp, whiteCp, cpLoss, mate, WDL), Maia3 human probability, and Lichess real-game statistics into a unified candidate list. moverCp is from the mover's perspective: higher = better for the player choosing the move. Use this before choosing a move; the final choice is yours.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "analysis_level": {
+            "default": "normal",
+            "enum": [
+              "fast",
+              "normal",
+              "deep"
+            ],
+            "type": "string"
+          },
+          "elo": {
+            "default": 1500,
+            "maximum": 2600,
+            "minimum": 600,
+            "type": "integer"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "lichess_db": {
+            "default": "lichess",
+            "enum": [
+              "lichess",
+              "masters"
+            ],
+            "type": "string"
+          },
+          "lichess_ratings": {
+            "default": [],
+            "items": {
+              "anyOf": [
+                {
+                  "const": 0,
+                  "type": "number"
+                },
+                {
+                  "const": 1000,
+                  "type": "number"
+                },
+                {
+                  "const": 1200,
+                  "type": "number"
+                },
+                {
+                  "const": 1400,
+                  "type": "number"
+                },
+                {
+                  "const": 1600,
+                  "type": "number"
+                },
+                {
+                  "const": 1800,
+                  "type": "number"
+                },
+                {
+                  "const": 2000,
+                  "type": "number"
+                },
+                {
+                  "const": 2200,
+                  "type": "number"
+                },
+                {
+                  "const": 2500,
+                  "type": "number"
+                }
+              ]
+            },
+            "maxItems": 9,
+            "type": "array"
+          },
+          "lichess_speeds": {
+            "default": [],
+            "items": {
+              "enum": [
+                "ultraBullet",
+                "bullet",
+                "blitz",
+                "rapid",
+                "classical",
+                "correspondence"
+              ],
+              "type": "string"
+            },
+            "maxItems": 6,
+            "type": "array"
+          },
+          "maia_top_n": {
+            "default": 5,
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sf_depth": {
+            "maximum": 30,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sf_multipv": {
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "type": "object"
+      },
+      "name": "move_candidates",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "analysis_level": {
+            "enum": [
+              "fast",
+              "normal",
+              "deep"
+            ],
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "human": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "maia3Prob": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "opponentElo": {
+                      "type": "number"
+                    },
+                    "selfElo": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "maia3Prob",
+                    "selfElo",
+                    "opponentElo"
+                  ],
+                  "type": "object"
+                },
+                "objective": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cpLoss": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "moverCp": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "moverMate": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "rank": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "wdl": {
+                      "anyOf": [
+                        {
+                          "prefixItems": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            }
+                          ],
+                          "type": "array"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "whiteCp": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "whiteMate": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "rank",
+                    "moverCp",
+                    "whiteCp",
+                    "cpLoss",
+                    "moverMate",
+                    "whiteMate",
+                    "wdl"
+                  ],
+                  "type": "object"
+                },
+                "opening": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "averageRating": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "black": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "draws": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "frequency": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "games": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reason": {
+                      "enum": [
+                        "disabled",
+                        "invalid_input",
+                        "timeout",
+                        "network",
+                        "auth",
+                        "rate_limited",
+                        "upstream",
+                        "http",
+                        "invalid_response"
+                      ],
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "available",
+                        "no_data",
+                        "unavailable",
+                        "disabled"
+                      ],
+                      "type": "string"
+                    },
+                    "white": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "games",
+                    "frequency",
+                    "white",
+                    "draws",
+                    "black",
+                    "averageRating"
+                  ],
+                  "type": "object"
+                },
+                "san": {
+                  "type": "string"
+                },
+                "uci": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "uci",
+                "san",
+                "objective",
+                "human",
+                "opening"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "elo": {
+            "type": "number"
+          },
+          "fen": {
+            "type": "string"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "moveSensitivity": {
+            "additionalProperties": false,
+            "properties": {
+              "level": {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "type": "string"
+              },
+              "topMoveSpreadCp": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "level",
+              "topMoveSpreadCp"
+            ],
+            "type": "object"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turn": {
+            "enum": [
+              "w",
+              "b"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id",
+          "revision",
+          "fen",
+          "turn",
+          "elo",
+          "analysis_level",
+          "moveSensitivity",
+          "candidates"
+        ],
+        "type": "object"
+      },
+      "title": "Generate Chess Move Candidates"
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Convenience layer over move_candidates: rank candidates for a strategic intent. This tool RANKS candidates but does NOT choose a move — use the returned signals and conversation context to make the final decision. Do not map user skill mechanically to an intent. intents: best (strongest engine move), strong (engine-strong but human-plausible), natural (most human-typical), balanced (blend of strength and human-likeness), ease_off (human-plausible moves that modestly reduce advantage without changing the expected result), give_chance (human-plausible inaccuracies that meaningfully improve the opponent's chances).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "analysis_level": {
+            "default": "normal",
+            "enum": [
+              "fast",
+              "normal",
+              "deep"
+            ],
+            "type": "string"
+          },
+          "elo": {
+            "default": 1500,
+            "maximum": 2600,
+            "minimum": 600,
+            "type": "integer"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "intent": {
+            "enum": [
+              "best",
+              "strong",
+              "natural",
+              "balanced",
+              "ease_off",
+              "give_chance"
+            ],
+            "type": "string"
+          },
+          "lichess_db": {
+            "default": "lichess",
+            "enum": [
+              "lichess",
+              "masters"
+            ],
+            "type": "string"
+          },
+          "lichess_ratings": {
+            "default": [],
+            "items": {
+              "anyOf": [
+                {
+                  "const": 0,
+                  "type": "number"
+                },
+                {
+                  "const": 1000,
+                  "type": "number"
+                },
+                {
+                  "const": 1200,
+                  "type": "number"
+                },
+                {
+                  "const": 1400,
+                  "type": "number"
+                },
+                {
+                  "const": 1600,
+                  "type": "number"
+                },
+                {
+                  "const": 1800,
+                  "type": "number"
+                },
+                {
+                  "const": 2000,
+                  "type": "number"
+                },
+                {
+                  "const": 2200,
+                  "type": "number"
+                },
+                {
+                  "const": 2500,
+                  "type": "number"
+                }
+              ]
+            },
+            "maxItems": 9,
+            "type": "array"
+          },
+          "lichess_speeds": {
+            "default": [],
+            "items": {
+              "enum": [
+                "ultraBullet",
+                "bullet",
+                "blitz",
+                "rapid",
+                "classical",
+                "correspondence"
+              ],
+              "type": "string"
+            },
+            "maxItems": 6,
+            "type": "array"
+          },
+          "maia_top_n": {
+            "default": 10,
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sf_depth": {
+            "maximum": 30,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sf_multipv": {
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "game_id",
+          "intent"
+        ],
+        "type": "object"
+      },
+      "name": "move_candidates_by_intent",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "analysis_level": {
+            "enum": [
+              "fast",
+              "normal",
+              "deep"
+            ],
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "human": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "maia3Prob": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "opponentElo": {
+                      "type": "number"
+                    },
+                    "selfElo": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "maia3Prob",
+                    "selfElo",
+                    "opponentElo"
+                  ],
+                  "type": "object"
+                },
+                "objective": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cpLoss": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "moverCp": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "moverMate": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "rank": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "wdl": {
+                      "anyOf": [
+                        {
+                          "prefixItems": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "number"
+                            }
+                          ],
+                          "type": "array"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "whiteCp": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "whiteMate": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "rank",
+                    "moverCp",
+                    "whiteCp",
+                    "cpLoss",
+                    "moverMate",
+                    "whiteMate",
+                    "wdl"
+                  ],
+                  "type": "object"
+                },
+                "opening": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "averageRating": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "black": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "draws": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "frequency": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "games": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reason": {
+                      "enum": [
+                        "disabled",
+                        "invalid_input",
+                        "timeout",
+                        "network",
+                        "auth",
+                        "rate_limited",
+                        "upstream",
+                        "http",
+                        "invalid_response"
+                      ],
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "available",
+                        "no_data",
+                        "unavailable",
+                        "disabled"
+                      ],
+                      "type": "string"
+                    },
+                    "white": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "games",
+                    "frequency",
+                    "white",
+                    "draws",
+                    "black",
+                    "averageRating"
+                  ],
+                  "type": "object"
+                },
+                "san": {
+                  "type": "string"
+                },
+                "uci": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "uci",
+                "san",
+                "objective",
+                "human",
+                "opening"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "elo": {
+            "type": "number"
+          },
+          "fen": {
+            "type": "string"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "intent": {
+            "enum": [
+              "best",
+              "strong",
+              "natural",
+              "balanced",
+              "ease_off",
+              "give_chance"
+            ],
+            "type": "string"
+          },
+          "moveSensitivity": {
+            "additionalProperties": false,
+            "properties": {
+              "level": {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "type": "string"
+              },
+              "topMoveSpreadCp": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "level",
+              "topMoveSpreadCp"
+            ],
+            "type": "object"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turn": {
+            "enum": [
+              "w",
+              "b"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id",
+          "revision",
+          "fen",
+          "turn",
+          "elo",
+          "analysis_level",
+          "moveSensitivity",
+          "candidates",
+          "intent"
+        ],
+        "type": "object"
+      },
+      "title": "Rank Chess Moves by Intent"
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Evaluate one or more moves with Stockfish without mutating the game. Pass a single move string or an array of moves to compare. Returns, for each move, the score after the move (from the mover's perspective), cpLoss vs the best move, and a classification (best/excellent/good/inaccuracy/mistake/blunder).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "depth": {
+            "default": 15,
+            "maximum": 30,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "move": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 10,
+                "minItems": 1,
+                "type": "array"
+              }
+            ]
+          }
+        },
+        "required": [
+          "game_id",
+          "move"
+        ],
+        "type": "object"
+      },
+      "name": "move_evaluate",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "game_id": {
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "bestCp": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "classification": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "best",
+                        "excellent",
+                        "good",
+                        "inaccuracy",
+                        "mistake",
+                        "blunder"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "cpLoss": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "move": {
+                  "type": "string"
+                },
+                "pv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "result": {
+                  "enum": [
+                    "ongoing",
+                    "checkmate",
+                    "stalemate",
+                    "insufficient_material",
+                    "threefold_repetition",
+                    "fifty_move_rule",
+                    "draw"
+                  ],
+                  "type": "string"
+                },
+                "scoreCp": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "scoreMate": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "uci": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "move",
+                "uci",
+                "result",
+                "scoreCp",
+                "scoreMate",
+                "bestCp",
+                "cpLoss",
+                "classification",
+                "pv"
+              ],
+              "type": "object"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "type": "array"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "game_id",
+          "revision",
+          "results"
+        ],
+        "type": "object"
+      },
+      "title": "Evaluate Chess Moves"
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true
+      },
+      "description": "Query the Lichess opening explorer for real human game statistics in the current position (requires LICHESS_TOKEN).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "db": {
+            "default": "lichess",
+            "enum": [
+              "lichess",
+              "masters"
+            ],
+            "type": "string"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "ratings": {
+            "default": [],
+            "items": {
+              "anyOf": [
+                {
+                  "const": 0,
+                  "type": "number"
+                },
+                {
+                  "const": 1000,
+                  "type": "number"
+                },
+                {
+                  "const": 1200,
+                  "type": "number"
+                },
+                {
+                  "const": 1400,
+                  "type": "number"
+                },
+                {
+                  "const": 1600,
+                  "type": "number"
+                },
+                {
+                  "const": 1800,
+                  "type": "number"
+                },
+                {
+                  "const": 2000,
+                  "type": "number"
+                },
+                {
+                  "const": 2200,
+                  "type": "number"
+                },
+                {
+                  "const": 2500,
+                  "type": "number"
+                }
+              ]
+            },
+            "maxItems": 9,
+            "type": "array"
+          },
+          "speeds": {
+            "default": [],
+            "items": {
+              "enum": [
+                "ultraBullet",
+                "bullet",
+                "blitz",
+                "rapid",
+                "classical",
+                "correspondence"
+              ],
+              "type": "string"
+            },
+            "maxItems": 6,
+            "type": "array"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "type": "object"
+      },
+      "name": "opening_explorer",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "black": {
+            "type": "number"
+          },
+          "db": {
+            "enum": [
+              "lichess",
+              "masters"
+            ],
+            "type": "string"
+          },
+          "draws": {
+            "type": "number"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "moves": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "averageRating": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "black": {
+                  "type": "number"
+                },
+                "count": {
+                  "type": "number"
+                },
+                "draws": {
+                  "type": "number"
+                },
+                "san": {
+                  "type": "string"
+                },
+                "uci": {
+                  "type": "string"
+                },
+                "white": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "uci",
+                "san",
+                "white",
+                "draws",
+                "black",
+                "count",
+                "averageRating"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "opening": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "eco": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "eco",
+                  "name"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "white": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "game_id",
+          "revision",
+          "db",
+          "white",
+          "draws",
+          "black",
+          "moves",
+          "opening"
+        ],
+        "type": "object"
+      },
+      "title": "Query Lichess Opening Explorer"
+    },
+    {
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Run Stockfish on the current position and return the top engine lines (multipv). Scores are from the side-to-move perspective: positive cp = side to move is better; mate N = side to move mates in N. wdl is [win, draw, loss] in permille for the side to move. Use analysis_level (fast/normal/deep) or explicit depth/multipv. Does NOT mutate the game.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "analysis_level": {
+            "default": "normal",
+            "enum": [
+              "fast",
+              "normal",
+              "deep"
+            ],
+            "type": "string"
+          },
+          "depth": {
+            "maximum": 30,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "multipv": {
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "game_id"
+        ],
+        "type": "object"
+      },
+      "name": "position_analyze",
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "analysis_level": {
+            "enum": [
+              "fast",
+              "normal",
+              "deep"
+            ],
+            "type": "string"
+          },
+          "fen": {
+            "type": "string"
+          },
+          "game_id": {
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "multipv": {
+                  "maximum": 9007199254740991,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "pv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "scoreCp": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "scoreMate": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "wdl": {
+                  "anyOf": [
+                    {
+                      "prefixItems": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "number"
+                        }
+                      ],
+                      "type": "array"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "multipv",
+                "scoreCp",
+                "scoreMate",
+                "wdl",
+                "pv"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turn": {
+            "enum": [
+              "w",
+              "b"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "game_id",
+          "fen",
+          "turn",
+          "revision",
+          "analysis_level",
+          "lines"
+        ],
+        "type": "object"
+      },
+      "title": "Analyze Chess Position"
+    }
+  ]
+}

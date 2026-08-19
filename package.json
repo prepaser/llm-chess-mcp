@@ -1,0 +1,52 @@
+{
+  "name": "llm-chess-mcp",
+  "version": "0.3.0",
+  "description": "MCP server that lets an LLM analyze, judge, and choose chess moves (Stockfish + Maia3 + Lichess)",
+  "type": "module",
+  "license": "AGPL-3.0",
+  "packageManager": "pnpm@11.3.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "llm-chess-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "models",
+    "LICENSE",
+    "README.md",
+    ".env.example"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "typecheck:test": "tsc -p tsconfig.test.json",
+    "contract:update": "pnpm build && node scripts/tool-contract.mjs --write",
+    "contract:check": "pnpm build && node scripts/tool-contract.mjs",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "test:unit": "tsx --test tests/*.test.ts",
+    "test:integration": "tsx --test tests/integration/*.test.ts",
+    "test:e2e": "pnpm build && tsx --test tests/e2e/*.test.ts",
+    "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-include='src/**/*.ts' --test-coverage-lines=85 --test-coverage-branches=80 --test-coverage-functions=80 tests/*.test.ts tests/integration/*.test.ts",
+    "test": "pnpm test:unit && pnpm test:integration && pnpm test:e2e",
+    "check": "pnpm typecheck && pnpm typecheck:test && pnpm test && pnpm test:coverage && pnpm contract:check",
+    "release:check": "pnpm check && pnpm audit --prod && npm pack --dry-run --ignore-scripts",
+    "prepublishOnly": "pnpm check",
+    "export:maia3": "python scripts/export_maia3.py"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "chess.js": "^1.4.0",
+    "onnxruntime-node": "^1.27.0",
+    "stockfish": "^18.0.8",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/node": "^20.19.43",
+    "tsx": "^4.20.0",
+    "typescript": "^7.0.2"
+  }
+}

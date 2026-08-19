@@ -1,0 +1,163 @@
+import type { McpServer } from "@modelcontextprotocol/server";
+import { parseImportedPgn, parseMove, playParsedMove, stateOf } from "../chess.js";
+import { ChessError } from "../errors.js";
+import type { AppServices } from "../services.js";
+import { TOOL_INPUT_SCHEMAS } from "../tool-inputs.js";
+import { TOOL_META } from "../tool-meta.js";
+import { safeHandler, toolResult } from "../tool-result.js";
+import { TOOL_OUTPUT_SCHEMAS } from "../tool-schemas.js";
+
+export function registerGameTools(server: McpServer, services: AppServices): void {
+  server.registerTool(
+    "create_game",
+    {
+      ...TOOL_META.create_game,
+      inputSchema: TOOL_INPUT_SCHEMAS.create_game,
+      outputSchema: TOOL_OUTPUT_SCHEMAS.create_game,
+    },
+    safeHandler(TOOL_INPUT_SCHEMAS.create_game, async ({ fen }) => {
+      let id: string;
+      try {
+        id = services.games.createGame(fen);
+      } catch (error) {
+        if (error instanceof ChessError) throw error;
+        throw new ChessError("INVALID_FEN", "invalid FEN");
+      }
+      return toolResult(
+        { game_id: id, revision: 0 },
+        `Created game ${id} at revision 0`,
+      );
+    }),
+  );
+
+  server.registerTool(
+    "delete_game",
+    {
+      ...TOOL_META.delete_game,
+      inputSchema: TOOL_INPUT_SCHEMAS.delete_game,
+      outputSchema: TOOL_OUTPUT_SCHEMAS.delete_game,
+    },
+    safeHandler(TOOL_INPUT_SCHEMAS.delete_game, async ({ game_id }) => {
+      const ok = services.games.deleteGame(game_id);
+      if (!ok) {
+        throw new ChessError("GAME_NOT_FOUND", `game not found: ${game_id}`);
+      }
+      return toolResult({ game_id, deleted: true }, `Deleted game ${game_id}`);
+    }),
+  );
+
+  server.registerTool(
+    "game_state",
+    {
+      ...TOOL_META.game_state,
+      inputSchema: TOOL_INPUT_SCHEMAS.game_state,
+      outputSchema: TOOL_OUTPUT_SCHEMAS.game_state,
+    },
+    safeHandler(
+      TOOL_INPUT_SCHEMAS.game_state,
+      async ({ game_id, include_ascii }) => {
+        const { chess, revision } = services.games.getGame(game_id);
+        const state = stateOf(chess, revision);
+        return toolResult(
+          {
+            game_id,
+            ...state,
+            ...(include_ascii ? { board: chess.ascii() } : {}),
+          },
+          `Game ${game_id} at revision ${revision}; ${state.turn} to move`,
+        );
+      },
+    ),
+  );
+
+  server.registerTool(
+    "game_play_move",
+    {
+      ...TOOL_META.game_play_move,
+      inputSchema: TOOL_INPUT_SCHEMAS.game_play_move,
+      outputSchema: TOOL_OUTPUT_SCHEMAS.game_play_move,
+    },
+    safeHandler(
+      TOOL_INPUT_SCHEMAS.game_play_move,
+      async ({ game_id, move, expected_revision }) => {
+        const { chess, revision } = services.games.getGame(game_id);
+        if (expected_revision !== revision) {
+          throw new ChessError(
+            "STALE_POSITION",
+            `position changed: expected revision ${expected_revision}, current ${revision}`,
+          );
+        }
+        if (chess.isGameOver()) {
+          throw new ChessError("GAME_OVER", "game is already over");
+        }
+        const parsed = parseMove(chess, move);
+        playParsedMove(chess, parsed);
+        const newRevision = services.games.bumpRevision(game_id);
+        return toolResult(
+          { game_id, move: parsed.san, ...stateOf(chess, newRevision) },
+          `Played ${parsed.san} in game ${game_id}; revision ${newRevision}`,
+        );
+      },
+    ),
+  );
+
+  server.registerTool(
+    "game_legal_moves",
+    {
+      ...TOOL_META.game_legal_moves,
+      inputSchema: TOOL_INPUT_SCHEMAS.game_legal_moves,
+      outputSchema: TOOL_OUTPUT_SCHEMAS.game_legal_moves,
+    },
+    safeHandler(TOOL_INPUT_SCHEMAS.game_legal_moves, async ({ game_id }) => {
+      const { chess, revision } = services.games.getGame(game_id);
+      const moves = chess.moves({ verbose: true }).map((move) => ({
+        san: move.san,
+        uci: move.lan,
+        from: move.from,
+        to: move.to,
+        piece: move.piece,
+        captured: move.captured ?? null,
+        promotion: move.promotion ?? null,
+        isCapture: move.flags.includes("c"),
+        isCheck: move.san.includes("+") || move.san.includes("#"),
+      }));
+      return toolResult(
+        { game_id, revision, count: moves.length, moves },
+        `${moves.length} legal moves in game ${game_id} at revision ${revision}`,
+      );
+    }),
+  );
+
+  server.registerTool(
+    "game_pgn",
+    {
+      ...TOOL_META.game_pgn,
+      inputSchema: TOOL_INPUT_SCHEMAS.game_pgn,
+      outputSchema: TOOL_OUTPUT_SCHEMAS.game_pgn,
+    },
+    safeHandler(TOOL_INPUT_SCHEMAS.game_pgn, async ({ game_id }) => {
+      const { chess, revision } = services.games.getGame(game_id);
+      return toolResult(
+        { game_id, revision, pgn: chess.pgn() },
+        `Exported PGN for game ${game_id} at revision ${revision}`,
+      );
+    }),
+  );
+
+  server.registerTool(
+    "game_import_pgn",
+    {
+      ...TOOL_META.game_import_pgn,
+      inputSchema: TOOL_INPUT_SCHEMAS.game_import_pgn,
+      outputSchema: TOOL_OUTPUT_SCHEMAS.game_import_pgn,
+    },
+    safeHandler(TOOL_INPUT_SCHEMAS.game_import_pgn, async ({ pgn }) => {
+      const chess = parseImportedPgn(pgn);
+      const id = services.games.createGameFromChess(chess);
+      return toolResult(
+        { game_id: id, ...stateOf(chess, 0) },
+        `Imported game ${id} with ${chess.history().length} plies`,
+      );
+    }),
+  );
+}
