@@ -145,6 +145,7 @@ export function registerAnalysisTools(
           }
           const result = drawResult(copy);
           if (result) {
+            const cpLoss = beforeCp;
             results.push({
               move: parsed.san,
               uci: parsed.lan,
@@ -152,8 +153,11 @@ export function registerAnalysisTools(
               scoreCp: 0,
               scoreMate: null,
               bestCp: beforeCp,
-              cpLoss: null,
-              classification: null,
+              cpLoss,
+              classification:
+                cpLoss !== null
+                  ? (classifyCpLoss(cpLoss) as MoveEvaluation["classification"])
+                  : null,
               pv: [],
             });
             continue;

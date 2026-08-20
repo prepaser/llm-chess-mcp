@@ -29,6 +29,25 @@ test("maps mate scores to sortable centipawn values", () => {
   assert.equal(evalToCp({ type: "mate", plies: -5 }), -9_500);
 });
 
+test("keeps long mate scores on the correct side of zero", () => {
+  assert.equal(evalToCp({ type: "mate", plies: 99 }), 9_000);
+  assert.equal(evalToCp({ type: "mate", plies: 100 }), 9_000);
+  assert.equal(evalToCp({ type: "mate", plies: 101 }), 9_000);
+  assert.equal(evalToCp({ type: "mate", plies: 10_000 }), 9_000);
+  assert.equal(evalToCp({ type: "mate", plies: -99 }), -9_000);
+  assert.equal(evalToCp({ type: "mate", plies: -100 }), -9_000);
+  assert.equal(evalToCp({ type: "mate", plies: -101 }), -9_000);
+  assert.equal(evalToCp({ type: "mate", plies: -10_000 }), -9_000);
+  assert.ok(
+    evalToCp({ type: "mate", plies: 10_000 }) >
+      evalToCp({ type: "cp", value: 1_000 }),
+  );
+  assert.ok(
+    evalToCp({ type: "mate", plies: -10_000 }) <
+      evalToCp({ type: "cp", value: -1_000 }),
+  );
+});
+
 test("negates centipawn and mate evaluations without mutating inputs", () => {
   const cp = { type: "cp", value: 30 } as const;
   const mate = { type: "mate", plies: -2 } as const;

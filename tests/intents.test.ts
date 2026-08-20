@@ -181,6 +181,28 @@ test("converts black-to-move evaluations to White POV and preserves mate", () =>
   });
 });
 
+test("uses only legal scored root lines for engine candidate metrics", () => {
+  const { candidates, moveSensitivity } = candidateSetFromData(
+    new Chess(),
+    1500,
+    [
+      sfLine("e2e4", 100, 1),
+      sfLine("g1f3", 20, 2),
+      sfLine("e7e5", 500, 3),
+      sfLine("d2d4", null, 4),
+      { multipv: 5, scoreCp: 400, scoreMate: null, wdl: null, pv: ["bad"] },
+    ],
+    [{ uci: "d2d4", san: "d4", prob: 0.2 }],
+    { status: "disabled", totalGames: null, moves: [] },
+  );
+
+  assert.deepEqual(candidates.map(({ uci }) => uci), ["e2e4", "g1f3", "d2d4"]);
+  assert.equal(candidates[0]?.objective.cpLoss, 0);
+  assert.equal(candidates[1]?.objective.cpLoss, 80);
+  assert.equal(candidates[2]?.objective.moverCp, null);
+  assert.deepEqual(moveSensitivity, { level: "medium", topMoveSpreadCp: 80 });
+});
+
 test("handles missing scores, empty PVs, SAN fallbacks, and explorer failures", () => {
   const { candidates, moveSensitivity } = candidateSetFromData(
     new Chess(),
@@ -198,10 +220,9 @@ test("handles missing scores, empty PVs, SAN fallbacks, and explorer failures", 
     },
   );
 
-  assert.equal(candidates.length, 2);
-  assert.equal(candidates[0]?.objective.moverCp, null);
-  assert.equal(candidates[1]?.san, "not-uci");
-  assert.deepEqual(candidates[1]?.opening, {
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0]?.san, "not-uci");
+  assert.deepEqual(candidates[0]?.opening, {
     status: "unavailable",
     reason: "rate_limited",
     games: null,

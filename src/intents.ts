@@ -104,18 +104,26 @@ export function candidateSetFromData(
 ): CandidateSet {
   const turn = chess.turn();
   const maiaByUci = new Map(maiaMoves.map((move) => [move.uci, move.prob]));
-  const sfByUci = new Map<string, SfLine>();
+  const legalUcis = new Set(
+    chess.moves({ verbose: true }).map((move) => move.lan),
+  );
+  const sfByUci = new Map<
+    string,
+    { line: SfLine; evaluation: NonNullable<ReturnType<typeof toEval>> }
+  >();
   for (const line of sfLines) {
     const uci = line.pv[0];
-    if (uci !== undefined) sfByUci.set(uci, line);
+    const evaluation = toEval(line);
+    if (uci !== undefined && legalUcis.has(uci) && evaluation !== null) {
+      sfByUci.set(uci, { line, evaluation });
+    }
   }
   const lichessByUci = new Map(
     lichessResult.moves.map((move) => [move.uci, move]),
   );
 
-  const evals = sfLines
-    .map(toEval)
-    .filter((value): value is NonNullable<typeof value> => value !== null);
+  const normalizedSfLines = [...sfByUci.values()];
+  const evals = normalizedSfLines.map(({ evaluation }) => evaluation);
   const bestCp = evals.length
     ? Math.max(...evals.map((value) => evalToCp(value)))
     : null;
@@ -128,7 +136,7 @@ export function candidateSetFromData(
   ]);
   const candidates: Candidate[] = [];
   for (const uci of ucis) {
-    const sf = sfByUci.get(uci);
+    const sf = sfByUci.get(uci)?.line;
     const lichess = lichessByUci.get(uci);
     let opening: OpeningStats;
     if (lichess) {
@@ -173,7 +181,12 @@ export function candidateSetFromData(
     });
   }
 
-  return { candidates, moveSensitivity: computeMoveSensitivity(sfLines) };
+  return {
+    candidates,
+    moveSensitivity: computeMoveSensitivity(
+      normalizedSfLines.map(({ line }) => line),
+    ),
+  };
 }
 
 export async function computeCandidates(

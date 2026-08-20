@@ -105,7 +105,10 @@ test("analysis ignores malformed multipv lines and defaults missing fields", asy
     } else if (command.startsWith("go depth ")) {
       queueMicrotask(() => {
         current.listener?.("info depth 1 multipv invalid score cp 999 pv a1a2");
-        current.listener?.("info depth 1 multipv 1 score mate -3 pv e2e4");
+        current.listener?.(
+          "info depth 1 multipv 1 score mate -3 wdl 100 200 700 pv e2e4",
+        );
+        current.listener?.("info depth 2 multipv 1 nodes 1000 nps 500000");
         current.listener?.("info depth 1 multipv 2");
         current.listener?.("bestmove e2e4");
       });
@@ -121,7 +124,7 @@ test("analysis ignores malformed multipv lines and defaults missing fields", asy
       multipv: 1,
       scoreCp: null,
       scoreMate: -3,
-      wdl: null,
+      wdl: [100, 200, 700],
       pv: ["e2e4"],
     },
     {

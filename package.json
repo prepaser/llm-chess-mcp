@@ -14,6 +14,7 @@
   "files": [
     "dist",
     "models",
+    "docs",
     "LICENSE",
     "README.md",
     ".env.example"
@@ -29,10 +30,13 @@
     "test:unit": "tsx --test tests/*.test.ts",
     "test:integration": "tsx --test tests/integration/*.test.ts",
     "test:e2e": "pnpm build && tsx --test tests/e2e/*.test.ts",
+    "test:package": "node scripts/package-smoke.mjs",
+    "test:stress": "tsx --test tests/stress/*.test.ts",
+    "test:live": "tsx --test tests/live/*.test.ts",
     "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-include='src/**/*.ts' --test-coverage-lines=85 --test-coverage-branches=80 --test-coverage-functions=80 tests/*.test.ts tests/integration/*.test.ts",
     "test": "pnpm test:unit && pnpm test:integration && pnpm test:e2e",
     "check": "pnpm typecheck && pnpm typecheck:test && pnpm test && pnpm test:coverage && pnpm contract:check",
-    "release:check": "pnpm check && pnpm audit --prod && npm pack --dry-run --ignore-scripts",
+    "release:check": "pnpm check && pnpm test:package && pnpm audit --prod && npm pack --dry-run --ignore-scripts",
     "prepublishOnly": "pnpm check",
     "export:maia3": "python scripts/export_maia3.py"
   },

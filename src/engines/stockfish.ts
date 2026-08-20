@@ -322,15 +322,19 @@ export class Stockfish {
           )?.groups?.value;
           const pv = line.match(/ pv (?<value>.+)$/)?.groups?.value;
           const n = Number(multipv);
+          const previous = byPv.get(n);
           const score = scoreToken
             ? parseScore(scoreToken)
-            : { cp: null, mate: null };
+            : {
+                cp: previous?.scoreCp ?? null,
+                mate: previous?.scoreMate ?? null,
+              };
           byPv.set(n, {
             multipv: n,
             scoreCp: score.cp,
             scoreMate: score.mate,
-            wdl: parseWdl(line),
-            pv: pv ? pv.split(" ") : [],
+            wdl: parseWdl(line) ?? previous?.wdl ?? null,
+            pv: pv ? pv.split(" ") : (previous?.pv ?? []),
           });
         } else if (line.startsWith("bestmove")) {
           succeed();

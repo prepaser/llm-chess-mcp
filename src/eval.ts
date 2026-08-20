@@ -17,7 +17,8 @@ export function toEval(line: SfLine): Eval | null {
 export function evalToCp(e: Eval): number {
   if (e.type === "cp") return e.value;
   const sign = e.plies >= 0 ? 1 : -1;
-  return sign * (10000 - Math.abs(e.plies) * 100);
+  const magnitude = Math.max(9_000, 10_000 - Math.abs(e.plies) * 100);
+  return sign * magnitude;
 }
 
 export function negateEval(e: Eval): Eval {
