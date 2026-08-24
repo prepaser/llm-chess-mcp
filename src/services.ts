@@ -14,13 +14,19 @@ import type { Candidate, Intent, Maia3Move, SfLine } from "./types.js";
 
 export interface AppServices {
   games: GameStore;
-  analyze(fen: string, depth: number, multipv: number): Promise<SfLine[]>;
+  analyze(
+    fen: string,
+    depth: number,
+    multipv: number,
+    signal?: AbortSignal,
+  ): Promise<SfLine[]>;
   quit(): Promise<void>;
   humanMoveDistribution(
     chess: Chess,
     elo: number,
     opponentElo: number,
     topN: number,
+    signal?: AbortSignal,
   ): Promise<Maia3Move[]>;
   explorerEnabled(): boolean;
   openingExplorer(
@@ -28,6 +34,7 @@ export interface AppServices {
     db: "lichess" | "masters",
     speeds: readonly string[],
     ratings: readonly number[],
+    signal?: AbortSignal,
   ): Promise<ExplorerResult>;
   computeCandidates(
     chess: Chess,
@@ -36,17 +43,26 @@ export interface AppServices {
     sfMultipv: number,
     maiaTopN: number,
     lichess?: LichessOpts | null,
+    signal?: AbortSignal,
   ): Promise<CandidateSet>;
   rankByIntent(candidates: Candidate[], intent: Intent): Candidate[];
 }
 
 export const defaultAppServices: AppServices = {
   games: defaultGameStore,
-  analyze: (fen, depth, multipv) => stockfish.analyze(fen, depth, multipv),
+  analyze: (fen, depth, multipv, signal) =>
+    stockfish.analyze(fen, depth, multipv, signal),
   quit: () => stockfish.quit(),
   humanMoveDistribution,
   explorerEnabled,
-  openingExplorer,
+  openingExplorer: (chess, db, speeds, ratings, signal) =>
+    openingExplorer(
+      chess,
+      db,
+      speeds,
+      ratings,
+      signal === undefined ? {} : { signal },
+    ),
   computeCandidates,
   rankByIntent,
 };

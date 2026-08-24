@@ -85,6 +85,7 @@ export interface ExplorerRequestOptions {
   fetch?: ExplorerFetch;
   sleep?: (ms: number) => Promise<void>;
   timeout?: (ms: number) => AbortSignal;
+  signal?: AbortSignal;
   now?: () => number;
   token?: string;
 }
@@ -152,6 +153,38 @@ function isRetryable(kind: ExplorerErrorKind): boolean {
   );
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
+async function sleepWithSignal(
+  sleep: (ms: number) => Promise<void>,
+  ms: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  throwIfAborted(signal);
+  if (!signal) return sleep(ms);
+
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason);
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    sleep(ms).then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (cause) => {
+        cleanup();
+        reject(cause);
+      },
+    );
+  });
+}
+
 export async function openingExplorer(
   chess: Chess,
   db: "lichess" | "masters",
@@ -159,6 +192,8 @@ export async function openingExplorer(
   ratings: readonly number[],
   options: ExplorerRequestOptions = {},
 ): Promise<ExplorerResult> {
+  const callerSignal = options.signal;
+  throwIfAborted(callerSignal);
   const token = options.token ?? process.env.LICHESS_TOKEN ?? "";
   if (!token) throw error("disabled");
   if (
@@ -196,10 +231,14 @@ export async function openingExplorer(
 
   let lastError = error("network");
   for (let attempt = 0; attempt < EXPLORER_MAX_ATTEMPTS; attempt += 1) {
+    throwIfAborted(callerSignal);
     const remaining = deadline - now();
     if (remaining <= 0) throw error("timeout");
-    const signal = timeout(
+    const attemptSignal = timeout(
       Math.max(1, Math.min(EXPLORER_ATTEMPT_TIMEOUT_MS, remaining)),
+    );
+    const signal = AbortSignal.any(
+      callerSignal ? [callerSignal, attemptSignal] : [attemptSignal],
     );
 
     let response: Response;
@@ -209,15 +248,18 @@ export async function openingExplorer(
         signal,
       });
     } catch {
+      throwIfAborted(callerSignal);
       lastError = error(signal.aborted ? "timeout" : "network");
       if (attempt + 1 >= EXPLORER_MAX_ATTEMPTS) throw lastError;
       const delay = Math.min(
         EXPLORER_DEFAULT_RETRY_DELAY_MS,
         Math.max(0, deadline - now()),
       );
-      await sleep(delay);
+      await sleepWithSignal(sleep, delay, callerSignal);
       continue;
     }
+
+    throwIfAborted(callerSignal);
 
     if (!response.ok) {
       const kind: ExplorerErrorKind =
@@ -237,7 +279,7 @@ export async function openingExplorer(
       if (delay > EXPLORER_MAX_RETRY_DELAY_MS || delay >= retryBudget) {
         throw lastError;
       }
-      await sleep(delay);
+      await sleepWithSignal(sleep, delay, callerSignal);
       continue;
     }
 
@@ -245,6 +287,7 @@ export async function openingExplorer(
     try {
       body = await response.json();
     } catch (cause) {
+      throwIfAborted(callerSignal);
       if (signal.aborted || cause instanceof TypeError) {
         lastError = error(signal.aborted ? "timeout" : "network");
         if (attempt + 1 < EXPLORER_MAX_ATTEMPTS) {
@@ -252,7 +295,7 @@ export async function openingExplorer(
             EXPLORER_DEFAULT_RETRY_DELAY_MS,
             Math.max(0, deadline - now()),
           );
-          await sleep(delay);
+          await sleepWithSignal(sleep, delay, callerSignal);
           continue;
         }
         throw lastError;
@@ -260,6 +303,7 @@ export async function openingExplorer(
       throw error("invalid_response");
     }
 
+    throwIfAborted(callerSignal);
     const parsed = responseSchema.safeParse(body);
     if (!parsed.success) throw error("invalid_response");
     const data = parsed.data;

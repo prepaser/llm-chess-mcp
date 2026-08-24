@@ -42,13 +42,13 @@ export function registerAnalysisTools(
     },
     safeHandler(
       TOOL_INPUT_SCHEMAS.position_analyze,
-      async ({ game_id, analysis_level, depth, multipv }) => {
+      async ({ game_id, analysis_level, depth, multipv }, signal) => {
         const { chess: live, revision } = services.games.getGame(game_id);
         const chess = snapshotChess(live);
         const preset = ANALYSIS_PRESETS[analysis_level];
         const d = depth ?? preset.depth;
         const mpv = multipv ?? preset.multipv;
-        const lines = await services.analyze(chess.fen(), d, mpv);
+        const lines = await services.analyze(chess.fen(), d, mpv, signal);
         const payload: PositionAnalysis = {
           game_id,
           fen: chess.fen(),
@@ -80,7 +80,7 @@ export function registerAnalysisTools(
     },
     safeHandler(
       TOOL_INPUT_SCHEMAS.human_move_distribution,
-      async ({ game_id, elo, oppo_elo, top_n }) => {
+      async ({ game_id, elo, oppo_elo, top_n }, signal) => {
         const { chess: live, revision } = services.games.getGame(game_id);
         const chess = snapshotChess(live);
         const opponentElo = oppo_elo ?? elo;
@@ -89,6 +89,7 @@ export function registerAnalysisTools(
           elo,
           opponentElo,
           top_n,
+          signal,
         );
         const payload: HumanMoveDistribution = {
           game_id,
@@ -114,17 +115,19 @@ export function registerAnalysisTools(
     },
     safeHandler(
       TOOL_INPUT_SCHEMAS.move_evaluate,
-      async ({ game_id, move, depth }) => {
+      async ({ game_id, move, depth }, signal) => {
         const { chess: live, revision } = services.games.getGame(game_id);
         const chess = snapshotChess(live);
         const moves = Array.isArray(move) ? move : [move];
-        const beforeLines = await services.analyze(chess.fen(), depth, 1);
+        const beforeLines = await services.analyze(chess.fen(), depth, 1, signal);
+        signal.throwIfAborted();
         const before = beforeLines[0];
         const beforeEval = before ? toEval(before) : null;
         const beforeCp = beforeEval ? evalToCp(beforeEval) : null;
 
         const results: MoveEvaluation[] = [];
         for (const moveValue of moves) {
+          signal.throwIfAborted();
           const parsed = parseMove(chess, moveValue);
           const copy = snapshotChess(chess);
           playParsedMove(copy, parsed);
@@ -163,7 +166,8 @@ export function registerAnalysisTools(
             continue;
           }
 
-          const afterLines = await services.analyze(copy.fen(), depth, 1);
+          const afterLines = await services.analyze(copy.fen(), depth, 1, signal);
+          signal.throwIfAborted();
           const after = afterLines[0];
           const afterEval = after ? toEval(after) : null;
           const moverEval = afterEval ? negateEval(afterEval) : null;

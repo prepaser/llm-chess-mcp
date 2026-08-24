@@ -196,19 +196,25 @@ export async function computeCandidates(
   sfMultipv: number,
   maiaTopN: number,
   lichess?: LichessOpts | null,
+  signal?: AbortSignal,
 ): Promise<CandidateSet> {
   const [sfLines, maiaMoves, lichessResult] = await Promise.all([
-    stockfish.analyze(chess.fen(), sfDepth, sfMultipv),
-    humanMoveDistribution(chess, elo, elo, maiaTopN),
+    stockfish.analyze(chess.fen(), sfDepth, sfMultipv, signal),
+    humanMoveDistribution(chess, elo, elo, maiaTopN, signal),
     lichess && explorerEnabled()
-      ? openingExplorer(chess, lichess.db, lichess.speeds, lichess.ratings)
+      ? openingExplorer(chess, lichess.db, lichess.speeds, lichess.ratings, {
+          ...(signal ? { signal } : {}),
+        })
           .then(explorerCandidateData)
-          .catch((e): LichessCandidateData => ({
-            status: "unavailable" as const,
-            reason: e instanceof ExplorerError ? e.reason : ("upstream" as const),
-            totalGames: null,
-            moves: [] as LichessMove[],
-          }))
+          .catch((e): LichessCandidateData => {
+            signal?.throwIfAborted();
+            return {
+              status: "unavailable" as const,
+              reason: e instanceof ExplorerError ? e.reason : ("upstream" as const),
+              totalGames: null,
+              moves: [] as LichessMove[],
+            };
+          })
       : Promise.resolve<LichessCandidateData>({
           status: "disabled" as const,
           totalGames: null,

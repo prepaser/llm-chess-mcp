@@ -20,7 +20,7 @@ export function registerExplorerTool(
     },
     safeHandler(
       OpeningExplorerInputSchema,
-      async ({ game_id, db, speeds, ratings }) => {
+      async ({ game_id, db, speeds, ratings }, signal) => {
         if (!services.explorerEnabled()) {
           throw new ChessError(
             "LICHESS_DISABLED",
@@ -29,7 +29,7 @@ export function registerExplorerTool(
         }
         const { chess: live, revision } = services.games.getGame(game_id);
         const chess = snapshotChess(live);
-        const result = await services.openingExplorer(chess, db, speeds, ratings);
+        const result = await services.openingExplorer(chess, db, speeds, ratings, signal);
         return toolResult(
           { game_id, revision, ...result },
           `Lichess ${db} returned ${result.moves.length} moves for game ${game_id}`,

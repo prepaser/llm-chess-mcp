@@ -108,10 +108,13 @@ export async function humanMoveDistribution(
   elo: number,
   oppoElo: number,
   topN: number,
+  signal?: AbortSignal,
 ): Promise<Maia3Move[]> {
+  signal?.throwIfAborted();
   const legal = chess.moves({ verbose: true });
   if (legal.length === 0) return [];
   const s = await getSession();
+  signal?.throwIfAborted();
 
   const input = buildInput(chess);
   const tokens = new ort.Tensor("float32", input, [1, 64, 96]);
@@ -120,8 +123,10 @@ export async function humanMoveDistribution(
 
   const feeds = { tokens, self_elo: selfElo, oppo_elo: oppoEloTensor };
   const results = await s.run(feeds);
+  signal?.throwIfAborted();
   const logits = extractMoveLogits(results);
 
+  signal?.throwIfAborted();
   const turn = chess.turn();
   const legalMask = new Float32Array(logits.length).fill(-Infinity);
   for (const m of legal) {
@@ -138,5 +143,6 @@ export async function humanMoveDistribution(
     })
     .sort((a, b) => b.prob - a.prob);
 
+  signal?.throwIfAborted();
   return ranked.slice(0, topN);
 }

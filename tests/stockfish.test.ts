@@ -168,6 +168,122 @@ test("queue capacity fails fast", async () => {
   await assert.rejects(pending, /stockfish quit/);
 });
 
+test("pre-aborted analysis does not enter the queue or initialize Stockfish", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let initCalls = 0;
+  const stockfish = new Stockfish({
+    init: () => {
+      initCalls++;
+      return engine();
+    },
+  });
+
+  await assert.rejects(
+    stockfish.analyze("fen", 1, 1, controller.signal),
+    { name: "AbortError" },
+  );
+  assert.equal(initCalls, 0);
+});
+
+test("queued abort releases capacity and skips its UCI work", async () => {
+  let analysisStarted!: () => void;
+  let emitBestmove!: () => void;
+  const started = new Promise<void>((resolve) => {
+    analysisStarted = resolve;
+  });
+  let goCount = 0;
+  const current = engine((current, command) => {
+    if (command === "uci") {
+      queueMicrotask(() => current.listener?.("uciok"));
+    } else if (command === "isready") {
+      queueMicrotask(() => current.listener?.("readyok"));
+    } else if (command.startsWith("go depth ")) {
+      goCount++;
+      if (goCount === 1) {
+        queueMicrotask(() => {
+          current.listener?.("info depth 1 multipv 1 score cp 99 pv e2e4");
+          analysisStarted();
+        });
+      } else {
+        queueMicrotask(() => {
+          current.listener?.("info depth 1 multipv 1 score cp 42 pv d2d4");
+          current.listener?.("bestmove d2d4");
+        });
+      }
+    } else if (command === "stop") {
+      emitBestmove = () => current.listener?.("bestmove e2e4");
+    }
+  });
+  const stockfish = new Stockfish({
+    init: initializer([current]),
+    maxQueue: 2,
+    timeouts: { init: 50, handshake: 50, analyze: 100, stopGrace: 50 },
+  });
+  const activeController = new AbortController();
+  const queuedController = new AbortController();
+  const active = stockfish.analyze("active", 1, 1, activeController.signal);
+  let activeSettled = false;
+  const activeOutcome = active.then(
+    () => null,
+    (error: unknown) => {
+      activeSettled = true;
+      return error;
+    },
+  );
+  await started;
+  const cancelled = stockfish.analyze("cancelled", 1, 1, queuedController.signal);
+  queuedController.abort();
+  await assert.rejects(cancelled, { name: "AbortError" });
+
+  const next = stockfish.analyze("next", 1, 1);
+  activeController.abort();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(activeSettled, false);
+  assert.equal(current.commands.filter((command) => command === "stop").length, 1);
+  assert.equal(current.commands.includes("position fen cancelled"), false);
+  assert.equal(current.commands.includes("position fen next"), false);
+
+  emitBestmove();
+  const cancellation = await activeOutcome;
+  assert.ok(cancellation instanceof Error);
+  assert.equal(cancellation.name, "AbortError");
+  assert.equal((await next)[0]?.scoreCp, 42);
+  assert.equal(current.commands.includes("position fen cancelled"), false);
+});
+
+test("active abort invalidates after stop grace and queued work reinitializes", async () => {
+  let analysisStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    analysisStarted = resolve;
+  });
+  const first = engine((current, command) => {
+    if (command === "uci") {
+      queueMicrotask(() => current.listener?.("uciok"));
+    } else if (command === "isready") {
+      queueMicrotask(() => current.listener?.("readyok"));
+    } else if (command.startsWith("go depth ")) {
+      analysisStarted();
+    }
+  });
+  const second = respondingEngine(true);
+  const stockfish = new Stockfish({
+    init: initializer([first, second]),
+    timeouts: { init: 50, handshake: 50, analyze: 100, stopGrace: 5 },
+  });
+  const controller = new AbortController();
+  const active = stockfish.analyze("active", 1, 1, controller.signal);
+  const queued = stockfish.analyze("queued", 1, 1);
+  await started;
+  controller.abort();
+
+  await assert.rejects(active, { name: "AbortError" });
+  assert.equal(first.commands.filter((command) => command === "stop").length, 1);
+  assert.equal((await queued)[0]?.scoreCp, 42);
+  assert.equal(first.terminations, 1);
+  assert.equal(second.terminations, 0);
+});
+
 test("quit cancels old queued work without blocking a new generation", async () => {
   let analysisStarted!: () => void;
   const started = new Promise<void>((resolve) => {

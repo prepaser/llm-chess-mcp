@@ -15,7 +15,8 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
       inputSchema: TOOL_INPUT_SCHEMAS.create_game,
       outputSchema: TOOL_OUTPUT_SCHEMAS.create_game,
     },
-    safeHandler(TOOL_INPUT_SCHEMAS.create_game, async ({ fen }) => {
+    safeHandler(TOOL_INPUT_SCHEMAS.create_game, async ({ fen }, signal) => {
+      signal.throwIfAborted();
       let id: string;
       try {
         id = services.games.createGame(fen);
@@ -37,7 +38,8 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
       inputSchema: TOOL_INPUT_SCHEMAS.delete_game,
       outputSchema: TOOL_OUTPUT_SCHEMAS.delete_game,
     },
-    safeHandler(TOOL_INPUT_SCHEMAS.delete_game, async ({ game_id }) => {
+    safeHandler(TOOL_INPUT_SCHEMAS.delete_game, async ({ game_id }, signal) => {
+      signal.throwIfAborted();
       const ok = services.games.deleteGame(game_id);
       if (!ok) {
         throw new ChessError("GAME_NOT_FOUND", `game not found: ${game_id}`);
@@ -79,7 +81,7 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
     },
     safeHandler(
       TOOL_INPUT_SCHEMAS.game_play_move,
-      async ({ game_id, move, expected_revision }) => {
+      async ({ game_id, move, expected_revision }, signal) => {
         const { chess, revision } = services.games.getGame(game_id);
         if (expected_revision !== revision) {
           throw new ChessError(
@@ -91,6 +93,7 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
           throw new ChessError("GAME_OVER", "game is already over");
         }
         const parsed = parseMove(chess, move);
+        signal.throwIfAborted();
         playParsedMove(chess, parsed);
         const newRevision = services.games.bumpRevision(game_id);
         return toolResult(
@@ -108,19 +111,23 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
       inputSchema: TOOL_INPUT_SCHEMAS.game_legal_moves,
       outputSchema: TOOL_OUTPUT_SCHEMAS.game_legal_moves,
     },
-    safeHandler(TOOL_INPUT_SCHEMAS.game_legal_moves, async ({ game_id }) => {
+    safeHandler(TOOL_INPUT_SCHEMAS.game_legal_moves, async ({ game_id }, signal) => {
       const { chess, revision } = services.games.getGame(game_id);
-      const moves = chess.moves({ verbose: true }).map((move) => ({
-        san: move.san,
-        uci: move.lan,
-        from: move.from,
-        to: move.to,
-        piece: move.piece,
-        captured: move.captured ?? null,
-        promotion: move.promotion ?? null,
-        isCapture: move.flags.includes("c"),
-        isCheck: move.san.includes("+") || move.san.includes("#"),
-      }));
+      const moves = [];
+      for (const move of chess.moves({ verbose: true })) {
+        signal.throwIfAborted();
+        moves.push({
+          san: move.san,
+          uci: move.lan,
+          from: move.from,
+          to: move.to,
+          piece: move.piece,
+          captured: move.captured ?? null,
+          promotion: move.promotion ?? null,
+          isCapture: move.flags.includes("c"),
+          isCheck: move.san.includes("+") || move.san.includes("#"),
+        });
+      }
       return toolResult(
         { game_id, revision, count: moves.length, moves },
         `${moves.length} legal moves in game ${game_id} at revision ${revision}`,
@@ -151,8 +158,9 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
       inputSchema: TOOL_INPUT_SCHEMAS.game_import_pgn,
       outputSchema: TOOL_OUTPUT_SCHEMAS.game_import_pgn,
     },
-    safeHandler(TOOL_INPUT_SCHEMAS.game_import_pgn, async ({ pgn }) => {
+    safeHandler(TOOL_INPUT_SCHEMAS.game_import_pgn, async ({ pgn }, signal) => {
       const chess = parseImportedPgn(pgn);
+      signal.throwIfAborted();
       const id = services.games.createGameFromChess(chess);
       return toolResult(
         { game_id: id, ...stateOf(chess, 0) },

@@ -98,6 +98,80 @@ does not provide authentication or TLS; use a trusted network or an
 authenticated reverse proxy when exposing it beyond localhost. Origin values
 are validated when present, but the server does not emit browser CORS headers.
 
+### Reverse-proxy deployment
+
+The HTTP server is intended to run behind a reverse proxy for any non-local
+deployment. The proxy owns TLS termination, client authentication, external
+rate/connection limits, and any future CORS policy. Bind this process to
+localhost only; never expose its port directly through a firewall, container
+port mapping, or load balancer.
+
+For example, start the backend with the public hostname that Nginx will pass
+through as `Host`:
+
+```bash
+node dist/index.js --transport http --host 127.0.0.1 --port 3000 \
+  --allowed-host chess-mcp.example.com
+```
+
+This is a minimal Nginx layout. It assumes an identity-aware auth service is
+available only on localhost at `127.0.0.1:4180`; configure that service and
+the certificate paths for the deployment. The limits are examples, not a
+substitute for capacity planning.
+
+```nginx
+limit_req_zone $binary_remote_addr zone=mcp_req:10m rate=5r/s;
+limit_conn_zone $binary_remote_addr zone=mcp_conn:10m;
+
+server {
+    listen 443 ssl;
+    server_name chess-mcp.example.com;
+    ssl_certificate     /etc/ssl/certs/chess-mcp.pem;
+    ssl_certificate_key /etc/ssl/private/chess-mcp.key;
+
+    location = /_mcp_auth {
+        internal;
+        proxy_pass http://127.0.0.1:4180/auth;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header X-Original-Method $request_method;
+        proxy_set_header X-Original-URI $request_uri;
+    }
+
+    location = /mcp {
+        auth_request /_mcp_auth;
+        limit_req zone=mcp_req burst=20 nodelay;
+        limit_conn mcp_conn 10;
+        client_max_body_size 2m;
+
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-User "";
+        proxy_set_header X-Forwarded-Email "";
+        proxy_buffering off;
+        proxy_read_timeout 90s;
+
+        # Intentionally no Access-Control-Allow-* headers: browser CORS is unsupported.
+    }
+}
+```
+
+The application does not trust forwarded identity headers and does not assign
+games to authenticated users. All games in one process share one `GameStore`;
+the opaque `game_id` is the capability to operate a game within the trusted
+deployment, not an OAuth token or user identity. Do not disclose it across
+trust boundaries.
+
+This server does not implement MCP OAuth discovery, bearer-token validation,
+or browser CORS. A proxy may authenticate access to the endpoint, but that is
+deployment policy rather than an application-level identity or ownership
+model. Browser clients are unsupported unless a proxy deliberately adds and
+maintains the required CORS policy.
+
 ### Export Maia3 to ONNX (build-time only)
 
 This step needs Python + PyTorch once. It downloads the Maia3 checkpoint, verifies
@@ -292,10 +366,27 @@ rejected:
 
 ## Runtime limits
 
-- Up to 1,000 game sessions are retained; idle sessions expire after one hour.
+- Up to 1,000 games are retained per process; idle games expire after one hour.
 - `move_evaluate` accepts at most 10 moves per call.
 - Imported PGNs are limited to 1 MiB and 4,096 plies.
 - Stockfish accepts up to 32 active or queued analyses.
+- HTTP retains at most 64 MCP sessions; sessions with no POST activity expire
+  after 30 minutes.
+- HTTP accepts bodies up to 2 MiB. It permits 16 concurrent POSTs and downstream
+  compute/network jobs process-wide, with two of each per session. Work keeps
+  its slot after a raw disconnect until it settles. HTTP also caps connections
+  at 128 and applies bounded header, upload, socket, and keep-alive timeouts.
+
+Programmatic users can override the HTTP limits through `HttpServerOptions`.
+These safeguards do not replace public-edge quotas: a public deployment must
+still enforce request, connection, and authentication limits at the reverse
+proxy.
+
+MCP cancellation notifications, session deletion, and server shutdown propagate
+to Stockfish, Maia, and Lichess work. Stockfish stops safely at its UCI queue
+boundary; Lichess fetch and retry waits abort immediately. ONNX Runtime cannot
+interrupt an inference already executing, so Maia discards its result after the
+native call returns. A raw HTTP disconnect alone is not a cancellation signal.
 
 ## Intents
 

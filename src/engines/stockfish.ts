@@ -49,6 +49,18 @@ type Session = {
   aborts: Set<(error: Error) => void>;
 };
 
+type AnalysisRequest = {
+  cancelled: boolean;
+  cancellation: Error | null;
+  started: boolean;
+  released: boolean;
+  signal: AbortSignal | undefined;
+  abortListener: (() => void) | null;
+  stop: ((error: Error) => void) | null;
+  resolve: (lines: SfLine[]) => void;
+  reject: (error: Error) => void;
+};
+
 const DEFAULT_FLAVOR: StockfishFlavor = "lite-single";
 const FLAVORS = new Set<string>(STOCKFISH_FLAVORS);
 const DEFAULT_TIMEOUTS: Timeouts = {
@@ -75,6 +87,10 @@ function loadStockfish(): StockfishInit {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function abortError(signal: AbortSignal): Error {
+  return asError(signal.reason ?? "stockfish request cancelled");
 }
 
 function parseScore(token: string): { cp: number | null; mate: number | null } {
@@ -241,9 +257,19 @@ export class Stockfish {
     });
   }
 
-  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  private release(request: AnalysisRequest): void {
+    if (request.released) return;
+    request.released = true;
+    this.queued--;
+    if (request.signal && request.abortListener) {
+      request.signal.removeEventListener("abort", request.abortListener);
+    }
+    request.abortListener = null;
+  }
+
+  private enqueue(request: AnalysisRequest, fn: () => Promise<void>): boolean {
     if (this.queued >= this.maxQueue) {
-      return Promise.reject(new Error("stockfish queue full"));
+      return false;
     }
 
     this.queued++;
@@ -252,25 +278,89 @@ export class Stockfish {
       () => {},
       () => {},
     );
-    return run.finally(() => {
-      this.queued--;
-    });
+    void run.finally(() => this.release(request));
+    return true;
   }
 
-  analyze(fen: string, depth: number, multipv: number): Promise<SfLine[]> {
+  analyze(
+    fen: string,
+    depth: number,
+    multipv: number,
+    signal?: AbortSignal,
+  ): Promise<SfLine[]> {
+    if (signal?.aborted) {
+      return Promise.reject(abortError(signal));
+    }
+
     const quitGeneration = this.quitGeneration;
-    return this.enqueue(async () => {
-      if (quitGeneration !== this.quitGeneration) {
-        throw new Error("stockfish request cancelled");
-      }
-      await this.init();
-      if (quitGeneration !== this.quitGeneration) {
-        throw new Error("stockfish request cancelled");
-      }
-      const session = this.session;
-      if (!session) throw new Error("stockfish unavailable after initialization");
-      return this.doAnalyze(session, fen, depth, multipv);
+    let request!: AnalysisRequest;
+    const result = new Promise<SfLine[]>((resolve, reject) => {
+      request = {
+        cancelled: false,
+        cancellation: null,
+        started: false,
+        released: false,
+        signal,
+        abortListener: null,
+        stop: null,
+        resolve,
+        reject,
+      };
     });
+    const cancel = () => {
+      if (request.cancelled) return;
+      const error = request.signal
+        ? abortError(request.signal)
+        : new Error("stockfish request cancelled");
+      request.cancelled = true;
+      request.cancellation = error;
+      if (request.started) {
+        request.stop?.(error);
+      } else {
+        request.reject(error);
+        this.release(request);
+      }
+    };
+    request.abortListener = cancel;
+
+    if (!this.enqueue(request, async () => {
+      if (request.cancelled) return;
+      request.started = true;
+      try {
+        if (quitGeneration !== this.quitGeneration) {
+          throw new Error("stockfish request cancelled");
+        }
+        await this.init();
+        if (request.cancelled || quitGeneration !== this.quitGeneration) {
+          if (!request.cancelled) {
+            throw new Error("stockfish request cancelled");
+          }
+          return;
+        }
+        const session = this.session;
+        if (!session) throw new Error("stockfish unavailable after initialization");
+        const lines = await this.doAnalyze(
+          session,
+          fen,
+          depth,
+          multipv,
+          (stop) => {
+            request.stop = stop;
+          },
+        );
+        if (!request.cancelled) request.resolve(lines);
+      } catch (error) {
+        if (!request.cancelled) request.reject(asError(error));
+      } finally {
+        request.stop = null;
+        if (request.cancellation) request.reject(request.cancellation);
+      }
+    })) {
+      return Promise.reject(new Error("stockfish queue full"));
+    }
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
+    return result;
   }
 
   private doAnalyze(
@@ -278,6 +368,7 @@ export class Stockfish {
     fen: string,
     depth: number,
     multipv: number,
+    setStop: (stop: ((error: Error) => void) | null) => void,
   ): Promise<SfLine[]> {
     return new Promise<SfLine[]>((resolve, reject) => {
       const engine = session.engine;
@@ -288,6 +379,8 @@ export class Stockfish {
 
       const byPv = new Map<number, SfLine>();
       let settled = false;
+      let cancellation: Error | null = null;
+      let stopSent = false;
       let stopTimer: NodeJS.Timeout | null = null;
       let failTimer: NodeJS.Timeout | null = null;
 
@@ -296,6 +389,7 @@ export class Stockfish {
         if (failTimer) clearTimeout(failTimer);
         stopTimer = null;
         failTimer = null;
+        setStop(null);
         session.aborts.delete(abort);
         if (engine.listener === listener) engine.listener = null;
       };
@@ -313,6 +407,22 @@ export class Stockfish {
         reject(error);
       };
       const abort = (error: Error) => fail(error, false);
+      const stop = (error: Error, cancelled: boolean) => {
+        if (cancelled) cancellation ??= error;
+        if (stopSent) return;
+        stopSent = true;
+        if (stopTimer) clearTimeout(stopTimer);
+        stopTimer = null;
+        failTimer = setTimeout(
+          () => fail(cancellation ?? error, true),
+          this.timeouts.stopGrace,
+        );
+        try {
+          engine.sendCommand("stop");
+        } catch (sendError) {
+          fail(asError(sendError), true);
+        }
+      };
       const listener = (line: string) => {
         if (line.startsWith("info") && line.includes(" multipv ")) {
           const multipv = line.match(/multipv (?<value>\d+)/)?.groups?.value;
@@ -337,22 +447,16 @@ export class Stockfish {
             pv: pv ? pv.split(" ") : (previous?.pv ?? []),
           });
         } else if (line.startsWith("bestmove")) {
-          succeed();
+          if (cancellation) fail(cancellation, false);
+          else succeed();
         }
       };
 
       session.aborts.add(abort);
       engine.listener = listener;
+      setStop((error) => stop(error, true));
       stopTimer = setTimeout(() => {
-        failTimer = setTimeout(
-          () => fail(new Error("stockfish analyze timeout"), true),
-          this.timeouts.stopGrace,
-        );
-        try {
-          engine.sendCommand("stop");
-        } catch (error) {
-          fail(asError(error), true);
-        }
+        stop(new Error("stockfish analyze timeout"), false);
       }, this.timeouts.analyze);
       try {
         engine.sendCommand("position fen " + fen);

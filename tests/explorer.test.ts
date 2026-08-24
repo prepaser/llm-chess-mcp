@@ -158,6 +158,91 @@ test("retries one network failure with the default delay", async () => {
   assert.deepEqual(delays, [250]);
 });
 
+test("rethrows caller cancellation without retrying or converting it", async () => {
+  const controller = new AbortController();
+  const cause = new Error("caller cancelled");
+  let calls = 0;
+  const fetch: ExplorerFetch = async (_input, init) =>
+    await new Promise<Response>((_resolve, reject) => {
+      calls += 1;
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+        once: true,
+      });
+    });
+
+  const pending = openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(fetch, { signal: controller.signal }),
+  );
+  controller.abort(cause);
+
+  await assert.rejects(pending, (error: unknown) => error === cause);
+  assert.equal(calls, 1);
+});
+
+test("does not fetch when the caller already cancelled", async () => {
+  const controller = new AbortController();
+  const cause = new Error("already cancelled");
+  let calls = 0;
+  controller.abort(cause);
+
+  await assert.rejects(
+    openingExplorer(
+      new Chess(),
+      "lichess",
+      [],
+      [],
+      options(async () => {
+        calls += 1;
+        return response();
+      }, { signal: controller.signal }),
+    ),
+    (error: unknown) => error === cause,
+  );
+  assert.equal(calls, 0);
+});
+
+test("cancels retry backoff before another fetch", async () => {
+  const controller = new AbortController();
+  const cause = new Error("caller cancelled during backoff");
+  let calls = 0;
+  let startedSleep: (() => void) | undefined;
+  const pending = openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(
+      async () => {
+        calls += 1;
+        throw new TypeError("network failure");
+      },
+      {
+        signal: controller.signal,
+        sleep: async () =>
+          await new Promise<void>((resolve) => {
+            startedSleep = resolve;
+          }),
+      },
+    ),
+  );
+
+  await new Promise<void>((resolve) => {
+    const check = () => {
+      if (startedSleep) return resolve();
+      queueMicrotask(check);
+    };
+    check();
+  });
+  controller.abort(cause);
+
+  await assert.rejects(pending, (error: unknown) => error === cause);
+  assert.equal(calls, 1);
+});
+
 test("retries timed out attempts and returns a stable error", async () => {
   let calls = 0;
   const timeouts: number[] = [];

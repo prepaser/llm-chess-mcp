@@ -31,18 +31,27 @@ export function registerCandidateTools(
         lichess_db,
         lichess_speeds,
         lichess_ratings,
-      }) => {
+      }, signal) => {
         const { chess: live, revision } = services.games.getGame(game_id);
         const chess = snapshotChess(live);
         const preset = ANALYSIS_PRESETS[analysis_level];
         const depth = sf_depth ?? preset.depth;
         const multipv = sf_multipv ?? preset.multipv;
         const { candidates, moveSensitivity } =
-          await services.computeCandidates(chess, elo, depth, multipv, maia_top_n, {
-            db: lichess_db,
-            speeds: lichess_speeds,
-            ratings: lichess_ratings,
-          });
+          await services.computeCandidates(
+            chess,
+            elo,
+            depth,
+            multipv,
+            maia_top_n,
+            {
+              db: lichess_db,
+              speeds: lichess_speeds,
+              ratings: lichess_ratings,
+            },
+            signal,
+          );
+        signal.throwIfAborted();
 
         return toolResult(
           {
@@ -82,18 +91,27 @@ export function registerCandidateTools(
         lichess_db,
         lichess_speeds,
         lichess_ratings,
-      }) => {
+      }, signal) => {
         const { chess: live, revision } = services.games.getGame(game_id);
         const chess = snapshotChess(live);
         const preset = ANALYSIS_PRESETS[analysis_level];
         const depth = sf_depth ?? preset.depth;
         const multipv = sf_multipv ?? preset.multipv;
         const { candidates, moveSensitivity } =
-          await services.computeCandidates(chess, elo, depth, multipv, maia_top_n, {
-            db: lichess_db,
-            speeds: lichess_speeds,
-            ratings: lichess_ratings,
-          });
+          await services.computeCandidates(
+            chess,
+            elo,
+            depth,
+            multipv,
+            maia_top_n,
+            {
+              db: lichess_db,
+              speeds: lichess_speeds,
+              ratings: lichess_ratings,
+            },
+            signal,
+          );
+        signal.throwIfAborted();
         const ranked = services.rankByIntent(candidates, intent);
 
         return toolResult(

@@ -10,6 +10,23 @@ import {
 } from "../src/maia3/inference.js";
 import { VOCAB_SIZE } from "../src/maia3/vocab.js";
 
+function abortOnCheck(checkAt: number): { signal: AbortSignal; checks(): number } {
+  let checks = 0;
+  return {
+    signal: {
+      throwIfAborted() {
+        checks += 1;
+        if (checks === checkAt) {
+          const error = new Error("The operation was aborted");
+          error.name = "AbortError";
+          throw error;
+        }
+      },
+    } as AbortSignal,
+    checks: () => checks,
+  };
+}
+
 test("computes a stable softmax and preserves masked moves", () => {
   const probabilities = softmax(Float32Array.from([1, 2, -Infinity]));
   const low = probabilities[0];
@@ -62,6 +79,33 @@ test("validates move logits type and shape", () => {
     () => extractMoveLogits({ logits_move: new ort.Tensor("float32", new Float32Array(2), [1, 2]) }),
     /invalid Maia3 logits shape/,
   );
+});
+
+test("aborts before loading the model", async () => {
+  const previous = process.env.MAIA3_MODEL;
+  process.env.MAIA3_MODEL = "invalid";
+  try {
+    await assert.rejects(
+      humanMoveDistribution(new Chess(), 1500, 1500, 1, AbortSignal.abort()),
+      { name: "AbortError" },
+    );
+  } finally {
+    if (previous === undefined) delete process.env.MAIA3_MODEL;
+    else process.env.MAIA3_MODEL = previous;
+  }
+});
+
+test("checks cancellation after native inference and around formatting", async () => {
+  for (const checkAt of [3, 4, 5]) {
+    const cancellation = abortOnCheck(checkAt);
+    await assert.rejects(
+      humanMoveDistribution(new Chess(), 1500, 1500, 1, cancellation.signal),
+      { name: "AbortError" },
+    );
+    assert.equal(cancellation.checks(), checkAt);
+  }
+
+  assert.equal((await humanMoveDistribution(new Chess(), 1500, 1500, 1)).length, 1);
 });
 
 test("preserves bundled model inference parity", async () => {

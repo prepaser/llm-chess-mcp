@@ -1,3 +1,11 @@
+import type { ServerContext } from "@modelcontextprotocol/server";
+import { ChessError } from "./errors.js";
+import { ExplorerError } from "./explorer.js";
+import type { ExplorerErrorKind } from "./explorer.js";
+import type * as z from "zod/v4";
+
+const UNABORTABLE_SIGNAL = new AbortController().signal;
+
 export type ToolResult = {
   content: { type: "text"; text: string }[];
   structuredContent: Record<string, unknown>;
@@ -28,12 +36,18 @@ function explorerErrorCode(kind: ExplorerErrorKind): string {
 
 export function safeHandler<Schema extends z.ZodType>(
   _schema: Schema,
-  handler: (args: z.output<Schema>) => Promise<ToolResult>,
-): (args: z.output<Schema>) => Promise<ToolResult> {
-  return async (args) => {
+  handler: (args: z.output<Schema>, signal: AbortSignal) => Promise<ToolResult>,
+): (args: z.output<Schema>, context?: ServerContext) => Promise<ToolResult> {
+  return async (args, context) => {
+    const signal = context?.mcpReq.signal ?? UNABORTABLE_SIGNAL;
     try {
-      return await handler(args);
+      signal.throwIfAborted();
+      return await handler(args, signal);
     } catch (error) {
+      if (signal.aborted) {
+        signal.throwIfAborted();
+      }
+      if (error instanceof Error && error.name === "AbortError") throw error;
       if (error instanceof ChessError) return toolError(error.code, error.message);
       if (error instanceof ExplorerError) {
         return toolError(explorerErrorCode(error.kind), error.message);
@@ -43,7 +57,3 @@ export function safeHandler<Schema extends z.ZodType>(
     }
   };
 }
-import { ExplorerError } from "./explorer.js";
-import type { ExplorerErrorKind } from "./explorer.js";
-import { ChessError } from "./errors.js";
-import type * as z from "zod/v4";
