@@ -3,25 +3,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { TOOL_NAMES } from "../../src/tool-names.js";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 const CALL_TIMEOUT_MS = 30_000;
-
-const EXPECTED_TOOLS = [
-  "create_game",
-  "delete_game",
-  "game_import_pgn",
-  "game_legal_moves",
-  "game_pgn",
-  "game_play_move",
-  "game_state",
-  "human_move_distribution",
-  "move_candidates",
-  "move_candidates_by_intent",
-  "move_evaluate",
-  "opening_explorer",
-  "position_analyze",
-];
 
 type JsonObject = Record<string, unknown>;
 type ToolResult = Awaited<ReturnType<Client["callTool"]>>;
@@ -102,7 +87,7 @@ test(
       assert.equal(listed.tools.length, 13);
       assert.deepEqual(
         listed.tools.map(({ name }) => name).sort(),
-        EXPECTED_TOOLS,
+        [...TOOL_NAMES].sort(),
       );
       for (const tool of listed.tools) {
         assert.ok(tool.outputSchema, `${tool.name} has no outputSchema`);

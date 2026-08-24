@@ -1,58 +1,58 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import test from "node:test";
 import { Chess } from "chess.js";
+import { parseMove } from "../src/chess.js";
 import { ChessError } from "../src/errors.js";
 import {
   GAME_TTL_MS,
   GameStore,
   MAX_GAMES,
-  cleanupGames,
-  createGame,
-  createGameFromChess,
-  deleteGame,
-  gameCount,
-  getGame,
-  listGames,
 } from "../src/games.js";
-
-afterEach(() => {
-  for (const id of listGames()) deleteGame(id);
-});
 
 function expectChessError(code: string, fn: () => unknown): void {
   assert.throws(fn, (error: unknown) => error instanceof ChessError && error.code === code);
 }
 
 test("expires an idle game with GAME_EXPIRED", () => {
-  const id = createGame();
-  getGame(id).lastAccessedAt = Date.now() - GAME_TTL_MS;
+  let now = 0;
+  const store = new GameStore({ clock: () => now });
+  const id = store.createGame();
+  now = GAME_TTL_MS;
 
-  expectChessError("GAME_EXPIRED", () => getGame(id));
-  expectChessError("GAME_NOT_FOUND", () => getGame(id));
+  expectChessError("GAME_EXPIRED", () => store.getSnapshot(id));
+  expectChessError("GAME_NOT_FOUND", () => store.getSnapshot(id));
 });
 
 test("cleans up expired games without a timer", () => {
-  const id = createGame();
-  getGame(id).lastAccessedAt = Date.now() - GAME_TTL_MS;
+  let now = 0;
+  const store = new GameStore({ clock: () => now });
+  store.createGame();
+  now = GAME_TTL_MS;
 
-  assert.equal(cleanupGames(), 1);
-  assert.equal(gameCount(), 0);
+  assert.equal(store.cleanupGames(), 1);
+  assert.equal(store.gameCount(), 0);
 });
 
 test("active access refreshes the idle deadline", () => {
-  const id = createGame();
-  const game = getGame(id);
-  game.lastAccessedAt = Date.now() - GAME_TTL_MS + 1;
+  let now = 0;
+  const store = new GameStore({ clock: () => now });
+  const id = store.createGame();
+  now = GAME_TTL_MS - 1;
 
-  assert.equal(getGame(id), game);
-  assert.ok(game.lastAccessedAt > Date.now() - 1_000);
+  assert.equal(store.getSnapshot(id).revision, 0);
+  now = GAME_TTL_MS;
+  assert.equal(store.getSnapshot(id).revision, 0);
 });
 
 test("rejects a new game when the session limit is reached", () => {
-  for (let i = 0; i < MAX_GAMES; i += 1) createGameFromChess(new Chess());
+  const store = new GameStore({ createId: (() => {
+    let id = 0;
+    return () => `game-${id++}`;
+  })() });
+  for (let i = 0; i < MAX_GAMES; i += 1) store.createGameFromChess(new Chess());
 
-  expectChessError("GAME_LIMIT_REACHED", () => createGame());
-  assert.equal(gameCount(), MAX_GAMES);
+  expectChessError("GAME_LIMIT_REACHED", () => store.createGame());
+  assert.equal(store.gameCount(), MAX_GAMES);
 });
 
 test("GameStore accepts deterministic clocks and IDs", () => {
@@ -68,10 +68,10 @@ test("GameStore accepts deterministic clocks and IDs", () => {
   const first = store.createGame();
   assert.equal(first, "game-0");
   assert.deepEqual(store.listGames(), [first]);
-  assert.equal(store.getGame(first).lastAccessedAt, 100);
+  assert.equal(store.getSnapshot(first).revision, 0);
 
   now = 109;
-  assert.equal(store.getGame(first).lastAccessedAt, 109);
+  assert.equal(store.getSnapshot(first).revision, 0);
   now = 118;
   assert.equal(store.cleanupGames(), 0);
   now = 119;
@@ -96,4 +96,44 @@ test("GameStore validates limits and rejects duplicate IDs", () => {
   const store = new GameStore({ maxGames: 2, createId: () => "same" });
   store.createGame();
   expectChessError("GAME_ID_COLLISION", () => store.createGame());
+});
+
+test("GameStore owns chess state and returns isolated snapshots", () => {
+  const store = new GameStore({ createId: () => "game" });
+  const source = new Chess();
+  source.setHeader("Event", "snapshot test");
+  source.setComment("start");
+  source.move("e4");
+  source.setComment("king pawn");
+  const id = store.createGameFromChess(source);
+  source.move("e5");
+
+  const first = store.getSnapshot(id);
+  assert.deepEqual(first.chess.history(), ["e4"]);
+  assert.deepEqual(
+    first.chess.getComments().map(({ comment }) => comment),
+    ["start", "king pawn"],
+  );
+  first.chess.move("c5");
+
+  const second = store.getSnapshot(id);
+  assert.deepEqual(second.chess.history(), ["e4"]);
+  assert.equal(second.chess.getHeaders().Event, "snapshot test");
+  assert.deepEqual(
+    second.chess.getComments().map(({ comment }) => comment),
+    ["start", "king pawn"],
+  );
+  assert.equal(second.revision, 0);
+});
+
+test("GameStore applies parsed moves atomically at the expected revision", () => {
+  const store = new GameStore({ createId: () => "game" });
+  const id = store.createGame();
+  const parsed = parseMove(store.getSnapshot(id).chess, "e4");
+
+  const updated = store.applyMove(id, 0, parsed);
+  assert.deepEqual(updated.chess.history(), ["e4"]);
+  assert.equal(updated.revision, 1);
+  expectChessError("STALE_POSITION", () => store.applyMove(id, 0, parsed));
+  assert.deepEqual(store.getSnapshot(id).chess.history(), ["e4"]);
 });

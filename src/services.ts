@@ -1,13 +1,14 @@
 import type { Chess } from "chess.js";
 import { stockfish } from "./engines/stockfish.js";
 import {
+  ExplorerError,
   explorerEnabled,
   openingExplorer,
 } from "./explorer.js";
 import type { ExplorerResult } from "./explorer.js";
 import { defaultGameStore } from "./games.js";
 import type { GameStore } from "./games.js";
-import { computeCandidates, rankByIntent } from "./intents.js";
+import { createCandidateComputation, rankByIntent } from "./intents.js";
 import type { CandidateSet, LichessOpts } from "./intents.js";
 import { humanMoveDistribution } from "./maia3/inference.js";
 import type { Candidate, Intent, Maia3Move, SfLine } from "./types.js";
@@ -48,21 +49,38 @@ export interface AppServices {
   rankByIntent(candidates: Candidate[], intent: Intent): Candidate[];
 }
 
+const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) =>
+  stockfish.analyze(fen, depth, multipv, signal);
+const openExplorer: AppServices["openingExplorer"] = (
+  chess,
+  db,
+  speeds,
+  ratings,
+  signal,
+) =>
+  openingExplorer(
+    chess,
+    db,
+    speeds,
+    ratings,
+    signal === undefined ? {} : { signal },
+  );
+const candidateComputation = createCandidateComputation({
+  analyze,
+  humanMoveDistribution,
+  explorerEnabled,
+  openingExplorer: openExplorer,
+  explorerFailureReason: (error) =>
+    error instanceof ExplorerError ? error.reason : "upstream",
+});
+
 export const defaultAppServices: AppServices = {
   games: defaultGameStore,
-  analyze: (fen, depth, multipv, signal) =>
-    stockfish.analyze(fen, depth, multipv, signal),
+  analyze,
   quit: () => stockfish.quit(),
   humanMoveDistribution,
   explorerEnabled,
-  openingExplorer: (chess, db, speeds, ratings, signal) =>
-    openingExplorer(
-      chess,
-      db,
-      speeds,
-      ratings,
-      signal === undefined ? {} : { signal },
-    ),
-  computeCandidates,
+  openingExplorer: openExplorer,
+  computeCandidates: candidateComputation.computeCandidates,
   rankByIntent,
 };

@@ -373,8 +373,8 @@ rejected:
 - `move_evaluate` accepts at most 10 moves per call.
 - Imported PGNs are limited to 1 MiB and 4,096 plies.
 - Stockfish accepts up to 32 active or queued analyses.
-- HTTP retains at most 64 MCP sessions; sessions with no POST activity expire
-  after 30 minutes.
+- HTTP retains at most 64 MCP sessions; sessions with no active request expire
+  after 30 minutes. An open GET/SSE stream keeps its session active.
 - HTTP accepts bodies up to 2 MiB. It permits 16 concurrent POSTs and downstream
   compute/network jobs process-wide, with two of each per session. Work keeps
   its slot after a raw disconnect until it settles. HTTP also caps connections

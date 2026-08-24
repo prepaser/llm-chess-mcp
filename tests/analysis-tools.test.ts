@@ -76,5 +76,5 @@ test("move_evaluate classifies terminal draws from the mover's prior score", asy
   }
 
   assert.equal(analysisCalls, 3);
-  assert.equal(games.getGame(gameId).revision, 0);
+  assert.equal(games.getSnapshot(gameId).revision, 0);
 });

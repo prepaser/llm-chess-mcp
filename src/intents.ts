@@ -1,7 +1,4 @@
 import { Chess } from "chess.js";
-import { stockfish } from "./engines/stockfish.js";
-import { humanMoveDistribution } from "./maia3/inference.js";
-import { ExplorerError, openingExplorer, explorerEnabled } from "./explorer.js";
 import type { ExplorerErrorKind, ExplorerResult } from "./explorer.js";
 import { toEval, evalToCp } from "./eval.js";
 import type {
@@ -69,6 +66,45 @@ function objectiveFromLine(
 export interface CandidateSet {
   candidates: Candidate[];
   moveSensitivity: MoveSensitivity;
+}
+
+export type ComputeCandidates = (
+  chess: Chess,
+  elo: number,
+  sfDepth: number,
+  sfMultipv: number,
+  maiaTopN: number,
+  lichess?: LichessOpts | null,
+  signal?: AbortSignal,
+) => Promise<CandidateSet>;
+
+export interface CandidateComputationDependencies {
+  analyze(
+    fen: string,
+    depth: number,
+    multipv: number,
+    signal?: AbortSignal,
+  ): Promise<SfLine[]>;
+  humanMoveDistribution(
+    chess: Chess,
+    elo: number,
+    opponentElo: number,
+    topN: number,
+    signal?: AbortSignal,
+  ): Promise<Maia3Move[]>;
+  explorerEnabled(): boolean;
+  openingExplorer(
+    chess: Chess,
+    db: "lichess" | "masters",
+    speeds: readonly string[],
+    ratings: readonly number[],
+    signal?: AbortSignal,
+  ): Promise<ExplorerResult>;
+  explorerFailureReason(error: unknown): ExplorerErrorKind;
+}
+
+export interface CandidateComputation {
+  computeCandidates: ComputeCandidates;
 }
 
 export type LichessCandidateData =
@@ -189,39 +225,50 @@ export function candidateSetFromData(
   };
 }
 
-export async function computeCandidates(
-  chess: Chess,
-  elo: number,
-  sfDepth: number,
-  sfMultipv: number,
-  maiaTopN: number,
-  lichess?: LichessOpts | null,
-  signal?: AbortSignal,
-): Promise<CandidateSet> {
-  const [sfLines, maiaMoves, lichessResult] = await Promise.all([
-    stockfish.analyze(chess.fen(), sfDepth, sfMultipv, signal),
-    humanMoveDistribution(chess, elo, elo, maiaTopN, signal),
-    lichess && explorerEnabled()
-      ? openingExplorer(chess, lichess.db, lichess.speeds, lichess.ratings, {
-          ...(signal ? { signal } : {}),
-        })
-          .then(explorerCandidateData)
-          .catch((e): LichessCandidateData => {
-            signal?.throwIfAborted();
-            return {
-              status: "unavailable" as const,
-              reason: e instanceof ExplorerError ? e.reason : ("upstream" as const),
+export function createCandidateComputation(
+  dependencies: CandidateComputationDependencies,
+): CandidateComputation {
+  return {
+    computeCandidates: async (
+      chess,
+      elo,
+      sfDepth,
+      sfMultipv,
+      maiaTopN,
+      lichess,
+      signal,
+    ) => {
+      const [sfLines, maiaMoves, lichessResult] = await Promise.all([
+        dependencies.analyze(chess.fen(), sfDepth, sfMultipv, signal),
+        dependencies.humanMoveDistribution(chess, elo, elo, maiaTopN, signal),
+        lichess && dependencies.explorerEnabled()
+          ? dependencies
+              .openingExplorer(
+                chess,
+                lichess.db,
+                lichess.speeds,
+                lichess.ratings,
+                signal,
+              )
+              .then(explorerCandidateData)
+              .catch((error): LichessCandidateData => {
+                signal?.throwIfAborted();
+                return {
+                  status: "unavailable",
+                  reason: dependencies.explorerFailureReason(error),
+                  totalGames: null,
+                  moves: [],
+                };
+              })
+          : Promise.resolve<LichessCandidateData>({
+              status: "disabled",
               totalGames: null,
-              moves: [] as LichessMove[],
-            };
-          })
-      : Promise.resolve<LichessCandidateData>({
-          status: "disabled" as const,
-          totalGames: null,
-          moves: [] as LichessMove[],
-        }),
-  ]);
-  return candidateSetFromData(chess, elo, sfLines, maiaMoves, lichessResult);
+              moves: [],
+            }),
+      ]);
+      return candidateSetFromData(chess, elo, sfLines, maiaMoves, lichessResult);
+    },
+  };
 }
 
 function winMargin(c: Candidate): number | null {

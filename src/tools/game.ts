@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { parseImportedPgn, parseMove, playParsedMove, stateOf } from "../chess.js";
+import { parseImportedPgn, parseMove, stateOf } from "../chess.js";
 import { ChessError } from "../errors.js";
 import type { AppServices } from "../services.js";
 import { TOOL_INPUT_SCHEMAS } from "../tool-inputs.js";
@@ -7,7 +7,9 @@ import { TOOL_META } from "../tool-meta.js";
 import { safeHandler, toolResult } from "../tool-result.js";
 import { TOOL_OUTPUT_SCHEMAS } from "../tool-schemas.js";
 
-export function registerGameTools(server: McpServer, services: AppServices): void {
+type GameServices = Pick<AppServices, "games">;
+
+export function registerGameTools(server: McpServer, services: GameServices): void {
   server.registerTool(
     "create_game",
     {
@@ -58,7 +60,7 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
     safeHandler(
       TOOL_INPUT_SCHEMAS.game_state,
       async ({ game_id, include_ascii }) => {
-        const { chess, revision } = services.games.getGame(game_id);
+        const { chess, revision } = services.games.getSnapshot(game_id);
         const state = stateOf(chess, revision);
         return toolResult(
           {
@@ -82,7 +84,7 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
     safeHandler(
       TOOL_INPUT_SCHEMAS.game_play_move,
       async ({ game_id, move, expected_revision }, signal) => {
-        const { chess, revision } = services.games.getGame(game_id);
+        const { chess, revision } = services.games.getSnapshot(game_id);
         if (expected_revision !== revision) {
           throw new ChessError(
             "STALE_POSITION",
@@ -94,10 +96,13 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
         }
         const parsed = parseMove(chess, move);
         signal.throwIfAborted();
-        playParsedMove(chess, parsed);
-        const newRevision = services.games.bumpRevision(game_id);
+        const { chess: next, revision: newRevision } = services.games.applyMove(
+          game_id,
+          expected_revision,
+          parsed,
+        );
         return toolResult(
-          { game_id, move: parsed.san, ...stateOf(chess, newRevision) },
+          { game_id, move: parsed.san, ...stateOf(next, newRevision) },
           `Played ${parsed.san} in game ${game_id}; revision ${newRevision}`,
         );
       },
@@ -112,7 +117,7 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
       outputSchema: TOOL_OUTPUT_SCHEMAS.game_legal_moves,
     },
     safeHandler(TOOL_INPUT_SCHEMAS.game_legal_moves, async ({ game_id }, signal) => {
-      const { chess, revision } = services.games.getGame(game_id);
+      const { chess, revision } = services.games.getSnapshot(game_id);
       const moves = [];
       for (const move of chess.moves({ verbose: true })) {
         signal.throwIfAborted();
@@ -143,7 +148,7 @@ export function registerGameTools(server: McpServer, services: AppServices): voi
       outputSchema: TOOL_OUTPUT_SCHEMAS.game_pgn,
     },
     safeHandler(TOOL_INPUT_SCHEMAS.game_pgn, async ({ game_id }) => {
-      const { chess, revision } = services.games.getGame(game_id);
+      const { chess, revision } = services.games.getSnapshot(game_id);
       return toolResult(
         { game_id, revision, pgn: chess.pgn() },
         `Exported PGN for game ${game_id} at revision ${revision}`,

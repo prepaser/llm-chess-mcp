@@ -64,8 +64,8 @@ test("simultaneous moves from one revision commit exactly once", async (t) => {
       message: "position changed: expected revision 0, current 1",
     },
   });
-  assert.equal(games.getGame(gameId).revision, 1);
-  assert.equal(games.getGame(gameId).chess.history().length, 1);
+  assert.equal(games.getSnapshot(gameId).revision, 1);
+  assert.equal(games.getSnapshot(gameId).chess.history().length, 1);
 });
 
 test("Stockfish serializes concurrent FEN requests without listener cross-talk", async () => {

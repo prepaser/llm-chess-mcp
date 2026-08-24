@@ -185,13 +185,36 @@ async function sleepWithSignal(
   });
 }
 
-export async function openingExplorer(
+interface ExplorerSetup {
+  callerSignal: AbortSignal | undefined;
+  db: "lichess" | "masters";
+  deadline: number;
+  legalMoves: Map<string, string>;
+  now: () => number;
+  request: ExplorerFetch;
+  sleep: (ms: number) => Promise<void>;
+  timeout: (ms: number) => AbortSignal;
+  token: string;
+  url: string;
+}
+
+interface SuccessfulAttempt {
+  response: Response;
+  signal: AbortSignal;
+}
+
+interface FailedAttempt {
+  error: ExplorerError;
+  retryAfter?: string | null;
+}
+
+function setupExplorerRequest(
   chess: Chess,
   db: "lichess" | "masters",
   speeds: readonly string[],
   ratings: readonly number[],
-  options: ExplorerRequestOptions = {},
-): Promise<ExplorerResult> {
+  options: ExplorerRequestOptions,
+): ExplorerSetup {
   const callerSignal = options.signal;
   throwIfAborted(callerSignal);
   const token = options.token ?? process.env.LICHESS_TOKEN ?? "";
@@ -212,136 +235,177 @@ export async function openingExplorer(
     throw error("invalid_input");
   }
 
-  const request = options.fetch ?? globalThis.fetch;
-  const sleep =
-    options.sleep ??
-    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const timeout = options.timeout ?? ((ms: number) => AbortSignal.timeout(ms));
-  const now = options.now ?? Date.now;
-  const deadline = now() + EXPLORER_TOTAL_TIMEOUT_MS;
-
   const params = new URLSearchParams();
   params.set("fen", chess.fen());
   if (speeds.length) params.set("speeds", speeds.join(","));
   if (ratings.length) params.set("ratings", ratings.join(","));
-  const url = `${BASE}/${db}?${params}`;
-  const legalMoves = new Map(
-    chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
+
+  const now = options.now ?? Date.now;
+  return {
+    callerSignal,
+    db,
+    deadline: now() + EXPLORER_TOTAL_TIMEOUT_MS,
+    legalMoves: new Map(
+      chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
+    ),
+    now,
+    request: options.fetch ?? globalThis.fetch,
+    sleep:
+      options.sleep ??
+      ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))),
+    timeout: options.timeout ?? ((ms: number) => AbortSignal.timeout(ms)),
+    token,
+    url: `${BASE}/${db}?${params}`,
+  };
+}
+
+async function attemptRequest(
+  setup: ExplorerSetup,
+): Promise<SuccessfulAttempt | FailedAttempt> {
+  const { callerSignal, deadline, now, request, timeout, token, url } = setup;
+  throwIfAborted(callerSignal);
+  const remaining = deadline - now();
+  if (remaining <= 0) throw error("timeout");
+  const attemptSignal = timeout(
+    Math.max(1, Math.min(EXPLORER_ATTEMPT_TIMEOUT_MS, remaining)),
+  );
+  const signal = AbortSignal.any(
+    callerSignal ? [callerSignal, attemptSignal] : [attemptSignal],
   );
 
+  let response: Response;
+  try {
+    response = await request(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal,
+    });
+  } catch {
+    throwIfAborted(callerSignal);
+    return { error: error(signal.aborted ? "timeout" : "network") };
+  }
+
+  throwIfAborted(callerSignal);
+  if (response.ok) return { response, signal };
+
+  const kind: ExplorerErrorKind =
+    response.status === 401 || response.status === 403
+      ? "auth"
+      : response.status === 429
+      ? "rate_limited"
+      : response.status >= 500 && response.status <= 599
+        ? "upstream"
+        : "http";
+  return {
+    error: error(kind, response.status),
+    retryAfter: response.headers.get("retry-after"),
+  };
+}
+
+async function normalizeSuccessfulResponse(
+  response: Response,
+  signal: AbortSignal,
+  setup: ExplorerSetup,
+): Promise<ExplorerResult> {
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (cause) {
+    throwIfAborted(setup.callerSignal);
+    if (signal.aborted || cause instanceof TypeError) {
+      throw error(signal.aborted ? "timeout" : "network");
+    }
+    throw error("invalid_response");
+  }
+
+  throwIfAborted(setup.callerSignal);
+  const parsed = responseSchema.safeParse(body);
+  if (!parsed.success) throw error("invalid_response");
+  const data = parsed.data;
+  const ucis = new Set<string>();
+  let white = 0;
+  let draws = 0;
+  let black = 0;
+  for (const move of data.moves) {
+    if (ucis.has(move.uci) || setup.legalMoves.get(move.uci) !== move.san) {
+      throw error("invalid_response");
+    }
+    ucis.add(move.uci);
+    white += move.white;
+    draws += move.draws;
+    black += move.black;
+  }
+  if (white > data.white || draws > data.draws || black > data.black) {
+    throw error("invalid_response");
+  }
+  return {
+    db: setup.db,
+    white: data.white,
+    draws: data.draws,
+    black: data.black,
+    moves: data.moves.map((move) => ({
+      uci: move.uci,
+      san: move.san,
+      white: move.white,
+      draws: move.draws,
+      black: move.black,
+      count: move.white + move.draws + move.black,
+      averageRating: move.averageRating ?? null,
+    })),
+    opening: data.opening ?? null,
+  };
+}
+
+async function retryAfterNetworkFailure(setup: ExplorerSetup): Promise<void> {
+  const delay = Math.min(
+    EXPLORER_DEFAULT_RETRY_DELAY_MS,
+    Math.max(0, setup.deadline - setup.now()),
+  );
+  await sleepWithSignal(setup.sleep, delay, setup.callerSignal);
+}
+
+export async function openingExplorer(
+  chess: Chess,
+  db: "lichess" | "masters",
+  speeds: readonly string[],
+  ratings: readonly number[],
+  options: ExplorerRequestOptions = {},
+): Promise<ExplorerResult> {
+  const setup = setupExplorerRequest(chess, db, speeds, ratings, options);
   let lastError = error("network");
   for (let attempt = 0; attempt < EXPLORER_MAX_ATTEMPTS; attempt += 1) {
-    throwIfAborted(callerSignal);
-    const remaining = deadline - now();
-    if (remaining <= 0) throw error("timeout");
-    const attemptSignal = timeout(
-      Math.max(1, Math.min(EXPLORER_ATTEMPT_TIMEOUT_MS, remaining)),
-    );
-    const signal = AbortSignal.any(
-      callerSignal ? [callerSignal, attemptSignal] : [attemptSignal],
-    );
-
-    let response: Response;
-    try {
-      response = await request(url, {
-        headers: { Authorization: `Bearer ${token}` },
-        signal,
-      });
-    } catch {
-      throwIfAborted(callerSignal);
-      lastError = error(signal.aborted ? "timeout" : "network");
-      if (attempt + 1 >= EXPLORER_MAX_ATTEMPTS) throw lastError;
-      const delay = Math.min(
-        EXPLORER_DEFAULT_RETRY_DELAY_MS,
-        Math.max(0, deadline - now()),
-      );
-      await sleepWithSignal(sleep, delay, callerSignal);
-      continue;
-    }
-
-    throwIfAborted(callerSignal);
-
-    if (!response.ok) {
-      const kind: ExplorerErrorKind =
-        response.status === 401 || response.status === 403
-          ? "auth"
-          : response.status === 429
-          ? "rate_limited"
-          : response.status >= 500 && response.status <= 599
-            ? "upstream"
-            : "http";
-      lastError = error(kind, response.status);
-      if (!isRetryable(kind) || attempt + 1 >= EXPLORER_MAX_ATTEMPTS) {
+    const attemptResult = await attemptRequest(setup);
+    if ("error" in attemptResult) {
+      lastError = attemptResult.error;
+      if (!isRetryable(lastError.kind) || attempt + 1 >= EXPLORER_MAX_ATTEMPTS) {
         throw lastError;
       }
-      const delay = retryAfterMs(response.headers.get("retry-after"), now());
-      const retryBudget = Math.max(0, deadline - now());
+      if (attemptResult.retryAfter === undefined) {
+        await retryAfterNetworkFailure(setup);
+        continue;
+      }
+      const delay = retryAfterMs(attemptResult.retryAfter, setup.now());
+      const retryBudget = Math.max(0, setup.deadline - setup.now());
       if (delay > EXPLORER_MAX_RETRY_DELAY_MS || delay >= retryBudget) {
         throw lastError;
       }
-      await sleepWithSignal(sleep, delay, callerSignal);
+      await sleepWithSignal(setup.sleep, delay, setup.callerSignal);
       continue;
     }
 
-    let body: unknown;
     try {
-      body = await response.json();
+      return await normalizeSuccessfulResponse(
+        attemptResult.response,
+        attemptResult.signal,
+        setup,
+      );
     } catch (cause) {
-      throwIfAborted(callerSignal);
-      if (signal.aborted || cause instanceof TypeError) {
-        lastError = error(signal.aborted ? "timeout" : "network");
-        if (attempt + 1 < EXPLORER_MAX_ATTEMPTS) {
-          const delay = Math.min(
-            EXPLORER_DEFAULT_RETRY_DELAY_MS,
-            Math.max(0, deadline - now()),
-          );
-          await sleepWithSignal(sleep, delay, callerSignal);
-          continue;
-        }
-        throw lastError;
+      if (!(cause instanceof ExplorerError) || !isRetryable(cause.kind)) {
+        throw cause;
       }
-      throw error("invalid_response");
+      lastError = cause;
+      if (attempt + 1 >= EXPLORER_MAX_ATTEMPTS) throw lastError;
+      await retryAfterNetworkFailure(setup);
     }
-
-    throwIfAborted(callerSignal);
-    const parsed = responseSchema.safeParse(body);
-    if (!parsed.success) throw error("invalid_response");
-    const data = parsed.data;
-    const ucis = new Set<string>();
-    let white = 0;
-    let draws = 0;
-    let black = 0;
-    for (const move of data.moves) {
-      if (
-        ucis.has(move.uci) ||
-        legalMoves.get(move.uci) !== move.san
-      ) {
-        throw error("invalid_response");
-      }
-      ucis.add(move.uci);
-      white += move.white;
-      draws += move.draws;
-      black += move.black;
-    }
-    if (white > data.white || draws > data.draws || black > data.black) {
-      throw error("invalid_response");
-    }
-    return {
-      db,
-      white: data.white,
-      draws: data.draws,
-      black: data.black,
-      moves: data.moves.map((move) => ({
-        uci: move.uci,
-        san: move.san,
-        white: move.white,
-        draws: move.draws,
-        black: move.black,
-        count: move.white + move.draws + move.black,
-        averageRating: move.averageRating ?? null,
-      })),
-      opening: data.opening ?? null,
-    };
   }
 
   throw lastError;

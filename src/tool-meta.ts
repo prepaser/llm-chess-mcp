@@ -1,4 +1,5 @@
 import type { ToolAnnotations } from "@modelcontextprotocol/server";
+import type { ToolName } from "./tool-names.js";
 
 type ToolMeta = {
   title: string;
@@ -109,4 +110,4 @@ export const TOOL_META = {
       openWorldHint: false,
     },
   },
-} as const satisfies Record<string, ToolMeta>;
+} as const satisfies Record<ToolName, ToolMeta>;

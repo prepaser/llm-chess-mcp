@@ -9,27 +9,12 @@ import type { LichessOpts } from "../../src/intents.js";
 import { buildServer } from "../../src/server.js";
 import type { AppServices } from "../../src/services.js";
 import { TOOL_META } from "../../src/tool-meta.js";
+import { TOOL_NAMES } from "../../src/tool-names.js";
+import type { ToolName } from "../../src/tool-names.js";
 import { TOOL_OUTPUT_SCHEMAS } from "../../src/tool-schemas.js";
 import type { Candidate, Intent } from "../../src/types.js";
 
-const TOOL_NAMES = [
-  "create_game",
-  "delete_game",
-  "game_import_pgn",
-  "game_legal_moves",
-  "game_pgn",
-  "game_play_move",
-  "game_state",
-  "human_move_distribution",
-  "move_candidates",
-  "move_candidates_by_intent",
-  "move_evaluate",
-  "opening_explorer",
-  "position_analyze",
-] as const;
-
 type JsonObject = Record<string, unknown>;
-type ToolName = (typeof TOOL_NAMES)[number];
 type ToolCallResult = Awaited<ReturnType<Client["callTool"]>>;
 
 interface AnalysisCall {
@@ -366,7 +351,7 @@ test("all tools expose contracts and execute with isolated fake services", async
   assert.equal(evaluation.result, "ongoing");
   assert.equal(evaluation.classification, "inaccuracy");
   assert.deepEqual(evaluation.pvSan, ["Nc6"]);
-  assert.equal(context.games.getGame(gameId).revision, 0);
+  assert.equal(context.games.getSnapshot(gameId).revision, 0);
 
   const candidateArgs = {
     game_id: gameId,
@@ -439,10 +424,14 @@ test("all tools expose contracts and execute with isolated fake services", async
   const pgn = await success(context.client, "game_pgn", { game_id: gameId });
   assert.match(String(pgn.pgn), /\be4\b/);
   const imported = await success(context.client, "game_import_pgn", {
-    pgn: pgn.pgn,
+    pgn: String(pgn.pgn).replace("e4", "e4 {king pawn}"),
   });
   assert.equal(imported.game_id, "game-2");
   assert.deepEqual(imported.history, ["e4"]);
+  const roundTrip = await success(context.client, "game_pgn", {
+    game_id: imported.game_id,
+  });
+  assert.match(String(roundTrip.pgn), /e4 \{king pawn\}/);
   const deleted = await success(context.client, "delete_game", {
     game_id: imported.game_id,
   });
@@ -571,6 +560,6 @@ test("move evaluation reports terminal draw reasons without analyzing successors
 
   assert.equal(context.calls.analysis.length - initialAnalysisCalls, 4);
   for (const id of [queenId, insufficientId, fiftyId, repetitionId]) {
-    assert.equal(context.games.getGame(id).revision, 0);
+    assert.equal(context.games.getSnapshot(id).revision, 0);
   }
 });

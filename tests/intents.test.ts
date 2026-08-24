@@ -3,12 +3,11 @@ import test from "node:test";
 import { Chess } from "chess.js";
 import {
   candidateSetFromData,
-  computeCandidates,
   computeMoveSensitivity,
+  createCandidateComputation,
   explorerCandidateData,
   rankByIntent,
 } from "../src/intents.js";
-import { stockfish } from "../src/engines/stockfish.js";
 import type { Candidate, SfLine } from "../src/types.js";
 
 function sfLine(
@@ -93,39 +92,33 @@ test("marks an empty explorer result as no data", () => {
 });
 
 test("rethrows caller cancellation from the Lichess fallback", async () => {
-  const token = process.env.LICHESS_TOKEN;
-  const fetch = globalThis.fetch;
-  const analyze = stockfish.analyze;
   const controller = new AbortController();
   const cause = new Error("caller cancelled");
-  stockfish.analyze = async () => [];
-  process.env.LICHESS_TOKEN = "test-token";
-  globalThis.fetch = async (_input, init) =>
-    await new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+  const { computeCandidates } = createCandidateComputation({
+    analyze: async () => [],
+    humanMoveDistribution: async () => [],
+    explorerEnabled: () => true,
+    openingExplorer: async (_chess, _db, _speeds, _ratings, signal) =>
+      await new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), {
         once: true,
       });
-    });
+      }),
+    explorerFailureReason: () => "upstream",
+  });
 
-  try {
-    const pending = computeCandidates(
-      new Chess("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1"),
-      1500,
-      1,
-      1,
-      1,
-      { db: "lichess", speeds: [], ratings: [] },
-      controller.signal,
-    );
-    controller.abort(cause);
+  const pending = computeCandidates(
+    new Chess("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1"),
+    1500,
+    1,
+    1,
+    1,
+    { db: "lichess", speeds: [], ratings: [] },
+    controller.signal,
+  );
+  controller.abort(cause);
 
-    await assert.rejects(pending, (error: unknown) => error === cause);
-  } finally {
-    stockfish.analyze = analyze;
-    globalThis.fetch = fetch;
-    if (token === undefined) delete process.env.LICHESS_TOKEN;
-    else process.env.LICHESS_TOKEN = token;
-  }
+  await assert.rejects(pending, (error: unknown) => error === cause);
 });
 
 test("merges engine, Maia, and opening data without dropping unique moves", () => {

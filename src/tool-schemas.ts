@@ -1,6 +1,7 @@
 import * as z from "zod/v4";
 import { EXPLORER_ERROR_KINDS } from "./explorer.js";
 import { INTENTS } from "./types.js";
+import type { ToolName } from "./tool-names.js";
 
 const revision = z.number().int().min(0);
 const color = z.enum(["w", "b"]);
@@ -257,4 +258,4 @@ export const TOOL_OUTPUT_SCHEMAS = {
   opening_explorer: OpeningExplorerOutputSchema,
   game_pgn: GamePgnOutputSchema,
   game_import_pgn: GameImportPgnOutputSchema,
-} as const;
+} as const satisfies Record<ToolName, z.ZodType>;

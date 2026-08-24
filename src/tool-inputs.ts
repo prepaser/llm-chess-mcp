@@ -7,6 +7,7 @@ import {
   lichessSpeedSchema,
 } from "./explorer.js";
 import { INTENTS } from "./types.js";
+import type { ToolName } from "./tool-names.js";
 
 const lichessSpeedsSchema = z
   .array(lichessSpeedSchema)
@@ -144,4 +145,4 @@ export const TOOL_INPUT_SCHEMAS = {
   opening_explorer: OpeningExplorerInputSchema,
   game_pgn: GameIdInputSchema,
   game_import_pgn: GameImportPgnInputSchema,
-} as const;
+} as const satisfies Record<ToolName, z.ZodType>;

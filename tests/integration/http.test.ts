@@ -16,6 +16,12 @@ type HttpResult = {
   status: number;
   body: string;
   retryAfter?: string;
+  sessionId?: string;
+};
+
+type ConnectedClient = {
+  client: Client;
+  transport: StreamableHTTPClientTransport;
 };
 
 function fakeServices(
@@ -58,10 +64,12 @@ function httpRequest(
       res.on("data", (chunk: Buffer) => chunks.push(chunk));
       res.on("end", () => {
         const retryAfter = res.headers["retry-after"];
+        const sessionId = res.headers["mcp-session-id"];
         resolve({
           status: res.statusCode ?? 0,
           body: Buffer.concat(chunks).toString(),
           ...(typeof retryAfter === "string" ? { retryAfter } : {}),
+          ...(typeof sessionId === "string" ? { sessionId } : {}),
         });
       });
     });
@@ -184,6 +192,105 @@ async function waitFor(check: () => boolean): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   assert.fail("timed out waiting for condition");
+}
+
+async function connectClient(http: { url: string }, name: string): Promise<ConnectedClient> {
+  const client = new Client({ name, version: "1.0.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(http.url));
+  await client.connect(transport);
+  return { client, transport };
+}
+
+async function createGame(client: Client): Promise<string> {
+  return string(
+    object((await client.callTool({ name: "create_game", arguments: {} })).structuredContent)
+      .game_id,
+  );
+}
+
+function blockingAnalysis(): {
+  started: Promise<void>;
+  analyze: () => Promise<never[]>;
+  release(): void;
+} {
+  let start!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    start = resolve;
+  });
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    started,
+    analyze: async () => {
+      start();
+      await blocked;
+      return [];
+    },
+    release,
+  };
+}
+
+function abortableAnalysis(): {
+  started: Promise<void>;
+  aborted: Promise<void>;
+  analyze: AppServices["analyze"];
+} {
+  let start!: () => void;
+  let abort!: () => void;
+  const started = new Promise<void>((resolve) => {
+    start = resolve;
+  });
+  const aborted = new Promise<void>((resolve) => {
+    abort = resolve;
+  });
+  return {
+    started,
+    aborted,
+    analyze: async (_fen, _depth, _multipv, signal) => {
+      assert.ok(signal);
+      start();
+      return new Promise((_, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => {
+            abort();
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      });
+    },
+  };
+}
+
+function openSse(url: string, sessionId: string): Promise<{ close(): Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const req = request(url, {
+      headers: {
+        accept: "text/event-stream",
+        "mcp-session-id": sessionId,
+        "mcp-protocol-version": "2025-11-25",
+      },
+    });
+    req.once("error", reject);
+    req.once("response", (res) => {
+      if (res.statusCode !== 200) {
+        reject(new Error(`SSE request failed with ${res.statusCode}`));
+        res.resume();
+        return;
+      }
+      resolve({
+        close: () =>
+          new Promise((done) => {
+            res.once("close", done);
+            res.destroy();
+          }),
+      });
+    });
+    req.end();
+  });
 }
 
 test("Streamable HTTP serves an isolated game session", async (t) => {
@@ -343,14 +450,15 @@ test("Streamable HTTP reserves and reclaims bounded MCP sessions", async (t) => 
     { port: 0, maxSessions: 1, sessionIdleTtlMs: 20, sessionSweepIntervalMs: 5 },
     fakeServices(new GameStore()),
   );
-  const client = new Client({ name: "http-session-limit-tests", version: "1.0.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(http.url));
-  t.after(async () => {
-    await client.close();
-    await http.close();
-  });
+  t.after(() => http.close());
 
-  await client.connect(transport);
+  const initialized = await httpRequest(http.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: initializeBody(),
+  });
+  assert.equal(initialized.status, 200);
+  assert.ok(initialized.sessionId);
   assert.equal(http.sessionCount(), 1);
 
   const capped = await httpRequest(http.url, {
@@ -363,9 +471,8 @@ test("Streamable HTTP reserves and reclaims bounded MCP sessions", async (t) => 
   assert.match(capped.body, /MCP session limit reached/);
 
   await waitFor(() => http.sessionCount() === 0);
-  assert.ok(transport.sessionId);
   const expired = await httpRequest(http.url, {
-    headers: { "mcp-session-id": transport.sessionId },
+    headers: { "mcp-session-id": initialized.sessionId },
   });
   assert.equal(expired.status, 404);
 
@@ -394,38 +501,23 @@ test("Streamable HTTP atomically reserves concurrent initializations", async (t)
 });
 
 test("Streamable HTTP rejects excess per-session POSTs", async (t) => {
-  let started!: () => void;
-  let release!: () => void;
-  const startedAnalysis = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const blockedAnalysis = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const analysis = blockingAnalysis();
   const games = new GameStore();
   const http = await serveHttp(
     { port: 0, maxConcurrentPosts: 2, maxConcurrentPostsPerSession: 1 },
-    fakeServices(games, {
-      analyze: async () => {
-        started();
-        await blockedAnalysis;
-        return [];
-      },
-    }),
+    fakeServices(games, { analyze: analysis.analyze }),
   );
-  const firstClient = new Client({ name: "http-post-limit-first", version: "1.0.0" });
-  const firstTransport = new StreamableHTTPClientTransport(new URL(http.url));
+  const { client: firstClient, transport: firstTransport } = await connectClient(
+    http,
+    "http-post-limit-first",
+  );
   t.after(async () => {
-    release();
+    analysis.release();
     await firstClient.close();
     await http.close();
   });
 
-  await firstClient.connect(firstTransport);
-  const gameId = string(
-    object((await firstClient.callTool({ name: "create_game", arguments: {} })).structuredContent)
-      .game_id,
-  );
+  const gameId = await createGame(firstClient);
   assert.ok(firstTransport.sessionId);
   const headers = {
     ...INIT_HEADERS,
@@ -437,7 +529,7 @@ test("Streamable HTTP rejects excess per-session POSTs", async (t) => {
     headers,
     body: toolCallBody("first", gameId),
   });
-  await startedAnalysis;
+  await analysis.started;
 
   const capped = await httpRequest(http.url, {
     method: "POST",
@@ -446,47 +538,33 @@ test("Streamable HTTP rejects excess per-session POSTs", async (t) => {
   });
   assert.equal(capped.status, 429);
   assert.equal(capped.retryAfter, "1");
-  release();
+  analysis.release();
   assert.equal((await first).status, 200);
 });
 
 test("Streamable HTTP rejects excess global POSTs", async (t) => {
-  let started!: () => void;
-  let release!: () => void;
-  const startedAnalysis = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const blockedAnalysis = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const analysis = blockingAnalysis();
   const games = new GameStore();
   const http = await serveHttp(
     { port: 0, maxConcurrentPosts: 1, maxConcurrentPostsPerSession: 1 },
-    fakeServices(games, {
-      analyze: async () => {
-        started();
-        await blockedAnalysis;
-        return [];
-      },
-    }),
+    fakeServices(games, { analyze: analysis.analyze }),
   );
-  const firstClient = new Client({ name: "http-global-limit-first", version: "1.0.0" });
-  const secondClient = new Client({ name: "http-global-limit-second", version: "1.0.0" });
-  const firstTransport = new StreamableHTTPClientTransport(new URL(http.url));
-  const secondTransport = new StreamableHTTPClientTransport(new URL(http.url));
+  const { client: firstClient, transport: firstTransport } = await connectClient(
+    http,
+    "http-global-limit-first",
+  );
+  const { client: secondClient, transport: secondTransport } = await connectClient(
+    http,
+    "http-global-limit-second",
+  );
   t.after(async () => {
-    release();
+    analysis.release();
     await firstClient.close();
     await secondClient.close();
     await http.close();
   });
 
-  await firstClient.connect(firstTransport);
-  await secondClient.connect(secondTransport);
-  const gameId = string(
-    object((await firstClient.callTool({ name: "create_game", arguments: {} })).structuredContent)
-      .game_id,
-  );
+  const gameId = await createGame(firstClient);
   assert.ok(firstTransport.sessionId);
   assert.ok(secondTransport.sessionId);
   const first = httpRequest(http.url, {
@@ -498,7 +576,7 @@ test("Streamable HTTP rejects excess global POSTs", async (t) => {
     },
     body: toolCallBody("first", gameId),
   });
-  await startedAnalysis;
+  await analysis.started;
 
   const capped = await httpRequest(http.url, {
     method: "POST",
@@ -511,19 +589,12 @@ test("Streamable HTTP rejects excess global POSTs", async (t) => {
   });
   assert.equal(capped.status, 503);
   assert.equal(capped.retryAfter, "1");
-  release();
+  analysis.release();
   assert.equal((await first).status, 200);
 });
 
 test("Streamable HTTP retains work capacity after a raw disconnect", async (t) => {
-  let started!: () => void;
-  let release!: () => void;
-  const startedAnalysis = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const blockedAnalysis = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const analysis = blockingAnalysis();
   let calls = 0;
   const games = new GameStore();
   const http = await serveHttp(
@@ -532,30 +603,25 @@ test("Streamable HTTP retains work capacity after a raw disconnect", async (t) =
       analyze: async () => {
         calls += 1;
         if (calls === 1) {
-          started();
-          await blockedAnalysis;
+          return analysis.analyze();
         }
         return [];
       },
     }),
   );
-  const firstClient = new Client({ name: "http-disconnect-first", version: "1.0.0" });
-  const secondClient = new Client({ name: "http-disconnect-second", version: "1.0.0" });
-  const firstTransport = new StreamableHTTPClientTransport(new URL(http.url));
-  const secondTransport = new StreamableHTTPClientTransport(new URL(http.url));
+  const { client: firstClient, transport: firstTransport } = await connectClient(
+    http,
+    "http-disconnect-first",
+  );
+  const { client: secondClient } = await connectClient(http, "http-disconnect-second");
   t.after(async () => {
-    release();
+    analysis.release();
     await firstClient.close();
     await secondClient.close();
     await http.close();
   });
 
-  await firstClient.connect(firstTransport);
-  await secondClient.connect(secondTransport);
-  const gameId = string(
-    object((await firstClient.callTool({ name: "create_game", arguments: {} })).structuredContent)
-      .game_id,
-  );
+  const gameId = await createGame(firstClient);
   assert.ok(firstTransport.sessionId);
   const abandoned = abandonedPost(
     http.url,
@@ -566,7 +632,7 @@ test("Streamable HTTP retains work capacity after a raw disconnect", async (t) =
     },
     toolCallBody("abandoned", gameId),
   );
-  await startedAnalysis;
+  await analysis.started;
   abandoned.destroy();
   await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -578,7 +644,7 @@ test("Streamable HTTP retains work capacity after a raw disconnect", async (t) =
   assert.equal(object(object(capped.structuredContent).error).code, "SERVER_BUSY");
   assert.equal(calls, 1);
 
-  release();
+  analysis.release();
   const admitted = await secondClient.callTool({
     name: "position_analyze",
     arguments: { game_id: gameId, analysis_level: "fast" },
@@ -588,46 +654,16 @@ test("Streamable HTTP retains work capacity after a raw disconnect", async (t) =
 });
 
 test("Streamable HTTP propagates MCP cancellation to active tools", async (t) => {
-  let started!: () => void;
-  let aborted!: () => void;
-  const analysisStarted = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const analysisAborted = new Promise<void>((resolve) => {
-    aborted = resolve;
-  });
+  const analysis = abortableAnalysis();
   const games = new GameStore();
-  const http = await serveHttp(
-    { port: 0 },
-    fakeServices(games, {
-      analyze: async (_fen, _depth, _multipv, signal) => {
-        assert.ok(signal);
-        started();
-        return new Promise((_, reject) => {
-          signal.addEventListener(
-            "abort",
-            () => {
-              aborted();
-              reject(signal.reason);
-            },
-            { once: true },
-          );
-        });
-      },
-    }),
-  );
-  const client = new Client({ name: "http-cancel-tests", version: "1.0.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(http.url));
+  const http = await serveHttp({ port: 0 }, fakeServices(games, { analyze: analysis.analyze }));
+  const { client } = await connectClient(http, "http-cancel-tests");
   t.after(async () => {
     await client.close();
     await http.close();
   });
 
-  await client.connect(transport);
-  const gameId = string(
-    object((await client.callTool({ name: "create_game", arguments: {} })).structuredContent)
-      .game_id,
-  );
+  const gameId = await createGame(client);
   const controller = new AbortController();
   const call = client.callTool(
     {
@@ -639,54 +675,24 @@ test("Streamable HTTP propagates MCP cancellation to active tools", async (t) =>
     () => null,
     (error: unknown) => error,
   );
-  await analysisStarted;
+  await analysis.started;
   controller.abort(new Error("cancelled by test"));
 
-  await analysisAborted;
+  await analysis.aborted;
   assert.match(String(await call), /cancelled by test/);
 });
 
 test("Streamable HTTP session deletion cancels active tools", async (t) => {
-  let started!: () => void;
-  let aborted!: () => void;
-  const analysisStarted = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const analysisAborted = new Promise<void>((resolve) => {
-    aborted = resolve;
-  });
+  const analysis = abortableAnalysis();
   const games = new GameStore();
-  const http = await serveHttp(
-    { port: 0 },
-    fakeServices(games, {
-      analyze: async (_fen, _depth, _multipv, signal) => {
-        assert.ok(signal);
-        started();
-        return new Promise((_, reject) => {
-          signal.addEventListener(
-            "abort",
-            () => {
-              aborted();
-              reject(signal.reason);
-            },
-            { once: true },
-          );
-        });
-      },
-    }),
-  );
-  const client = new Client({ name: "http-delete-cancel-tests", version: "1.0.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(http.url));
+  const http = await serveHttp({ port: 0 }, fakeServices(games, { analyze: analysis.analyze }));
+  const { client, transport } = await connectClient(http, "http-delete-cancel-tests");
   t.after(async () => {
     await client.close();
     await http.close();
   });
 
-  await client.connect(transport);
-  const gameId = string(
-    object((await client.callTool({ name: "create_game", arguments: {} })).structuredContent)
-      .game_id,
-  );
+  const gameId = await createGame(client);
   const call = client
     .callTool({
       name: "position_analyze",
@@ -696,7 +702,7 @@ test("Streamable HTTP session deletion cancels active tools", async (t) => {
       (result) => result,
       (error: unknown) => error,
   );
-  await analysisStarted;
+  await analysis.started;
   assert.ok(transport.sessionId);
   const terminated = await Promise.race([
     httpRequest(http.url, {
@@ -713,7 +719,7 @@ test("Streamable HTTP session deletion cancels active tools", async (t) => {
 
   assert.equal(terminated.status, 200);
   await Promise.race([
-    analysisAborted,
+    analysis.aborted,
     new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error("active tool was not cancelled")), 1_000),
     ),
@@ -728,92 +734,67 @@ test("Streamable HTTP session deletion cancels active tools", async (t) => {
 });
 
 test("Streamable HTTP does not reap a session during an active POST", async (t) => {
-  let started!: () => void;
-  let release!: () => void;
-  const analysisStarted = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const blockedAnalysis = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  const analysis = blockingAnalysis();
   const games = new GameStore();
   const http = await serveHttp(
     { port: 0, sessionIdleTtlMs: 20, sessionSweepIntervalMs: 5 },
-    fakeServices(games, {
-      analyze: async () => {
-        started();
-        await blockedAnalysis;
-        return [];
-      },
-    }),
+    fakeServices(games, { analyze: analysis.analyze }),
   );
-  const client = new Client({ name: "http-active-ttl-tests", version: "1.0.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(http.url));
+  const { client } = await connectClient(http, "http-active-ttl-tests");
   t.after(async () => {
-    release();
+    analysis.release();
     await client.close();
     await http.close();
   });
 
-  await client.connect(transport);
-  const gameId = string(
-    object((await client.callTool({ name: "create_game", arguments: {} })).structuredContent)
-      .game_id,
-  );
+  const gameId = await createGame(client);
   const call = client.callTool({
     name: "position_analyze",
     arguments: { game_id: gameId, analysis_level: "fast" },
   });
-  await analysisStarted;
+  await analysis.started;
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(http.sessionCount(), 1);
 
-  release();
+  analysis.release();
   await call;
+  await client.close();
+  await waitFor(() => http.sessionCount() === 0);
+});
+
+test("Streamable HTTP does not reap a session during an active GET stream", async (t) => {
+  const http = await serveHttp(
+    { port: 0, sessionIdleTtlMs: 20, sessionSweepIntervalMs: 5 },
+    fakeServices(new GameStore()),
+  );
+  t.after(() => http.close());
+
+  const initialized = await httpRequest(http.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: initializeBody(),
+  });
+  assert.equal(initialized.status, 200);
+  assert.ok(initialized.sessionId);
+  const stream = await openSse(http.url, initialized.sessionId);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(http.sessionCount(), 1);
+
+  await stream.close();
   await waitFor(() => http.sessionCount() === 0);
 });
 
 test("Streamable HTTP shutdown cancels active tools", async (t) => {
-  let started!: () => void;
-  let aborted!: () => void;
-  const analysisStarted = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const analysisAborted = new Promise<void>((resolve) => {
-    aborted = resolve;
-  });
+  const analysis = abortableAnalysis();
   const games = new GameStore();
-  const http = await serveHttp(
-    { port: 0 },
-    fakeServices(games, {
-      analyze: async (_fen, _depth, _multipv, signal) => {
-        assert.ok(signal);
-        started();
-        return new Promise((_, reject) => {
-          signal.addEventListener(
-            "abort",
-            () => {
-              aborted();
-              reject(signal.reason);
-            },
-            { once: true },
-          );
-        });
-      },
-    }),
-  );
-  const client = new Client({ name: "http-shutdown-cancel-tests", version: "1.0.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(http.url));
+  const http = await serveHttp({ port: 0 }, fakeServices(games, { analyze: analysis.analyze }));
+  const { client } = await connectClient(http, "http-shutdown-cancel-tests");
   t.after(async () => {
     await client.close();
     await http.close();
   });
 
-  await client.connect(transport);
-  const gameId = string(
-    object((await client.callTool({ name: "create_game", arguments: {} })).structuredContent)
-      .game_id,
-  );
+  const gameId = await createGame(client);
   const call = client
     .callTool({
       name: "position_analyze",
@@ -823,10 +804,10 @@ test("Streamable HTTP shutdown cancels active tools", async (t) => {
       (result) => result,
       (error: unknown) => error,
     );
-  await analysisStarted;
+  await analysis.started;
   const closing = http.close();
 
-  await analysisAborted;
+  await analysis.aborted;
   await closing;
   const outcome = await call;
   if (outcome && typeof outcome === "object" && "isError" in outcome) {

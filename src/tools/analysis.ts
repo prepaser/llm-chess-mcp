@@ -30,9 +30,14 @@ type MoveEvaluation = z.output<
   typeof TOOL_OUTPUT_SCHEMAS.move_evaluate
 >["results"][number];
 
+type AnalysisServices = Pick<
+  AppServices,
+  "games" | "analyze" | "humanMoveDistribution"
+>;
+
 export function registerAnalysisTools(
   server: McpServer,
-  services: AppServices,
+  services: AnalysisServices,
 ): void {
   server.registerTool(
     "position_analyze",
@@ -44,8 +49,7 @@ export function registerAnalysisTools(
     safeHandler(
       TOOL_INPUT_SCHEMAS.position_analyze,
       async ({ game_id, analysis_level, depth, multipv }, signal) => {
-        const { chess: live, revision } = services.games.getGame(game_id);
-        const chess = snapshotChess(live);
+        const { chess, revision } = services.games.getSnapshot(game_id);
         const preset = ANALYSIS_PRESETS[analysis_level];
         const d = depth ?? preset.depth;
         const mpv = multipv ?? preset.multipv;
@@ -83,8 +87,7 @@ export function registerAnalysisTools(
     safeHandler(
       TOOL_INPUT_SCHEMAS.human_move_distribution,
       async ({ game_id, elo, oppo_elo, top_n }, signal) => {
-        const { chess: live, revision } = services.games.getGame(game_id);
-        const chess = snapshotChess(live);
+        const { chess, revision } = services.games.getSnapshot(game_id);
         const opponentElo = oppo_elo ?? elo;
         const moves = await services.humanMoveDistribution(
           chess,
@@ -118,8 +121,7 @@ export function registerAnalysisTools(
     safeHandler(
       TOOL_INPUT_SCHEMAS.move_evaluate,
       async ({ game_id, move, depth }, signal) => {
-        const { chess: live, revision } = services.games.getGame(game_id);
-        const chess = snapshotChess(live);
+        const { chess, revision } = services.games.getSnapshot(game_id);
         const moves = Array.isArray(move) ? move : [move];
         const beforeLines = await services.analyze(chess.fen(), depth, 1, signal);
         signal.throwIfAborted();

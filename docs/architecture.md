@@ -112,10 +112,10 @@ a 2 MiB byte cap, initialization reserves one of 64 session slots atomically,
 and only 16 POSTs process-wide or two per session may run concurrently. The same
 limits independently bound downstream compute and network jobs. A job retains
 its slot after the HTTP response or socket closes and releases it only when the
-service promise settles. Idle sessions expire after 30 minutes without deleting
-their process-shared games. GET SSE streams do not consume POST permits and are
-closed when their session expires. Header, upload, connection, socket, and
-keep-alive limits are enforced by the Node listener.
+service promise settles. Sessions with no active request expire after 30 minutes
+without deleting their process-shared games. Open GET SSE streams keep their
+session active without consuming POST permits. Header, upload, connection,
+socket, and keep-alive limits are enforced by the Node listener.
 
 The server has no MCP OAuth endpoints, OAuth discovery metadata, bearer-token
 validation, or browser CORS support. A reverse proxy may implement its own

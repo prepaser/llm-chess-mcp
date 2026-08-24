@@ -4,7 +4,6 @@ import { Chess } from "chess.js";
 import type { Candidate } from "../src/types.js";
 import { ChessError } from "../src/errors.js";
 import {
-  buildServer,
   drawResult,
   MAX_EVALUATED_MOVES,
   MAX_PGN_BYTES,
@@ -13,6 +12,7 @@ import {
   snapshotChess,
 } from "../src/index.js";
 import { rankByIntent } from "../src/intents.js";
+import { TOOL_INPUT_SCHEMAS } from "../src/tool-inputs.js";
 
 function candidate(uci: string, moverCp: number, maia3Prob: number): Candidate {
   return {
@@ -87,62 +87,21 @@ test("PGN import enforces UTF-8 byte and ply caps", () => {
   );
 });
 
-test("move arrays are bounded and tool failures are marked as errors", async () => {
-  type Tool = {
-    inputSchema: { safeParse(value: unknown): { success: boolean } };
-    outputSchema: { safeParse(value: unknown): { success: boolean } };
-    handler(args: unknown): Promise<{
-      content: Array<{ type: string; text: string }>;
-      structuredContent: Record<string, unknown>;
-      isError?: boolean;
-    }>;
-  };
-  const server = buildServer() as unknown as {
-    _registeredTools: Record<string, Tool>;
-  };
-  const tools = server._registeredTools;
-  const moveEvaluate = tools.move_evaluate;
-  const gameState = tools.game_state;
-  assert.ok(moveEvaluate);
-  assert.ok(gameState);
+test("move arrays are bounded", () => {
   const tooMany = Array.from({ length: MAX_EVALUATED_MOVES + 1 }, () => "e4");
 
   assert.equal(
-    moveEvaluate.inputSchema.safeParse({
+    TOOL_INPUT_SCHEMAS.move_evaluate.safeParse({
       game_id: "game",
       move: tooMany,
     }).success,
     false,
   );
-  const failure = await gameState.handler({ game_id: "missing" });
-  assert.equal(failure.isError, true);
-  assert.deepEqual(failure.structuredContent, {
-    error: {
-      code: "GAME_NOT_FOUND",
-      message: "game not found: missing",
-    },
-  });
-  assert.equal(failure.content[0]?.text.startsWith("GAME_NOT_FOUND:"), true);
 });
 
-test("all tools advertise output schemas and Lichess filters are strict", () => {
-  type Tool = {
-    inputSchema: { safeParse(value: unknown): { success: boolean } };
-    outputSchema?: unknown;
-  };
-  const server = buildServer() as unknown as {
-    _registeredTools: Record<string, Tool>;
-  };
-  const tools = server._registeredTools;
-  const openingExplorer = tools.opening_explorer;
-  const moveCandidates = tools.move_candidates;
-  assert.ok(openingExplorer);
-  assert.ok(moveCandidates);
-
-  assert.equal(Object.keys(tools).length, 13);
-  assert.equal(Object.values(tools).every((tool) => tool.outputSchema), true);
+test("Lichess filters are strict", () => {
   assert.equal(
-    openingExplorer.inputSchema.safeParse({
+    TOOL_INPUT_SCHEMAS.opening_explorer.safeParse({
       game_id: "game",
       db: "lichess",
       speeds: ["ultraBullet", "rapid"],
@@ -151,7 +110,7 @@ test("all tools advertise output schemas and Lichess filters are strict", () => 
     true,
   );
   assert.equal(
-    openingExplorer.inputSchema.safeParse({
+    TOOL_INPUT_SCHEMAS.opening_explorer.safeParse({
       game_id: "game",
       db: "masters",
       speeds: ["rapid"],
@@ -159,7 +118,7 @@ test("all tools advertise output schemas and Lichess filters are strict", () => 
     false,
   );
   assert.equal(
-    moveCandidates.inputSchema.safeParse({
+    TOOL_INPUT_SCHEMAS.move_candidates.safeParse({
       game_id: "game",
       lichess_speeds: ["blitz", "blitz"],
     }).success,
