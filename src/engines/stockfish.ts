@@ -61,6 +61,11 @@ type AnalysisRequest = {
   reject: (error: Error) => void;
 };
 
+type QueuedAnalysis = {
+  request: AnalysisRequest;
+  run: () => Promise<void>;
+};
+
 const DEFAULT_FLAVOR: StockfishFlavor = "lite-single";
 const FLAVORS = new Set<string>(STOCKFISH_FLAVORS);
 const DEFAULT_TIMEOUTS: Timeouts = {
@@ -109,7 +114,9 @@ function parseWdl(line: string): [number, number, number] | null {
 
 export class Stockfish {
   private session: Session | null = null;
-  private queue: Promise<void> = Promise.resolve();
+  private queue: QueuedAnalysis[] = [];
+  private queueRunning = false;
+  private queueScheduled = false;
   private queued = 0;
   private quitGeneration = 0;
   private readonly terminated = new WeakSet<StockfishEngine>();
@@ -267,18 +274,44 @@ export class Stockfish {
     request.abortListener = null;
   }
 
+  private scheduleQueue(): void {
+    if (this.queueRunning || this.queueScheduled) return;
+    this.queueScheduled = true;
+    queueMicrotask(() => {
+      this.queueScheduled = false;
+      if (this.queueRunning) return;
+      const next = this.queue.shift();
+      if (!next) return;
+      if (next.request.cancelled) {
+        this.release(next.request);
+        this.scheduleQueue();
+        return;
+      }
+
+      this.queueRunning = true;
+      void next.run().finally(() => {
+        this.release(next.request);
+        this.queueRunning = false;
+        this.scheduleQueue();
+      });
+    });
+  }
+
+  private removeQueued(request: AnalysisRequest): boolean {
+    const index = this.queue.findIndex((item) => item.request === request);
+    if (index < 0) return false;
+    this.queue.splice(index, 1);
+    return true;
+  }
+
   private enqueue(request: AnalysisRequest, fn: () => Promise<void>): boolean {
     if (this.queued >= this.maxQueue) {
       return false;
     }
 
     this.queued++;
-    const run = this.queue.then(fn);
-    this.queue = run.then(
-      () => {},
-      () => {},
-    );
-    void run.finally(() => this.release(request));
+    this.queue.push({ request, run: fn });
+    this.scheduleQueue();
     return true;
   }
 
@@ -315,10 +348,16 @@ export class Stockfish {
       request.cancelled = true;
       request.cancellation = error;
       if (request.started) {
-        request.stop?.(error);
+        if (request.stop) request.stop(error);
+        else {
+          request.reject(error);
+          this.release(request);
+        }
       } else {
+        this.removeQueued(request);
         request.reject(error);
         this.release(request);
+        this.scheduleQueue();
       }
     };
     request.abortListener = cancel;

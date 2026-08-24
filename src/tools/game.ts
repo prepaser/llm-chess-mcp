@@ -129,7 +129,7 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
           piece: move.piece,
           captured: move.captured ?? null,
           promotion: move.promotion ?? null,
-          isCapture: move.flags.includes("c"),
+          isCapture: move.isCapture() || move.isEnPassant(),
           isCheck: move.san.includes("+") || move.san.includes("#"),
         });
       }

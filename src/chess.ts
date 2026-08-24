@@ -48,6 +48,32 @@ export function drawResult(chess: Chess): DrawResult | null {
   return "draw";
 }
 
+function declaredPgnResults(pgn: string): string[] {
+  const headerResults = [...pgn.matchAll(/^\s*\[Result\s+"([^"]*)"\s*\]\s*$/gm)].map(
+    (match) => match[1] ?? "",
+  );
+  const movetext = pgn
+    .replace(/^\s*\[.*\]\s*$/gm, "")
+    .replace(/\{[^}]*\}/gs, "")
+    .replace(/;[^\r\n]*/g, "");
+  const markers = [
+    ...movetext.matchAll(/(?:^|\s)(1-0|0-1|1\/2-1\/2|\*)(?=\s|$)/g),
+  ].map((match) => match[1] ?? "");
+  return [...headerResults, ...markers];
+}
+
+function validateCheckmateResult(chess: Chess, pgn: string): void {
+  if (!chess.isCheckmate()) return;
+
+  const expected = chess.turn() === "w" ? "0-1" : "1-0";
+  if (declaredPgnResults(pgn).some((result) => result !== expected)) {
+    throw new ChessError(
+      "INVALID_PGN",
+      `checkmate result must be ${expected}`,
+    );
+  }
+}
+
 export function parseImportedPgn(pgn: string): Chess {
   if (Buffer.byteLength(pgn, "utf8") > MAX_PGN_BYTES) {
     throw new ChessError(
@@ -69,6 +95,7 @@ export function parseImportedPgn(pgn: string): Chess {
       `PGN exceeds the ${MAX_PGN_PLIES}-ply limit`,
     );
   }
+  validateCheckmateResult(chess, pgn);
   return chess;
 }
 

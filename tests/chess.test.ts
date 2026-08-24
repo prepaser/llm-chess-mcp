@@ -3,6 +3,7 @@ import test from "node:test";
 import { Chess } from "chess.js";
 import {
   drawResult,
+  parseImportedPgn,
   parseMove,
   playParsedMove,
   pvToSan,
@@ -123,4 +124,36 @@ test("pvToSan converts legal UCI prefixes without mutating the position", () => 
 
 test("drawResult returns null for non-draw positions", () => {
   assert.equal(drawResult(new Chess()), null);
+});
+
+test("parseImportedPgn rejects checkmate results that contradict the winner", () => {
+  const moves = "1. f3 e5 2. g4 Qh4#";
+
+  for (const pgn of [
+    `${moves} 1-0`,
+    `[Result "1-0"]\n\n${moves} 0-1`,
+    `${moves} 1-0 {trailing comment}`,
+    `${moves} *`,
+  ]) {
+    assert.throws(
+      () => parseImportedPgn(pgn),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+
+  assert.doesNotThrow(() => parseImportedPgn(`${moves} 0-1`));
+  assert.doesNotThrow(() => parseImportedPgn(moves));
+});
+
+test("parseImportedPgn permits declared results before board termination", () => {
+  assert.doesNotThrow(() =>
+    parseImportedPgn(
+      '[Termination "White resigned"]\n[Result "0-1"]\n\n1. e4 e5 0-1',
+    ),
+  );
+  assert.doesNotThrow(() =>
+    parseImportedPgn(
+      '[Termination "Black lost on time"]\n[Result "1-0"]\n\n1. e4 e5 1-0',
+    ),
+  );
 });

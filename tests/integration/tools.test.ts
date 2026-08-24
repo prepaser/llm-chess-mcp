@@ -440,6 +440,42 @@ test("all tools expose contracts and execute with isolated fake services", async
   assert.equal(context.calls.quit, 0);
 });
 
+test("game_legal_moves marks en passant as a capture", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    await context.client.close();
+    await context.server.close();
+  });
+
+  const created = await success(context.client, "create_game", {});
+  const gameId = String(created.game_id);
+  for (const [revision, move] of ["e4", "a6", "e5", "d5"].entries()) {
+    await success(context.client, "game_play_move", {
+      game_id: gameId,
+      move,
+      expected_revision: revision,
+    });
+  }
+
+  const legal = await success(context.client, "game_legal_moves", {
+    game_id: gameId,
+  });
+  const enPassant = array(legal.moves)
+    .map(object)
+    .find((move) => move.uci === "e5d6");
+  assert.deepEqual(enPassant, {
+    san: "exd6",
+    uci: "e5d6",
+    from: "e5",
+    to: "d6",
+    piece: "p",
+    captured: "p",
+    promotion: null,
+    isCapture: true,
+    isCheck: false,
+  });
+});
+
 test("handler failures retain structured error envelopes", async (t) => {
   const context = await fixture();
   t.after(async () => {

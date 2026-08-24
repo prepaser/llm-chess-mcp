@@ -144,6 +144,7 @@ function waitForConnectionClose(url: string, payload: string, label: string): Pr
       if (!connected) finish(error);
     });
     socket.once("close", () => finish());
+    socket.resume();
   });
 }
 
@@ -429,7 +430,7 @@ test("Streamable HTTP validates resource limits before listening", async () => {
   await independentTimeouts.close();
 });
 
-test("Streamable HTTP closes owned default services", async (t) => {
+test("Streamable HTTP closes shared default services after the last server", async (t) => {
   const quit = defaultAppServices.quit;
   let calls = 0;
   defaultAppServices.quit = async () => {
@@ -439,9 +440,25 @@ test("Streamable HTTP closes owned default services", async (t) => {
     defaultAppServices.quit = quit;
   });
 
-  const http = await serveHttp({ port: 0 });
-  await http.close();
-  await http.close();
+  const first = await serveHttp({ port: 0 });
+  const startingSecond = serveHttp({ port: 0 });
+  await first.close();
+  const second = await startingSecond;
+  t.after(async () => {
+    await first.close();
+    await second.close();
+  });
+
+  assert.equal(calls, 0);
+
+  const initialized = await httpRequest(second.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: initializeBody(),
+  });
+  assert.equal(initialized.status, 200);
+
+  await second.close();
   assert.equal(calls, 1);
 });
 
@@ -537,6 +554,68 @@ test("Streamable HTTP closes slow header and body uploads", async (t) => {
     ].join("\r\n"),
     "slow body",
   );
+});
+
+test("Streamable HTTP returns JSON-RPC 408 before closing a timed out body", async (t) => {
+  const http = await serveHttp(
+    { port: 0, bodyTimeoutMs: 50, socketTimeoutMs: 1_000 },
+    fakeServices(new GameStore()),
+  );
+  t.after(() => http.close());
+
+  const response = await slowRejectedRequest(http.url, ["Host: 127.0.0.1"], "body timeout");
+  assert.match(response, /^HTTP\/1\.1 408 /);
+  assert.match(response, /connection: close/i);
+  assert.match(response, /\"jsonrpc\":\"2\.0\"/);
+  assert.match(response, /request body timed out/);
+});
+
+test("Streamable HTTP accepts bracketed IPv6 bind hosts", async (t) => {
+  const loopback = await serveHttp({ host: "[::1]", port: 0 }, fakeServices(new GameStore()));
+  const mapped = await serveHttp(
+    { host: "[::ffff:127.0.0.1]", port: 0 },
+    fakeServices(new GameStore()),
+  );
+  const wildcard = await serveHttp(
+    { host: "[::]", port: 0, allowedHosts: ["[::]"] },
+    fakeServices(new GameStore()),
+  );
+  t.after(async () => {
+    await loopback.close();
+    await mapped.close();
+    await wildcard.close();
+  });
+
+  assert.equal(loopback.host, "[::1]");
+  assert.match(loopback.url, /^http:\/\/\[::1\]:\d+\/mcp$/);
+  assert.equal(
+    (await httpRequest(loopback.url, { headers: { host: "[::1]" } })).status,
+    400,
+  );
+
+  assert.match(mapped.url, /^http:\/\/\[::ffff:127\.0\.0\.1\]:\d+\/mcp$/);
+  assert.equal((await httpRequest(mapped.url)).status, 400);
+
+  assert.equal(wildcard.host, "[::]");
+  assert.match(wildcard.url, /^http:\/\/\[::\]:\d+\/mcp$/);
+  assert.equal(
+    (await httpRequest(wildcard.url, { headers: { host: "[::]" } })).status,
+    400,
+  );
+});
+
+test("Streamable HTTP compares allowed hostnames case-insensitively", async (t) => {
+  const http = await serveHttp(
+    { port: 0, allowedHosts: ["EXAMPLE.COM"] },
+    fakeServices(new GameStore()),
+  );
+  t.after(() => http.close());
+
+  const response = await httpRequest(http.url, {
+    headers: { host: "example.com", origin: "https://EXAMPLE.COM" },
+  });
+  assert.equal(response.status, 400);
+  assert.match(response.body, /MCP session initialization requires POST/);
 });
 
 test("Streamable HTTP prefers bodyTimeoutMs over its legacy alias", async (t) => {
@@ -860,7 +939,7 @@ test("Streamable HTTP does not reap a session during an active POST", async (t) 
   const analysis = blockingAnalysis();
   const games = new GameStore();
   const http = await serveHttp(
-    { port: 0, sessionIdleTtlMs: 20, sessionSweepIntervalMs: 5 },
+    { port: 0, sessionIdleTtlMs: 200, sessionSweepIntervalMs: 10 },
     fakeServices(games, { analyze: analysis.analyze }),
   );
   const { client } = await connectClient(http, "http-active-ttl-tests");
@@ -876,18 +955,19 @@ test("Streamable HTTP does not reap a session during an active POST", async (t) 
     arguments: { game_id: gameId, analysis_level: "fast" },
   });
   await analysis.started;
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await new Promise((resolve) => setTimeout(resolve, 250));
   assert.equal(http.sessionCount(), 1);
 
   analysis.release();
   await call;
   await client.close();
+  await new Promise((resolve) => setTimeout(resolve, 250));
   await waitFor(() => http.sessionCount() === 0);
 });
 
 test("Streamable HTTP does not reap a session during an active GET stream", async (t) => {
   const http = await serveHttp(
-    { port: 0, sessionIdleTtlMs: 20, sessionSweepIntervalMs: 5 },
+    { port: 0, sessionIdleTtlMs: 200, sessionSweepIntervalMs: 10 },
     fakeServices(new GameStore()),
   );
   t.after(() => http.close());
@@ -900,10 +980,11 @@ test("Streamable HTTP does not reap a session during an active GET stream", asyn
   assert.equal(initialized.status, 200);
   assert.ok(initialized.sessionId);
   const stream = await openSse(http.url, initialized.sessionId);
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await new Promise((resolve) => setTimeout(resolve, 250));
   assert.equal(http.sessionCount(), 1);
 
   await stream.close();
+  await new Promise((resolve) => setTimeout(resolve, 250));
   await waitFor(() => http.sessionCount() === 0);
 });
 

@@ -105,6 +105,7 @@ async function verifyPackageApi(install) {
   const packageRoot = join(install, "node_modules", "llm-chess-mcp");
   await access(join(packageRoot, "dist", "index.d.ts"), constants.F_OK);
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+  assert.equal(manifest.engines?.node, ">=20.3.0");
   assert.equal(manifest.main, "./dist/index.js");
   assert.equal(manifest.types, "./dist/index.d.ts");
   assert.deepEqual(manifest.exports, {

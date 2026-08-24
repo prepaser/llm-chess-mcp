@@ -23,7 +23,7 @@ provided separately.
 
 ## Install
 
-Requires Node.js 20 or newer.
+Requires Node.js 20.3 or newer.
 
 No install needed — run it directly with `npx`:
 

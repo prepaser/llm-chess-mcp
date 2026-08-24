@@ -271,6 +271,128 @@ test("queued abort releases capacity and skips its UCI work", async () => {
   assert.equal(current.commands.includes("position fen cancelled"), false);
 });
 
+test("cancelled queued requests are removed instead of accumulating behind active work", async () => {
+  let analysisStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    analysisStarted = resolve;
+  });
+  const current = engine((current, command) => {
+    if (command === "uci") {
+      queueMicrotask(() => current.listener?.("uciok"));
+    } else if (command === "isready") {
+      queueMicrotask(() => current.listener?.("readyok"));
+    } else if (command.startsWith("go depth ")) {
+      analysisStarted();
+    }
+  });
+  const stockfish = new Stockfish({
+    init: initializer([current]),
+    maxQueue: 2,
+    timeouts: { init: 50, handshake: 50, analyze: 100 },
+  });
+  const active = stockfish.analyze("active", 1, 1);
+  await started;
+
+  for (let index = 0; index < 32; index++) {
+    const controller = new AbortController();
+    const cancelled = stockfish.analyze(
+      `cancelled-${index}`,
+      1,
+      1,
+      controller.signal,
+    );
+    controller.abort();
+    await assert.rejects(cancelled, { name: "AbortError" });
+  }
+
+  const queued = stockfish.analyze("queued", 1, 1);
+  await assert.rejects(stockfish.analyze("overflow", 1, 1), /queue full/);
+  assert.equal(
+    (stockfish as unknown as { queue: unknown[] }).queue.length,
+    1,
+  );
+  assert.equal(
+    current.commands.some((command) => command.startsWith("position fen cancelled-")),
+    false,
+  );
+
+  await stockfish.quit();
+  await assert.rejects(active, /stockfish quit/);
+  await assert.rejects(queued, /request cancelled/);
+});
+
+test("abort during cold initialization releases capacity without resetting the session", async () => {
+  let initialized!: () => void;
+  let initializationStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    initializationStarted = resolve;
+  });
+  let initCalls = 0;
+  const current = respondingEngine(true);
+  const stockfish = new Stockfish({
+    init: (_flavor, callback) => {
+      initCalls++;
+      initialized = () => callback(null, current);
+      initializationStarted();
+      return current;
+    },
+    maxQueue: 1,
+    timeouts: { init: 50, handshake: 50, analyze: 50 },
+  });
+  const controller = new AbortController();
+  const cancelled = stockfish.analyze("cancelled", 1, 1, controller.signal);
+  await started;
+  controller.abort();
+  await assert.rejects(cancelled, { name: "AbortError" });
+
+  const next = stockfish.analyze("next", 1, 1);
+  initialized();
+  assert.equal((await next)[0]?.scoreCp, 42);
+  assert.equal(initCalls, 1);
+  assert.equal(current.terminations, 0);
+  assert.equal(current.commands.includes("position fen cancelled"), false);
+});
+
+test("abort during handshake preserves the shared initialization", async () => {
+  let uciSent!: () => void;
+  const sent = new Promise<void>((resolve) => {
+    uciSent = resolve;
+  });
+  let initCalls = 0;
+  const current = engine((current, command) => {
+    if (command === "uci") {
+      uciSent();
+    } else if (command === "isready") {
+      queueMicrotask(() => current.listener?.("readyok"));
+    } else if (command.startsWith("go depth ")) {
+      queueMicrotask(() => {
+        current.listener?.("info depth 1 multipv 1 score cp 42 pv e2e4");
+        current.listener?.("bestmove e2e4");
+      });
+    }
+  });
+  const stockfish = new Stockfish({
+    init: (flavor, callback) => {
+      initCalls++;
+      return initializer([current])(flavor, callback);
+    },
+    maxQueue: 1,
+    timeouts: { init: 50, handshake: 50, analyze: 50 },
+  });
+  const controller = new AbortController();
+  const cancelled = stockfish.analyze("cancelled", 1, 1, controller.signal);
+  await sent;
+  controller.abort();
+  await assert.rejects(cancelled, { name: "AbortError" });
+
+  const next = stockfish.analyze("next", 1, 1);
+  current.listener?.("uciok");
+  assert.equal((await next)[0]?.scoreCp, 42);
+  assert.equal(initCalls, 1);
+  assert.equal(current.terminations, 0);
+  assert.equal(current.commands.includes("position fen cancelled"), false);
+});
+
 test("active abort invalidates after stop grace and queued work reinitializes", async () => {
   let analysisStarted!: () => void;
   const started = new Promise<void>((resolve) => {

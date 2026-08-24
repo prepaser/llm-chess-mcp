@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import type { AddressInfo } from "node:net";
 import type { Socket } from "node:net";
 import {
@@ -63,6 +64,7 @@ type HttpLimits = Required<
 >;
 
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"] as const;
+let defaultServiceHandleCount = 0;
 const DEFAULT_LIMITS: HttpLimits = {
   maxSessions: 64,
   sessionIdleTtlMs: 30 * 60 * 1_000,
@@ -80,7 +82,26 @@ const DEFAULT_LIMITS: HttpLimits = {
 };
 
 function isLocalHost(host: string): boolean {
-  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  const normalized = host.toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "[::1]"
+  );
+}
+
+function bindHost(host: string): string {
+  return host.startsWith("[") && host.endsWith("]") && host.includes(":")
+    ? host.slice(1, -1)
+    : host;
+}
+
+function normalizeAllowedHost(host: string): string {
+  const normalized = host.toLowerCase();
+  const unwrapped = bindHost(normalized);
+  if (isIP(unwrapped) !== 6) return normalized;
+  return new URL(`http://[${unwrapped}]`).hostname;
 }
 
 function jsonError(
@@ -227,7 +248,6 @@ function readPostBody(
     let settled = false;
     const timer = setTimeout(() => {
       finish({ ok: false, status: 408, message: "request body timed out" });
-      req.destroy();
     }, timeoutMs);
     timer.unref();
     const finish = (result: ParsedBody): void => {
@@ -347,15 +367,16 @@ export async function serveHttp(
   const appServices = services ?? defaultAppServices;
   const ownsServices = services === undefined;
   const host = options.host ?? "127.0.0.1";
+  const listenHost = bindHost(host);
   const requestedPort = options.port ?? 3_000;
   const path = options.path ?? "/mcp";
-  const wildcard = host === "0.0.0.0" || host === "::" || host === "[::]";
+  const wildcard = listenHost === "0.0.0.0" || listenHost === "::";
   if (wildcard && options.allowedHosts === undefined) {
     throw new Error("wildcard HTTP binding requires allowed hostnames");
   }
   const allowedHosts = [
     ...(options.allowedHosts ?? (isLocalHost(host) ? LOCAL_HOSTS : [host])),
-  ];
+  ].map(normalizeAllowedHost);
   if (!host || !Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65_535) {
     throw new Error("invalid HTTP listen address");
   }
@@ -633,14 +654,22 @@ export async function serveHttp(
   server.requestTimeout = 0;
   server.timeout = limits.socketTimeoutMs;
   server.keepAliveTimeout = limits.keepAliveTimeoutMs;
-  await new Promise<void>((resolve, reject) => {
-    const onError = (error: Error): void => reject(error);
-    server.once("error", onError);
-    server.listen(requestedPort, host, () => {
-      server.off("error", onError);
-      resolve();
+  if (ownsServices) defaultServiceHandleCount += 1;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error): void => reject(error);
+      server.once("error", onError);
+      server.listen(requestedPort, listenHost, () => {
+        server.off("error", onError);
+        resolve();
+      });
     });
-  });
+  } catch (error) {
+    if (ownsServices && --defaultServiceHandleCount === 0) {
+      await appServices.quit();
+    }
+    throw error;
+  }
   server.on("error", (error) => console.error("HTTP server failed", error));
   const sessionSweep = setInterval(() => {
     void reapExpiredSessions();
@@ -673,7 +702,9 @@ export async function serveHttp(
         try {
           await closeNodeServer(server);
         } finally {
-          if (ownsServices) await appServices.quit();
+          if (ownsServices && --defaultServiceHandleCount === 0) {
+            await appServices.quit();
+          }
         }
       })()),
   };
