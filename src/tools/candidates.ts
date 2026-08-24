@@ -1,11 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/server";
+import type * as z from "zod/v4";
 import { ANALYSIS_PRESETS } from "../eval.js";
 import type { AppServices } from "../services.js";
 import { TOOL_INPUT_SCHEMAS } from "../tool-inputs.js";
 import { TOOL_META } from "../tool-meta.js";
 import { safeHandler, toolResult } from "../tool-result.js";
 import { TOOL_OUTPUT_SCHEMAS } from "../tool-schemas.js";
-import type { Candidate, MoveSensitivity } from "../types.js";
 
 type CandidateServices = Pick<
   AppServices,
@@ -24,16 +24,9 @@ type CandidateToolInput = {
   lichess_ratings: number[];
 };
 
-type CandidatePayload = {
-  game_id: string;
-  revision: number;
-  fen: string;
-  turn: "w" | "b";
-  elo: number;
-  analysis_level: keyof typeof ANALYSIS_PRESETS;
-  moveSensitivity: MoveSensitivity;
-  candidates: Candidate[];
-};
+type CandidatePayload = z.output<
+  typeof TOOL_OUTPUT_SCHEMAS.move_candidates
+>;
 
 async function candidatePayload(
   services: CandidateServices,
@@ -51,6 +44,8 @@ async function candidatePayload(
   signal: AbortSignal,
 ): Promise<CandidatePayload> {
   const { chess, revision } = services.games.getSnapshot(game_id);
+  const fen = chess.fen();
+  const turn = chess.turn();
   const preset = ANALYSIS_PRESETS[analysis_level];
   const { candidates, moveSensitivity } = await services.computeCandidates(
     chess,
@@ -70,8 +65,8 @@ async function candidatePayload(
   return {
     game_id,
     revision,
-    fen: chess.fen(),
-    turn: chess.turn(),
+    fen,
+    turn,
     elo,
     analysis_level,
     moveSensitivity,

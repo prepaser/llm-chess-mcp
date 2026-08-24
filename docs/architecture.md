@@ -7,12 +7,14 @@ and Lichess add independent signals without changing a game unless
 
 ## Runtime boundary
 
-`src/index.ts` is the executable boundary. It loads environment configuration,
+`src/index.ts` is both the package and executable boundary. Importing it exposes
+typed server APIs without loading `.env`; direct execution loads configuration,
 parses transport options, and creates servers through `buildServer`. stdio is
 the default; HTTP mode binds an explicit endpoint and creates one MCP server per
 Streamable HTTP session. All sessions share application services and game state.
-Stdout is reserved for protocol traffic; diagnostics belong on stderr. Shutdown
-closes active transports before terminating Stockfish.
+Stdout is reserved for protocol traffic; diagnostics belong on stderr. stdin
+closure and process signals use idempotent shutdown that closes the active
+transport and terminates Stockfish.
 
 The HTTP listener is a backend, not a public edge. For non-local deployment it
 must bind to localhost or a private network reachable only by a reverse proxy.
@@ -116,6 +118,8 @@ service promise settles. Sessions with no active request expire after 30 minutes
 without deleting their process-shared games. Open GET SSE streams keep their
 session active without consuming POST permits. Header, upload, connection,
 socket, and keep-alive limits are enforced by the Node listener.
+`bodyTimeoutMs` bounds body upload only; engine and network work use their own
+timeouts and MCP cancellation rather than a transport-wide request deadline.
 
 The server has no MCP OAuth endpoints, OAuth discovery metadata, bearer-token
 validation, or browser CORS support. A reverse proxy may implement its own

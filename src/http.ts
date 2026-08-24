@@ -6,13 +6,11 @@ import type { Socket } from "node:net";
 import {
   isInitializeRequest,
   SUPPORTED_PROTOCOL_VERSIONS,
+  validateHostHeader,
+  validateOriginHeader,
 } from "@modelcontextprotocol/server";
 import type { McpServer } from "@modelcontextprotocol/server";
-import {
-  hostHeaderValidation,
-  NodeStreamableHTTPServerTransport,
-  originValidation,
-} from "@modelcontextprotocol/node";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { buildServer } from "./server.js";
 import { HttpWorkAdmission } from "./http-work.js";
 import type { WorkRunner } from "./http-work.js";
@@ -34,6 +32,9 @@ export type HttpServerOptions = {
   maxHeaderBytes?: number;
   maxHeaderCount?: number;
   headersTimeoutMs?: number;
+  /** Request body deadline; takes precedence over requestTimeoutMs. */
+  bodyTimeoutMs?: number;
+  /** @deprecated Use bodyTimeoutMs; used only when bodyTimeoutMs is omitted. */
   requestTimeoutMs?: number;
   socketTimeoutMs?: number;
   keepAliveTimeoutMs?: number;
@@ -57,7 +58,9 @@ type Session = {
   activePosts: number;
 };
 
-type HttpLimits = Required<Omit<HttpServerOptions, "host" | "port" | "path" | "allowedHosts">>;
+type HttpLimits = Required<
+  Omit<HttpServerOptions, "host" | "port" | "path" | "allowedHosts" | "requestTimeoutMs">
+>;
 
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"] as const;
 const DEFAULT_LIMITS: HttpLimits = {
@@ -71,7 +74,7 @@ const DEFAULT_LIMITS: HttpLimits = {
   maxHeaderBytes: 16 * 1024,
   maxHeaderCount: 100,
   headersTimeoutMs: 10_000,
-  requestTimeoutMs: 15_000,
+  bodyTimeoutMs: 15_000,
   socketTimeoutMs: 60_000,
   keepAliveTimeoutMs: 5_000,
 };
@@ -139,6 +142,12 @@ function positiveInteger(name: string, value: number): void {
 }
 
 function resolveLimits(options: HttpServerOptions): HttpLimits {
+  if (options.bodyTimeoutMs !== undefined) {
+    positiveInteger("bodyTimeoutMs", options.bodyTimeoutMs);
+  }
+  if (options.requestTimeoutMs !== undefined) {
+    positiveInteger("requestTimeoutMs", options.requestTimeoutMs);
+  }
   const limits: HttpLimits = {
     maxSessions: options.maxSessions ?? DEFAULT_LIMITS.maxSessions,
     sessionIdleTtlMs: options.sessionIdleTtlMs ?? DEFAULT_LIMITS.sessionIdleTtlMs,
@@ -154,7 +163,8 @@ function resolveLimits(options: HttpServerOptions): HttpLimits {
     maxHeaderBytes: options.maxHeaderBytes ?? DEFAULT_LIMITS.maxHeaderBytes,
     maxHeaderCount: options.maxHeaderCount ?? DEFAULT_LIMITS.maxHeaderCount,
     headersTimeoutMs: options.headersTimeoutMs ?? DEFAULT_LIMITS.headersTimeoutMs,
-    requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_LIMITS.requestTimeoutMs,
+    bodyTimeoutMs:
+      options.bodyTimeoutMs ?? options.requestTimeoutMs ?? DEFAULT_LIMITS.bodyTimeoutMs,
     socketTimeoutMs: options.socketTimeoutMs ?? DEFAULT_LIMITS.socketTimeoutMs,
     keepAliveTimeoutMs:
       options.keepAliveTimeoutMs ?? DEFAULT_LIMITS.keepAliveTimeoutMs,
@@ -166,6 +176,24 @@ function resolveLimits(options: HttpServerOptions): HttpLimits {
     );
   }
   return limits;
+}
+
+function validateRequestHeaders(
+  req: IncomingMessage,
+  res: ServerResponse,
+  allowedHosts: string[],
+): boolean {
+  const host = validateHostHeader(req.headers.host, allowedHosts);
+  if (!host.ok) {
+    closeWithError(req, res, 403, host.message);
+    return false;
+  }
+  const origin = validateOriginHeader(req.headers.origin, allowedHosts);
+  if (!origin.ok) {
+    closeWithError(req, res, 403, origin.message);
+    return false;
+  }
+  return true;
 }
 
 function declaredBodyLength(req: IncomingMessage): number | null {
@@ -314,8 +342,10 @@ function scopedServices(services: AppServices, run: WorkRunner): AppServices {
 
 export async function serveHttp(
   options: HttpServerOptions = {},
-  services: AppServices = defaultAppServices,
+  services?: AppServices,
 ): Promise<HttpServerHandle> {
+  const appServices = services ?? defaultAppServices;
+  const ownsServices = services === undefined;
   const host = options.host ?? "127.0.0.1";
   const requestedPort = options.port ?? 3_000;
   const path = options.path ?? "/mcp";
@@ -339,8 +369,6 @@ export async function serveHttp(
 
   const sessions = new Map<string, Session>();
   const initializing = new Set<Session>();
-  const validateHost = hostHeaderValidation(allowedHosts);
-  const validateOrigin = originValidation(allowedHosts);
   let closing = false;
   let pendingInitializations = 0;
   let activePosts = 0;
@@ -409,7 +437,7 @@ export async function serveHttp(
       closeWithError(req, res, 404, "MCP endpoint not found");
       return;
     }
-    if (!validateHost(req, res) || !validateOrigin(req, res)) return;
+    if (!validateRequestHeaders(req, res, allowedHosts)) return;
 
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {
       closeWithError(req, res, 405, "MCP method not allowed", { allow: "GET, POST, DELETE" });
@@ -461,7 +489,7 @@ export async function serveHttp(
             const body = await parsePostBody(
               req,
               limits.maxRequestBodyBytes,
-              limits.requestTimeoutMs,
+              limits.bodyTimeoutMs,
             );
             if (!body.ok) {
               closeWithError(req, res, body.status, body.message);
@@ -491,7 +519,7 @@ export async function serveHttp(
       const body = await parsePostBody(
         req,
         limits.maxRequestBodyBytes,
-        limits.requestTimeoutMs,
+        limits.bodyTimeoutMs,
       );
       if (!body.ok) {
         closeWithError(req, res, body.status, body.message);
@@ -534,7 +562,7 @@ export async function serveHttp(
       });
       const abort = new AbortController();
       const mcp = buildServer(
-        scopedServices(services, workAdmission.session(abort.signal)),
+        scopedServices(appServices, workAdmission.session(abort.signal)),
       );
       session = {
         server: mcp,
@@ -571,12 +599,12 @@ export async function serveHttp(
     {
       maxHeaderSize: limits.maxHeaderBytes,
       headersTimeout: limits.headersTimeoutMs,
-      requestTimeout: limits.requestTimeoutMs,
+      requestTimeout: 0,
       keepAliveTimeout: limits.keepAliveTimeoutMs,
       connectionsCheckingInterval: Math.min(
         1_000,
         limits.headersTimeoutMs,
-        limits.requestTimeoutMs,
+        limits.bodyTimeoutMs,
       ),
     },
     (req, res) => {
@@ -602,7 +630,7 @@ export async function serveHttp(
   server.maxConnections = limits.maxConnections;
   server.maxHeadersCount = limits.maxHeaderCount;
   server.headersTimeout = limits.headersTimeoutMs;
-  server.requestTimeout = limits.requestTimeoutMs;
+  server.requestTimeout = 0;
   server.timeout = limits.socketTimeoutMs;
   server.keepAliveTimeout = limits.keepAliveTimeoutMs;
   await new Promise<void>((resolve, reject) => {
@@ -642,7 +670,11 @@ export async function serveHttp(
             ...pending.map(stopSession),
           ],
         );
-        await closeNodeServer(server);
+        try {
+          await closeNodeServer(server);
+        } finally {
+          if (ownsServices) await appServices.quit();
+        }
       })()),
   };
 }

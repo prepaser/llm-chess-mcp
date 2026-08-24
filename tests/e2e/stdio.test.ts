@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { Client } from "@modelcontextprotocol/client";
+import { Client, LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { TOOL_NAMES } from "../../src/tool-names.js";
 
 const REPO = fileURLToPath(new URL("../..", import.meta.url));
 const CALL_TIMEOUT_MS = 30_000;
+const CHILD_TIMEOUT_MS = 10_000;
 
 type JsonObject = Record<string, unknown>;
 type ToolResult = Awaited<ReturnType<Client["callTool"]>>;
@@ -24,6 +26,83 @@ function summary(result: ToolResult): string {
   assert.ok(block.text.length > 0 && block.text.length <= 200);
   assert.throws(() => JSON.parse(block.text), SyntaxError);
   return block.text;
+}
+
+function childEnv(): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] =>
+        entry[0] !== "LICHESS_TOKEN" && entry[1] !== undefined,
+    ),
+  );
+}
+
+function waitForInitialize(
+  child: ReturnType<typeof spawn>,
+  stderr: () => string,
+): Promise<void> {
+  const stdout = child.stdout;
+  assert.ok(stdout);
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const timer = setTimeout(
+      () => reject(new Error(`stdio server did not initialize: ${stderr()}`)),
+      CHILD_TIMEOUT_MS,
+    );
+    stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      buffer += chunk;
+      for (;;) {
+        const newline = buffer.indexOf("\n");
+        if (newline === -1) return;
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        try {
+          const message: unknown = JSON.parse(line);
+          if (
+            message &&
+            typeof message === "object" &&
+            Reflect.get(message, "id") === 1
+          ) {
+            clearTimeout(timer);
+            resolve();
+            return;
+          }
+        } catch (error) {
+          clearTimeout(timer);
+          reject(error);
+          return;
+        }
+      }
+    });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      reject(new Error(`stdio server exited early with ${code}/${signal}: ${stderr()}`));
+    });
+  });
+}
+
+function waitForExit(
+  child: ReturnType<typeof spawn>,
+  stderr: () => string,
+): Promise<[number | null, NodeJS.Signals | null]> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`stdio server did not stop: ${stderr()}`)),
+      CHILD_TIMEOUT_MS,
+    );
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      resolve([code, signal]);
+    });
+  });
 }
 
 async function success(
@@ -62,12 +141,7 @@ test(
   "stdio exposes and executes the complete structured chess protocol",
   { timeout: 120_000 },
   async () => {
-    const env = Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] =>
-          entry[0] !== "LICHESS_TOKEN" && entry[1] !== undefined,
-      ),
-    );
+    const env = childEnv();
     assert.equal("LICHESS_TOKEN" in env, false);
 
     const transport = new StdioClientTransport({
@@ -224,6 +298,47 @@ test(
         await transport.close();
       }
       assert.equal(transport.pid, null);
+    }
+  },
+);
+
+test(
+  "stdio CLI shuts down cleanly on SIGTERM",
+  { timeout: 30_000 },
+  async () => {
+    const child = spawn(process.execPath, ["dist/index.js"], {
+      cwd: REPO,
+      env: childEnv(),
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    assert.ok(child.stdin);
+    assert.ok(child.stderr);
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    const exited = waitForExit(child, () => stderr);
+
+    try {
+      child.stdin.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: LATEST_PROTOCOL_VERSION,
+            capabilities: {},
+            clientInfo: { name: "stdio-signal-e2e", version: "1.0.0" },
+          },
+        })}\n`,
+      );
+      await waitForInitialize(child, () => stderr);
+      child.kill("SIGTERM");
+      const [code, signal] = await exited;
+      assert.equal(code, 0, stderr);
+      assert.equal(signal, null);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
   },
 );

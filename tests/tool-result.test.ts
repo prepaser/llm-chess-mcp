@@ -40,6 +40,22 @@ test("safeHandler forwards the MCP cancellation signal", async () => {
   assert.equal(received, controller.signal);
 });
 
+test("safeHandler parses direct calls and rejects invalid input", async () => {
+  let calls = 0;
+  const handler = safeHandler(
+    z.object({ value: z.coerce.number().default(3) }),
+    async ({ value }) => {
+      calls += 1;
+      return toolResult({ value }, "ok");
+    },
+  );
+
+  assert.deepEqual(await handler({}), toolResult({ value: 3 }, "ok"));
+  assert.deepEqual(await handler({ value: "4" }), toolResult({ value: 4 }, "ok"));
+  assert.deepEqual(await handler({ value: "nope" }), toolError("INVALID_INPUT", "invalid tool input"));
+  assert.equal(calls, 2);
+});
+
 test("safeHandler rejects pre-aborted requests without running the handler", async () => {
   const controller = new AbortController();
   controller.abort(new Error("cancelled"));

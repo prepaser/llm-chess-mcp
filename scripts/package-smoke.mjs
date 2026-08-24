@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -12,13 +12,26 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const execFile = promisify(execFileCallback);
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const CONTRACT_PATH = join(REPO, "spec", "tools.json");
 const TIMEOUT_MS = 90_000;
-const EXPECTED_TOOLS = [
-  "create_game",
-  "human_move_distribution",
-  "move_candidates",
-  "position_analyze",
-];
+const contract = JSON.parse(await readFile(CONTRACT_PATH, "utf8"));
+assert.ok(Array.isArray(contract.tools), "tool contract has no tools array");
+const EXPECTED_TOOLS = contract.tools.map(({ name }) => {
+  assert.equal(typeof name, "string", "tool contract contains an invalid name");
+  return name;
+}).sort();
+assert.equal(new Set(EXPECTED_TOOLS).size, EXPECTED_TOOLS.length, "tool contract contains duplicate names");
+
+function sort(value) {
+  if (Array.isArray(value)) return value.map(sort);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, sort(child)]),
+  );
+}
 
 function asObject(value) {
   assert.ok(value && typeof value === "object" && !Array.isArray(value));
@@ -58,6 +71,7 @@ async function pack(workspace, cache) {
   const files = new Set(result.files.map((file) => file.path));
   for (const expected of [
     "dist/index.js",
+    "dist/index.d.ts",
     "models/maia3-5m.onnx",
     "models/maia3-5m.onnx.data",
     "README.md",
@@ -87,6 +101,49 @@ async function pack(workspace, cache) {
   return join(workspace, result.filename);
 }
 
+async function verifyPackageApi(install) {
+  const packageRoot = join(install, "node_modules", "llm-chess-mcp");
+  await access(join(packageRoot, "dist", "index.d.ts"), constants.F_OK);
+  const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+  assert.equal(manifest.main, "./dist/index.js");
+  assert.equal(manifest.types, "./dist/index.d.ts");
+  assert.deepEqual(manifest.exports, {
+    ".": {
+      types: "./dist/index.d.ts",
+      import: "./dist/index.js",
+      default: "./dist/index.js",
+    },
+    "./dist/*": "./dist/*",
+    "./package.json": "./package.json",
+  });
+
+  await writeFile(join(install, ".env"), "LICHESS_TOKEN=import-side-effect\n");
+
+  await command(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      'const token = process.env.LICHESS_TOKEN; const api = await import("llm-chess-mcp"); if (typeof api.buildServer !== "function" || typeof api.serveHttp !== "function") throw new Error("root API is incomplete"); if (process.env.LICHESS_TOKEN !== token) throw new Error("root import loaded .env");',
+    ],
+    install,
+  );
+}
+
+function assertToolCatalog(listed) {
+  const tools = listed.tools
+    .map(({ name, title, description, inputSchema, outputSchema, annotations }) => ({
+      name,
+      title,
+      description,
+      inputSchema,
+      outputSchema,
+      annotations,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+  assert.deepEqual(sort(tools), sort(contract.tools), "packed server tools differ from spec/tools.json");
+}
+
 function serverEnv() {
   const env = { ...process.env };
   const pathKey =
@@ -109,10 +166,7 @@ async function smoke(bin, cwd) {
   try {
     await client.connect(transport);
     const listed = await client.listTools(undefined, { timeout: TIMEOUT_MS });
-    const names = new Set(listed.tools.map(({ name }) => name));
-    for (const name of EXPECTED_TOOLS) {
-      assert.ok(names.has(name), `packed server does not expose ${name}`);
-    }
+    assertToolCatalog(listed);
 
     const created = await call(client, "create_game", {});
     assert.equal(typeof created.game_id, "string");
@@ -219,6 +273,7 @@ async function smokeHttp(bin, cwd) {
   try {
     await ready;
     await client.connect(transport);
+    assertToolCatalog(await client.listTools(undefined, { timeout: TIMEOUT_MS }));
     const created = await call(client, "create_game", {});
     assert.equal(typeof created.game_id, "string");
     await client.close();
@@ -232,7 +287,9 @@ async function smokeHttp(bin, cwd) {
   }
 }
 
-const workspace = await mkdtemp(join(tmpdir(), "llm-chess-mcp-package-smoke-"));
+const workspaceRoot = resolve(process.env.PACKAGE_SMOKE_TMPDIR ?? tmpdir());
+await mkdir(workspaceRoot, { recursive: true });
+const workspace = await mkdtemp(join(workspaceRoot, "llm-chess-mcp-package-smoke-"));
 try {
   const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
   await command(pnpm, ["build"], REPO);
@@ -241,11 +298,26 @@ try {
   const install = join(workspace, "install");
   const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   await mkdir(install);
+  await writeFile(
+    join(install, "package.json"),
+    JSON.stringify({ private: true, type: "module" }),
+  );
   await command(
     npm,
-    ["--cache", cache, "install", "--ignore-scripts", "--no-audit", "--no-fund", tarball],
+    [
+      "--cache",
+      cache,
+      "install",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--omit=dev",
+      "--package-lock=false",
+      tarball,
+    ],
     install,
   );
+  await verifyPackageApi(install);
 
   const bin = join(
     install,

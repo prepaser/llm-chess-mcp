@@ -100,28 +100,30 @@ test("GameStore validates limits and rejects duplicate IDs", () => {
 
 test("GameStore owns chess state and returns isolated snapshots", () => {
   const store = new GameStore({ createId: () => "game" });
-  const source = new Chess();
+  const source = new Chess("7k/P7/8/8/8/8/8/K7 w - - 0 1");
   source.setHeader("Event", "snapshot test");
   source.setComment("start");
-  source.move("e4");
-  source.setComment("king pawn");
+  source.move("a8=Q+");
+  source.setComment("promotion");
+  const headers = source.getHeaders();
   const id = store.createGameFromChess(source);
-  source.move("e5");
+  source.move("Kh7");
 
   const first = store.getSnapshot(id);
-  assert.deepEqual(first.chess.history(), ["e4"]);
+  assert.deepEqual(first.chess.history(), ["a8=Q+"]);
+  assert.deepEqual(first.chess.getHeaders(), headers);
   assert.deepEqual(
     first.chess.getComments().map(({ comment }) => comment),
-    ["start", "king pawn"],
+    ["start", "promotion"],
   );
-  first.chess.move("c5");
+  first.chess.move("Kh7");
 
   const second = store.getSnapshot(id);
-  assert.deepEqual(second.chess.history(), ["e4"]);
-  assert.equal(second.chess.getHeaders().Event, "snapshot test");
+  assert.deepEqual(second.chess.history(), ["a8=Q+"]);
+  assert.deepEqual(second.chess.getHeaders(), headers);
   assert.deepEqual(
     second.chess.getComments().map(({ comment }) => comment),
-    ["start", "king pawn"],
+    ["start", "promotion"],
   );
   assert.equal(second.revision, 0);
 });

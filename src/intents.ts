@@ -103,10 +103,6 @@ export interface CandidateComputationDependencies {
   explorerFailureReason(error: unknown): ExplorerErrorKind;
 }
 
-export interface CandidateComputation {
-  computeCandidates: ComputeCandidates;
-}
-
 export type LichessCandidateData =
   | {
       status: "available" | "no_data";
@@ -227,47 +223,45 @@ export function candidateSetFromData(
 
 export function createCandidateComputation(
   dependencies: CandidateComputationDependencies,
-): CandidateComputation {
-  return {
-    computeCandidates: async (
-      chess,
-      elo,
-      sfDepth,
-      sfMultipv,
-      maiaTopN,
-      lichess,
-      signal,
-    ) => {
-      const [sfLines, maiaMoves, lichessResult] = await Promise.all([
-        dependencies.analyze(chess.fen(), sfDepth, sfMultipv, signal),
-        dependencies.humanMoveDistribution(chess, elo, elo, maiaTopN, signal),
-        lichess && dependencies.explorerEnabled()
-          ? dependencies
-              .openingExplorer(
-                chess,
-                lichess.db,
-                lichess.speeds,
-                lichess.ratings,
-                signal,
-              )
-              .then(explorerCandidateData)
-              .catch((error): LichessCandidateData => {
-                signal?.throwIfAborted();
-                return {
-                  status: "unavailable",
-                  reason: dependencies.explorerFailureReason(error),
-                  totalGames: null,
-                  moves: [],
-                };
-              })
-          : Promise.resolve<LichessCandidateData>({
-              status: "disabled",
-              totalGames: null,
-              moves: [],
-            }),
-      ]);
-      return candidateSetFromData(chess, elo, sfLines, maiaMoves, lichessResult);
-    },
+): ComputeCandidates {
+  return async (
+    chess,
+    elo,
+    sfDepth,
+    sfMultipv,
+    maiaTopN,
+    lichess,
+    signal,
+  ) => {
+    const [sfLines, maiaMoves, lichessResult] = await Promise.all([
+      dependencies.analyze(chess.fen(), sfDepth, sfMultipv, signal),
+      dependencies.humanMoveDistribution(chess, elo, elo, maiaTopN, signal),
+      lichess && dependencies.explorerEnabled()
+        ? dependencies
+            .openingExplorer(
+              chess,
+              lichess.db,
+              lichess.speeds,
+              lichess.ratings,
+              signal,
+            )
+            .then(explorerCandidateData)
+            .catch((error): LichessCandidateData => {
+              signal?.throwIfAborted();
+              return {
+                status: "unavailable",
+                reason: dependencies.explorerFailureReason(error),
+                totalGames: null,
+                moves: [],
+              };
+            })
+        : Promise.resolve<LichessCandidateData>({
+            status: "disabled",
+            totalGames: null,
+            moves: [],
+          }),
+    ]);
+    return candidateSetFromData(chess, elo, sfLines, maiaMoves, lichessResult);
   };
 }
 
@@ -299,14 +293,17 @@ export function rankByIntent(
     ? Math.max(...withSf.map((c) => winMargin(c) ?? -Infinity))
     : 0;
 
-  const balancedSfProbs =
-    intent === "balanced"
-      ? softmax(
-          candidates.map((candidate) => candidate.objective.moverCp ?? -1000),
-          100,
-        )
-      : [];
-  const scored = candidates.map((c, index) => {
+  const balancedSfProbs = new Map<Candidate, number>();
+  if (intent === "balanced" && withSf.length > 0) {
+    const probabilities = softmax(
+      withSf.map((candidate) => candidate.objective.moverCp ?? 0),
+      100,
+    );
+    for (const [index, candidate] of withSf.entries()) {
+      balancedSfProbs.set(candidate, probabilities[index] ?? 0);
+    }
+  }
+  const scored = candidates.map((c) => {
     let score: number;
     switch (intent) {
       case "best":
@@ -319,11 +316,11 @@ export function rankByIntent(
         break;
       }
       case "natural":
-        score = c.human.maia3Prob ?? 0;
+        score = c.human.maia3Prob ?? -Infinity;
         break;
       case "balanced": {
         score =
-          0.5 * (balancedSfProbs[index] ?? 0) +
+          0.5 * (balancedSfProbs.get(c) ?? 0) +
           0.5 * (c.human.maia3Prob ?? 0);
         break;
       }

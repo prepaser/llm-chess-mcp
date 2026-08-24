@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/client";
 import { GameStore } from "../../src/games.js";
 import { serveHttp } from "../../src/http.js";
+import { defaultAppServices } from "../../src/services.js";
 import type { AppServices } from "../../src/services.js";
 
 type JsonObject = Record<string, unknown>;
@@ -142,6 +143,45 @@ function waitForConnectionClose(url: string, payload: string, label: string): Pr
     socket.once("error", (error) => {
       if (!connected) finish(error);
     });
+    socket.once("close", () => finish());
+  });
+}
+
+function slowRejectedRequest(
+  url: string,
+  headers: readonly string[],
+  label: string,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const endpoint = new URL(url);
+    const chunks: Buffer[] = [];
+    let settled = false;
+    const timer = setTimeout(() => finish(new Error(`${label} did not close`)), 1_000);
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      if (error) reject(error);
+      else resolve(Buffer.concat(chunks).toString());
+    };
+    const socket = connect(Number(endpoint.port), endpoint.hostname, () => {
+      socket.write(
+        [
+          "POST /mcp HTTP/1.1",
+          ...headers,
+          "Transfer-Encoding: chunked",
+          "Content-Type: application/json",
+          "Connection: keep-alive",
+          "",
+          "1",
+          "{",
+          "",
+        ].join("\r\n"),
+      );
+    });
+    socket.once("error", (error) => finish(error));
+    socket.on("data", (chunk: Buffer) => chunks.push(chunk));
     socket.once("close", () => finish());
   });
 }
@@ -370,6 +410,60 @@ test("Streamable HTTP validates resource limits before listening", async () => {
     ),
     /maxConcurrentPostsPerSession must not exceed maxConcurrentPosts/,
   );
+  await assert.rejects(
+    serveHttp({ port: 0, bodyTimeoutMs: 0 }, fakeServices(new GameStore())),
+    /bodyTimeoutMs must be a positive integer/,
+  );
+  await assert.rejects(
+    serveHttp(
+      { port: 0, bodyTimeoutMs: 1, requestTimeoutMs: 0 },
+      fakeServices(new GameStore()),
+    ),
+    /requestTimeoutMs must be a positive integer/,
+  );
+
+  const independentTimeouts = await serveHttp(
+    { port: 0, headersTimeoutMs: 2, bodyTimeoutMs: 1 },
+    fakeServices(new GameStore()),
+  );
+  await independentTimeouts.close();
+});
+
+test("Streamable HTTP closes owned default services", async (t) => {
+  const quit = defaultAppServices.quit;
+  let calls = 0;
+  defaultAppServices.quit = async () => {
+    calls += 1;
+  };
+  t.after(() => {
+    defaultAppServices.quit = quit;
+  });
+
+  const http = await serveHttp({ port: 0 });
+  await http.close();
+  await http.close();
+  assert.equal(calls, 1);
+});
+
+test("Streamable HTTP closes rejected slow request bodies", async (t) => {
+  const http = await serveHttp(
+    { port: 0, maxConnections: 1 },
+    fakeServices(new GameStore()),
+  );
+  t.after(() => http.close());
+
+  for (const [label, headers] of [
+    ["invalid Host", ["Host: attacker.example"]],
+    ["invalid Origin", ["Host: 127.0.0.1", "Origin: https://attacker.example"]],
+  ] as const) {
+    const response = await slowRejectedRequest(http.url, headers, label);
+    assert.match(response, /^HTTP\/1\.1 403 /);
+    assert.match(response, /connection: close/i);
+    assert.match(response, /\"jsonrpc\":\"2\.0\"/);
+  }
+
+  const admitted = await httpRequest(http.url);
+  assert.equal(admitted.status, 400);
 });
 
 test("Streamable HTTP bounds declared and chunked request bodies", async (t) => {
@@ -418,8 +512,8 @@ test("Streamable HTTP closes slow header and body uploads", async (t) => {
   const http = await serveHttp(
     {
       port: 0,
-      headersTimeoutMs: 20,
-      requestTimeoutMs: 40,
+      headersTimeoutMs: 100,
+      requestTimeoutMs: 200,
       socketTimeoutMs: 1_000,
     },
     fakeServices(new GameStore()),
@@ -443,6 +537,35 @@ test("Streamable HTTP closes slow header and body uploads", async (t) => {
     ].join("\r\n"),
     "slow body",
   );
+});
+
+test("Streamable HTTP prefers bodyTimeoutMs over its legacy alias", async (t) => {
+  const http = await serveHttp(
+    {
+      port: 0,
+      headersTimeoutMs: 100,
+      bodyTimeoutMs: 100,
+      requestTimeoutMs: 1_000,
+      socketTimeoutMs: 1_000,
+    },
+    fakeServices(new GameStore()),
+  );
+  t.after(() => http.close());
+
+  const startedAt = Date.now();
+  await waitForConnectionClose(
+    http.url,
+    [
+      "POST /mcp HTTP/1.1",
+      "Host: 127.0.0.1",
+      "Content-Type: application/json",
+      "Content-Length: 100",
+      "",
+      "{",
+    ].join("\r\n"),
+    "body timeout",
+  );
+  assert.ok(Date.now() - startedAt < 500);
 });
 
 test("Streamable HTTP reserves and reclaims bounded MCP sessions", async (t) => {

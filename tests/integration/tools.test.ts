@@ -496,6 +496,34 @@ test("handler failures retain structured error envelopes", async (t) => {
   assert.match(text(invalidInput), /^Input validation error:/);
 });
 
+test("candidate payload keeps the original position when injected computation mutates its chess", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    await context.client.close();
+    await context.server.close();
+  });
+  const created = await success(context.client, "create_game", {});
+  const gameId = String(created.game_id);
+  const before = context.games.getSnapshot(gameId);
+
+  context.services.computeCandidates = async (chess) => {
+    chess.move("e4");
+    await Promise.resolve();
+    return {
+      candidates: [],
+      moveSensitivity: { level: "low", topMoveSpreadCp: null },
+    };
+  };
+
+  const payload = await success(context.client, "move_candidates", {
+    game_id: gameId,
+  });
+
+  assert.equal(payload.fen, before.chess.fen());
+  assert.equal(payload.turn, before.chess.turn());
+  assert.equal(context.games.getSnapshot(gameId).chess.fen(), before.chess.fen());
+});
+
 test("move evaluation reports terminal draw reasons without analyzing successors", async (t) => {
   const context = await fixture();
   t.after(async () => {

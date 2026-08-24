@@ -7,15 +7,6 @@ const revision = z.number().int().min(0);
 const color = z.enum(["w", "b"]);
 const wdl = z.tuple([z.number(), z.number(), z.number()]);
 
-export const ErrorSchema = z.strictObject({
-  code: z.string(),
-  message: z.string(),
-});
-
-export const ErrorOutputSchema = z.strictObject({
-  error: ErrorSchema,
-});
-
 export const StateSchema = z.strictObject({
   fen: z.string(),
   turn: color,

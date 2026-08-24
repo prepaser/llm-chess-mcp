@@ -20,26 +20,6 @@ export interface GameSnapshot {
   revision: number;
 }
 
-function cloneChess(chess: Chess): Chess {
-  const copy = snapshotChess(chess);
-  for (const [key, value] of Object.entries(chess.getHeaders())) {
-    copy.setHeader(key, value);
-  }
-  const comments = new Map(
-    chess.getComments().map(({ fen, comment }) => [fen, comment]),
-  );
-  const reversed: Move[] = [];
-  while (true) {
-    const comment = comments.get(copy.fen());
-    if (comment !== undefined) copy.setComment(comment);
-    const move = copy.undo();
-    if (!move) break;
-    reversed.push(move);
-  }
-  for (const move of reversed.reverse()) playParsedMove(copy, move);
-  return copy;
-}
-
 export class GameStore {
   readonly maxGames: number;
   readonly idleTtlMs: number;
@@ -91,7 +71,7 @@ export class GameStore {
       throw new ChessError("GAME_ID_COLLISION", `game ID already exists: ${id}`);
     }
     this.games.set(id, {
-      chess: cloneChess(chess),
+      chess: snapshotChess(chess),
       createdAt: now,
       lastAccessedAt: now,
       revision: 0,
@@ -101,7 +81,7 @@ export class GameStore {
 
   getSnapshot(id: string): GameSnapshot {
     const game = this.getLiveGame(id);
-    return { chess: cloneChess(game.chess), revision: game.revision };
+    return { chess: snapshotChess(game.chess), revision: game.revision };
   }
 
   applyMove(id: string, expectedRevision: number, move: Move): GameSnapshot {
@@ -114,7 +94,7 @@ export class GameStore {
     }
     playParsedMove(game.chess, move);
     game.revision += 1;
-    return { chess: cloneChess(game.chess), revision: game.revision };
+    return { chess: snapshotChess(game.chess), revision: game.revision };
   }
 
   private getLiveGame(id: string): GameRecord {

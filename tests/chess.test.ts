@@ -63,17 +63,36 @@ test("stateOf reports the typed public state", () => {
   });
 });
 
-test("parseMove accepts SAN without check suffix and UCI", () => {
+test("parseMove accepts omitted SAN check suffixes and UCI", () => {
   const check = new Chess("7k/8/8/8/8/8/4Q3/4K3 w - - 0 1");
   assert.equal(parseMove(check, "Qe8").san, "Qe8+");
+  assert.equal(parseMove(check, "Qe8+").san, "Qe8+");
+  assert.throws(
+    () => parseMove(check, "Qe8#"),
+    (error) => error instanceof ChessError && error.code === "ILLEGAL_MOVE",
+  );
 
   const chess = new Chess();
+  assert.throws(
+    () => parseMove(chess, "e4+"),
+    (error) => error instanceof ChessError && error.code === "ILLEGAL_MOVE",
+  );
+  assert.throws(
+    () => parseMove(chess, "e4#"),
+    (error) => error instanceof ChessError && error.code === "ILLEGAL_MOVE",
+  );
   const move = parseMove(chess, "e2e4");
   assert.equal(playParsedMove(chess, move).san, "e4");
   assert.throws(
     () => parseMove(chess, "e2e5"),
     (error) => error instanceof ChessError && error.code === "ILLEGAL_MOVE",
   );
+
+  const mate = new Chess();
+  mate.move("f3");
+  mate.move("e5");
+  mate.move("g4");
+  assert.equal(parseMove(mate, "Qh4#").san, "Qh4#");
 });
 
 test("pvToSan converts legal UCI prefixes without mutating the position", () => {

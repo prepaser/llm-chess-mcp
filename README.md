@@ -93,6 +93,19 @@ HTTP options:
 --allowed-host <host>    Allowed Host/Origin hostname; repeat as needed
 ```
 
+The package also exposes a typed ESM API:
+
+```js
+import { serveHttp } from "llm-chess-mcp";
+
+const server = await serveHttp({ port: 3000, bodyTimeoutMs: 15_000 });
+await server.close();
+```
+
+`bodyTimeoutMs` limits HTTP body upload time; it is not a whole-tool deadline.
+The deprecated `requestTimeoutMs` alias remains supported when `bodyTimeoutMs`
+is omitted.
+
 Binding to `0.0.0.0` or `::` requires at least one `--allowed-host`. HTTP mode
 does not provide authentication or TLS; use a trusted network or an
 authenticated reverse proxy when exposing it beyond localhost. Origin values
@@ -378,7 +391,8 @@ rejected:
 - HTTP accepts bodies up to 2 MiB. It permits 16 concurrent POSTs and downstream
   compute/network jobs process-wide, with two of each per session. Work keeps
   its slot after a raw disconnect until it settles. HTTP also caps connections
-  at 128 and applies bounded header, upload, socket, and keep-alive timeouts.
+  at 128 and applies a 15-second body upload deadline plus bounded header,
+  socket, and keep-alive timeouts.
 
 Programmatic users can override the HTTP limits through `HttpServerOptions`.
 These safeguards do not replace public-edge quotas: a public deployment must

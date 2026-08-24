@@ -380,6 +380,7 @@ export class Stockfish {
       const byPv = new Map<number, SfLine>();
       let settled = false;
       let cancellation: Error | null = null;
+      let timeout: Error | null = null;
       let stopSent = false;
       let stopTimer: NodeJS.Timeout | null = null;
       let failTimer: NodeJS.Timeout | null = null;
@@ -409,6 +410,7 @@ export class Stockfish {
       const abort = (error: Error) => fail(error, false);
       const stop = (error: Error, cancelled: boolean) => {
         if (cancelled) cancellation ??= error;
+        else timeout ??= error;
         if (stopSent) return;
         stopSent = true;
         if (stopTimer) clearTimeout(stopTimer);
@@ -448,6 +450,7 @@ export class Stockfish {
           });
         } else if (line.startsWith("bestmove")) {
           if (cancellation) fail(cancellation, false);
+          else if (timeout) fail(timeout, false);
           else succeed();
         }
       };

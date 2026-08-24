@@ -21,7 +21,21 @@ function moveDescriptor(move: Move): MoveDescriptor {
 export function snapshotChess(chess: Chess): Chess {
   const history = chess.history({ verbose: true });
   const snapshot = new Chess(history[0]?.before ?? chess.fen());
-  for (const move of history) snapshot.move(moveDescriptor(move));
+  const comments = new Map(
+    chess.getComments().map(({ fen, comment }) => [fen, comment]),
+  );
+  for (const [key, value] of Object.entries(chess.getHeaders())) {
+    snapshot.setHeader(key, value);
+  }
+  const restoreComment = () => {
+    const comment = comments.get(snapshot.fen());
+    if (comment !== undefined) snapshot.setComment(comment);
+  };
+  restoreComment();
+  for (const move of history) {
+    snapshot.move(moveDescriptor(move));
+    restoreComment();
+  }
   return snapshot;
 }
 
@@ -86,9 +100,13 @@ export function stateOf(chess: Chess, revision: number): ChessState {
 
 export function parseMove(chess: Chess, move: string): Move {
   const legal = chess.moves({ verbose: true });
-  const san = move.replace(/[+#]$/, "");
   const found =
-    legal.find((candidate) => candidate.san.replace(/[+#]$/, "") === san) ??
+    legal.find((candidate) => candidate.san === move) ??
+    (!/[+#]$/.test(move)
+      ? legal.find(
+          (candidate) => candidate.san.replace(/[+#]$/, "") === move,
+        )
+      : undefined) ??
     legal.find((candidate) => candidate.lan === move);
   if (!found) throw new ChessError("ILLEGAL_MOVE", `illegal move: ${move}`);
   return found;

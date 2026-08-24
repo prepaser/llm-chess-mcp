@@ -11,6 +11,7 @@ import { defaultAppServices } from "./services.js";
 export { buildServer } from "./server.js";
 export { serveHttp } from "./http.js";
 export type { HttpServerHandle, HttpServerOptions } from "./http.js";
+export type { AppServices } from "./services.js";
 export {
   drawResult,
   MAX_EVALUATED_MOVES,
@@ -20,9 +21,31 @@ export {
   snapshotChess,
 } from "./chess.js";
 
-loadEnv();
+function installShutdown(
+  closeTransport: () => Promise<void>,
+  closeServices = true,
+): () => Promise<void> {
+  let shutdown: Promise<void> | undefined;
+  const close = (): Promise<void> =>
+    (shutdown ??= Promise.all([
+      closeTransport(),
+      ...(closeServices ? [defaultAppServices.quit()] : []),
+    ]).then(() => undefined));
+  const onSignal = (): void => {
+    void close()
+      .then(() => process.exit(0))
+      .catch((error: unknown) => {
+        console.error("shutdown failed", error);
+        process.exit(1);
+      });
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  return close;
+}
 
 async function main(): Promise<void> {
+  loadEnv();
   const options = parseCli(process.argv.slice(2));
   if (options.help) {
     process.stdout.write(HELP);
@@ -31,11 +54,7 @@ async function main(): Promise<void> {
 
   if (options.transport === "stdio") {
     const handle = serveStdio(() => buildServer());
-    let shutdown: Promise<void> | undefined;
-    const close = (): Promise<void> =>
-      (shutdown ??= Promise.all([defaultAppServices.quit(), handle.close()]).then(
-        () => undefined,
-      ));
+    const close = installShutdown(() => handle.close());
     const onClose = (): void => {
       void close().catch((error: unknown) => console.error("shutdown failed", error));
     };
@@ -51,19 +70,7 @@ async function main(): Promise<void> {
     ...(options.allowedHosts.length ? { allowedHosts: options.allowedHosts } : {}),
   });
   console.error(`llm-chess-mcp listening on ${handle.url}`);
-  let shutdown: Promise<void> | undefined;
-  const close = (): Promise<void> =>
-    (shutdown ??= handle.close().finally(() => defaultAppServices.quit()));
-  const onSignal = (): void => {
-    void close()
-      .then(() => process.exit(0))
-      .catch((error: unknown) => {
-        console.error("shutdown failed", error);
-        process.exit(1);
-      });
-  };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  installShutdown(() => handle.close(), false);
 }
 
 const entry = process.argv[1];

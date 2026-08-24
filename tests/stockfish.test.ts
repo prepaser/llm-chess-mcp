@@ -96,6 +96,25 @@ test("analyze timeout resets the engine and queued work reinitializes", async ()
   assert.equal(second.terminations, 0);
 });
 
+test("analyze timeout rejects when stop produces a bestmove", async () => {
+  const current = engine((current, command) => {
+    if (command === "uci") {
+      queueMicrotask(() => current.listener?.("uciok"));
+    } else if (command === "isready") {
+      queueMicrotask(() => current.listener?.("readyok"));
+    } else if (command === "stop") {
+      queueMicrotask(() => current.listener?.("bestmove e2e4"));
+    }
+  });
+  const stockfish = new Stockfish({
+    init: initializer([current]),
+    timeouts: { init: 50, handshake: 50, analyze: 5, stopGrace: 50 },
+  });
+
+  await assert.rejects(stockfish.analyze("fen", 1, 1), /analyze timeout/);
+  assert.equal(current.commands.filter((command) => command === "stop").length, 1);
+});
+
 test("analysis ignores malformed multipv lines and defaults missing fields", async () => {
   const current = engine((current, command) => {
     if (command === "uci") {

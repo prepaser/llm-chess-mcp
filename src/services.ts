@@ -65,7 +65,7 @@ const openExplorer: AppServices["openingExplorer"] = (
     ratings,
     signal === undefined ? {} : { signal },
   );
-const candidateComputation = createCandidateComputation({
+const computeCandidates = createCandidateComputation({
   analyze,
   humanMoveDistribution,
   explorerEnabled,
@@ -81,6 +81,6 @@ export const defaultAppServices: AppServices = {
   humanMoveDistribution,
   explorerEnabled,
   openingExplorer: openExplorer,
-  computeCandidates: candidateComputation.computeCandidates,
+  computeCandidates,
   rankByIntent,
 };

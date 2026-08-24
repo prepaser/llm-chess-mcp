@@ -35,14 +35,18 @@ function explorerErrorCode(kind: ExplorerErrorKind): string {
 }
 
 export function safeHandler<Schema extends z.ZodType>(
-  _schema: Schema,
+  schema: Schema,
   handler: (args: z.output<Schema>, signal: AbortSignal) => Promise<ToolResult>,
-): (args: z.output<Schema>, context?: ServerContext) => Promise<ToolResult> {
+): (args: z.input<Schema>, context?: ServerContext) => Promise<ToolResult> {
   return async (args, context) => {
     const signal = context?.mcpReq.signal ?? UNABORTABLE_SIGNAL;
     try {
       signal.throwIfAborted();
-      return await handler(args, signal);
+      if (context) return await handler(args as z.output<Schema>, signal);
+
+      const parsed = schema.safeParse(args);
+      if (!parsed.success) return toolError("INVALID_INPUT", "invalid tool input");
+      return await handler(parsed.data, signal);
     } catch (error) {
       if (signal.aborted) {
         signal.throwIfAborted();

@@ -94,7 +94,7 @@ test("marks an empty explorer result as no data", () => {
 test("rethrows caller cancellation from the Lichess fallback", async () => {
   const controller = new AbortController();
   const cause = new Error("caller cancelled");
-  const { computeCandidates } = createCandidateComputation({
+  const computeCandidates = createCandidateComputation({
     analyze: async () => [],
     humanMoveDistribution: async () => [],
     explorerEnabled: () => true,
@@ -303,11 +303,23 @@ test("ranks objective, human, and balanced intents", () => {
   );
   assert.deepEqual(
     rankByIntent(candidates, "natural").map(({ uci }) => uci),
-    ["natural", "strong", "best", "unknown"],
+    ["natural", "strong", "best"],
   );
   assert.deepEqual(
     rankByIntent(candidates, "balanced").map(({ uci }) => uci),
     ["natural", "best", "strong", "unknown"],
+  );
+});
+
+test("keeps evaluated mate-loss candidates ahead of missing evaluations when balanced", () => {
+  const candidates = [
+    candidate("mate-loss", -9700, 0),
+    candidate("unevaluated", null, 0.9),
+  ];
+
+  assert.deepEqual(
+    rankByIntent(candidates, "balanced").map(({ uci }) => uci),
+    ["mate-loss", "unevaluated"],
   );
 });
 
