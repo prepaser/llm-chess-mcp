@@ -107,18 +107,34 @@ function abandonedPost(
 function waitForConnectionClose(url: string, payload: string, label: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const endpoint = new URL(url);
-    const socket = connect(Number(endpoint.port), endpoint.hostname, () => {
-      socket.write(payload);
-    });
-    const timer = setTimeout(() => {
-      socket.destroy();
-      reject(new Error(`${label} connection did not time out`));
-    }, 3_000);
-    socket.on("error", () => {});
-    socket.once("close", () => {
+    let connected = false;
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      resolve();
+      socket.destroy();
+      if (error) reject(error);
+      else resolve();
+    };
+    const armTimeout = (phase: string): void => {
+      if (settled) return;
+      clearTimeout(timer);
+      timer = setTimeout(
+        () => finish(new Error(`${label} ${phase} did not complete`)),
+        10_000,
+      );
+    };
+    const socket = connect(Number(endpoint.port), endpoint.hostname, () => {
+      connected = true;
+      socket.write(payload, () => armTimeout("server timeout"));
     });
+    armTimeout("connection");
+    socket.once("error", (error) => {
+      if (!connected) finish(error);
+    });
+    socket.once("close", () => finish());
   });
 }
 
