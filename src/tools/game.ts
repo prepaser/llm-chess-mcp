@@ -1,5 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { parseImportedPgn, parseMove, stateOf } from "../chess.js";
+import { parseImportedPgn, parseMove, pgnOf, stateOf } from "../chess.js";
 import { ChessError } from "../errors.js";
 import type { AppServices } from "../services.js";
 import { TOOL_INPUT_SCHEMAS } from "../tool-inputs.js";
@@ -118,6 +118,12 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
     },
     safeHandler(TOOL_INPUT_SCHEMAS.game_legal_moves, async ({ game_id }, signal) => {
       const { chess, revision } = services.games.getSnapshot(game_id);
+      if (chess.isGameOver()) {
+        return toolResult(
+          { game_id, revision, count: 0, moves: [] },
+          `Game ${game_id} is over`,
+        );
+      }
       const moves = [];
       for (const move of chess.moves({ verbose: true })) {
         signal.throwIfAborted();
@@ -150,7 +156,7 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
     safeHandler(TOOL_INPUT_SCHEMAS.game_pgn, async ({ game_id }) => {
       const { chess, revision } = services.games.getSnapshot(game_id);
       return toolResult(
-        { game_id, revision, pgn: chess.pgn() },
+        { game_id, revision, pgn: pgnOf(chess) },
         `Exported PGN for game ${game_id} at revision ${revision}`,
       );
     }),

@@ -47,6 +47,18 @@ async function candidatePayload(
   const fen = chess.fen();
   const turn = chess.turn();
   const preset = ANALYSIS_PRESETS[analysis_level];
+  if (chess.isGameOver()) {
+    return {
+      game_id,
+      revision,
+      fen,
+      turn,
+      elo,
+      analysis_level,
+      moveSensitivity: { level: "low", topMoveSpreadCp: null },
+      candidates: [],
+    };
+  }
   const { candidates, moveSensitivity } = await services.computeCandidates(
     chess,
     elo,
@@ -111,7 +123,9 @@ export function registerCandidateTools(
       byIntentSchema,
       async ({ intent, ...input }, signal) => {
         const payload = await candidatePayload(services, input, signal);
-        const candidates = services.rankByIntent(payload.candidates, intent);
+        const candidates = payload.candidates.length
+          ? services.rankByIntent(payload.candidates, intent)
+          : [];
 
         return toolResult(
           {

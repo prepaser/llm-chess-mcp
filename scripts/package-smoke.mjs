@@ -125,7 +125,7 @@ async function verifyPackageApi(install) {
     [
       "--input-type=module",
       "--eval",
-      'const token = process.env.LICHESS_TOKEN; const api = await import("llm-chess-mcp"); if (typeof api.buildServer !== "function" || typeof api.serveHttp !== "function") throw new Error("root API is incomplete"); if (process.env.LICHESS_TOKEN !== token) throw new Error("root import loaded .env");',
+      'const token = process.env.LICHESS_TOKEN; const dlopen = process.dlopen; let nativeLoads = 0; process.dlopen = (...args) => { nativeLoads += 1; return dlopen(...args); }; const api = await import("llm-chess-mcp"); if (typeof api.buildServer !== "function" || typeof api.serveHttp !== "function") throw new Error("root API is incomplete"); const custom = api.buildServer({}); await custom.close(); if (process.env.LICHESS_TOKEN !== token) throw new Error("root import loaded .env"); if (nativeLoads !== 0) throw new Error("root API loaded a native addon");',
     ],
     install,
   );

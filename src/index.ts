@@ -6,7 +6,6 @@ import { HELP, parseCli } from "./cli.js";
 import { loadEnv } from "./env.js";
 import { serveHttp } from "./http.js";
 import { buildServer } from "./server.js";
-import { defaultAppServices } from "./services.js";
 
 export { buildServer } from "./server.js";
 export { serveHttp } from "./http.js";
@@ -21,16 +20,10 @@ export {
   snapshotChess,
 } from "./chess.js";
 
-function installShutdown(
-  closeTransport: () => Promise<void>,
-  closeServices = true,
-): () => Promise<void> {
+function installShutdown(closeTransport: () => Promise<void>): () => Promise<void> {
   let shutdown: Promise<void> | undefined;
   const close = (): Promise<void> =>
-    (shutdown ??= Promise.all([
-      closeTransport(),
-      ...(closeServices ? [defaultAppServices.quit()] : []),
-    ]).then(() => undefined));
+    (shutdown ??= closeTransport());
   const onSignal = (): void => {
     void close()
       .then(() => process.exit(0))
@@ -70,7 +63,7 @@ async function main(): Promise<void> {
     ...(options.allowedHosts.length ? { allowedHosts: options.allowedHosts } : {}),
   });
   console.error(`llm-chess-mcp listening on ${handle.url}`);
-  installShutdown(() => handle.close(), false);
+  installShutdown(() => handle.close());
 }
 
 const entry = process.argv[1];

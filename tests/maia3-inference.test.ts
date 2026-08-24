@@ -122,12 +122,14 @@ test("preserves bundled model inference parity", async () => {
   }
 });
 
-test("skips model loading for terminal positions", async () => {
+test("skips model loading for terminal positions with legal moves", async () => {
   const previous = process.env.MAIA3_MODEL;
   process.env.MAIA3_MODEL = "invalid";
   try {
-    const checkmate = new Chess("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
-    assert.deepEqual(await humanMoveDistribution(checkmate, 1500, 1500, 1), []);
+    const insufficient = new Chess("8/8/8/8/8/8/K7/7k w - - 0 1");
+    assert.equal(insufficient.isGameOver(), true);
+    assert.ok(insufficient.moves().length > 0);
+    assert.deepEqual(await humanMoveDistribution(insufficient, 1500, 1500, 1), []);
   } finally {
     if (previous === undefined) delete process.env.MAIA3_MODEL;
     else process.env.MAIA3_MODEL = previous;

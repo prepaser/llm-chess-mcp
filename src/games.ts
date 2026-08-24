@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Chess } from "chess.js";
 import type { Move } from "chess.js";
-import { playParsedMove, snapshotChess } from "./chess.js";
+import {
+  assertSafeFenCounters,
+  playParsedMove,
+  snapshotChess,
+} from "./chess.js";
 import { ChessError } from "./errors.js";
 import type { GameRecord } from "./types.js";
 
@@ -53,6 +57,7 @@ export class GameStore {
   }
 
   createGame(fen?: string): string {
+    if (fen !== undefined) assertSafeFenCounters(fen);
     return this.createGameFromChess(fen === undefined ? new Chess() : new Chess(fen));
   }
 
@@ -92,9 +97,12 @@ export class GameStore {
         `position changed: expected revision ${expectedRevision}, current ${game.revision}`,
       );
     }
-    playParsedMove(game.chess, move);
+    const chess = snapshotChess(game.chess);
+    playParsedMove(chess, move);
+    assertSafeFenCounters(chess.fen());
+    game.chess = chess;
     game.revision += 1;
-    return { chess: snapshotChess(game.chess), revision: game.revision };
+    return { chess: snapshotChess(chess), revision: game.revision };
   }
 
   private getLiveGame(id: string): GameRecord {

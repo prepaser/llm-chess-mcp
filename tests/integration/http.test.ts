@@ -8,6 +8,7 @@ import {
 } from "@modelcontextprotocol/client";
 import { GameStore } from "../../src/games.js";
 import { serveHttp } from "../../src/http.js";
+import { buildServer } from "../../src/server.js";
 import { defaultAppServices } from "../../src/services.js";
 import type { AppServices } from "../../src/services.js";
 
@@ -76,6 +77,32 @@ function httpRequest(
     });
     req.once("error", reject);
     if (options.body !== undefined) req.write(options.body);
+    req.end();
+  });
+}
+
+function rawHttpRequest(url: string, path: string): Promise<HttpResult> {
+  const endpoint = new URL(url);
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        host: endpoint.hostname,
+        port: endpoint.port,
+        path,
+        headers: { host: endpoint.host },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString(),
+          });
+        });
+      },
+    );
+    req.once("error", reject);
     req.end();
   });
 }
@@ -460,6 +487,74 @@ test("Streamable HTTP closes shared default services after the last server", asy
 
   await second.close();
   assert.equal(calls, 1);
+});
+
+test("default services use one lease across programmatic and HTTP servers", async (t) => {
+  const quit = defaultAppServices.quit;
+  let calls = 0;
+  defaultAppServices.quit = async () => {
+    calls += 1;
+  };
+  t.after(() => {
+    defaultAppServices.quit = quit;
+  });
+
+  const custom = buildServer(fakeServices(new GameStore()));
+  const first = buildServer();
+  const second = buildServer();
+  const http = await serveHttp({ port: 0 });
+  t.after(async () => {
+    await custom.close();
+    await first.close();
+    await second.close();
+    await http.close();
+  });
+
+  await custom.close();
+  await first.close();
+  await first.close();
+  await http.close();
+  assert.equal(calls, 0);
+
+  await second.close();
+  assert.equal(calls, 1);
+});
+
+test("Streamable HTTP rejects noncanonical endpoint paths", async (t) => {
+  const http = await serveHttp({ port: 0 }, fakeServices(new GameStore()));
+  t.after(() => http.close());
+
+  for (const path of ["//mcp", "/chess/../mcp", "/chess/%2e%2e/mcp"]) {
+    assert.equal((await rawHttpRequest(http.url, path)).status, 404, path);
+  }
+  for (const path of ["//mcp", "/chess/../mcp", "/chess/%2e%2e/mcp"]) {
+    await assert.rejects(
+      serveHttp({ port: 0, path }, fakeServices(new GameStore())),
+      /invalid HTTP endpoint path/,
+    );
+  }
+});
+
+test("Streamable HTTP canonicalizes IPv4 shorthand bind hosts", async (t) => {
+  const http = await serveHttp(
+    { host: "127.1", port: 0, allowedHosts: ["127.1"] },
+    fakeServices(new GameStore()),
+  );
+  t.after(() => http.close());
+
+  assert.equal(http.host, "127.0.0.1");
+  assert.match(http.url, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+  assert.equal((await httpRequest(http.url)).status, 400);
+});
+
+test("Streamable HTTP rejects allowed host paths", async () => {
+  await assert.rejects(
+    serveHttp(
+      { port: 0, allowedHosts: ["evil.com/path"] },
+      fakeServices(new GameStore()),
+    ),
+    /at least one allowed HTTP hostname is required/,
+  );
 });
 
 test("Streamable HTTP closes rejected slow request bodies", async (t) => {

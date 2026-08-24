@@ -98,6 +98,17 @@ test("GameStore validates limits and rejects duplicate IDs", () => {
   expectChessError("GAME_ID_COLLISION", () => store.createGame());
 });
 
+test("GameStore rejects unsafe FEN counters before creating a game", () => {
+  const store = new GameStore({ createId: () => "game" });
+  const base = "8/8/8/8/8/8/K7/7k w - -";
+
+  expectChessError("INVALID_FEN", () => store.createGame(`${base} 1e2 1`));
+  expectChessError("INVALID_FEN", () =>
+    store.createGame(`${base} 0 9007199254740992`),
+  );
+  assert.equal(store.gameCount(), 0);
+});
+
 test("GameStore owns chess state and returns isolated snapshots", () => {
   const store = new GameStore({ createId: () => "game" });
   const source = new Chess("7k/P7/8/8/8/8/8/K7 w - - 0 1");

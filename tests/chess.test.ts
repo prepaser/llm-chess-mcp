@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Chess } from "chess.js";
 import {
+  assertSafeFenCounters,
   drawResult,
   parseImportedPgn,
   parseMove,
+  pgnOf,
   playParsedMove,
   pvToSan,
   snapshotChess,
@@ -34,6 +36,34 @@ test("snapshotChess replays promotion moves", () => {
 
   assert.equal(snapshot.fen(), chess.fen());
   assert.deepEqual(snapshot.history(), ["a8=Q"]);
+});
+
+test("snapshotChess preserves safe FEN counters exactly", () => {
+  const fen = "8/8/8/8/8/8/K7/7k w - - 9007199254740991 9007199254740991";
+  const chess = new Chess(fen);
+
+  const snapshot = snapshotChess(chess);
+
+  assert.equal(chess.fen(), fen);
+  assert.equal(snapshot.fen(), fen);
+});
+
+test("FEN counters must be safe decimal integers", () => {
+  const base = "8/8/8/8/8/8/K7/7k w - -";
+  for (const fen of [
+    `${base} 1e2 1`,
+    `${base} 0 1e2`,
+    `${base} -1 1`,
+    `${base} 0 0`,
+    `${base} 9007199254740992 1`,
+    `${base} 0 9007199254740992`,
+  ]) {
+    assert.throws(
+      () => assertSafeFenCounters(fen),
+      (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+    );
+  }
+  assert.doesNotThrow(() => assertSafeFenCounters(`${base} 0 1`));
 });
 
 test("stateOf reports the typed public state", () => {
@@ -156,4 +186,85 @@ test("parseImportedPgn permits declared results before board termination", () =>
       '[Termination "Black lost on time"]\n[Result "1-0"]\n\n1. e4 e5 1-0',
     ),
   );
+  assert.doesNotThrow(() => parseImportedPgn("1. e4 e5"));
+  assert.doesNotThrow(() =>
+    parseImportedPgn(
+      '[Termination "Black resigned"]\n[Result "1-0"]\n\n1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8 1-0',
+    ),
+  );
+});
+
+test("parseImportedPgn validates results outside comments for every game", () => {
+  assert.doesNotThrow(() =>
+    parseImportedPgn("1. f3 e5 2. g4 Qh4# {1-0}"),
+  );
+  assert.doesNotThrow(() =>
+    parseImportedPgn("1. f3 e5 2. g4 Qh4# ; 1-0"),
+  );
+  assert.doesNotThrow(() =>
+    parseImportedPgn('1. f3 e5 2. g4 Qh4# {\n[Result "1-0"]\n}'),
+  );
+  for (const pgn of [
+    '[Result "invalid"]\n\n1. e4 e5',
+    '[Result "1-0"]\n\n1. e4 e5 0-1',
+    '[Result "1-0"]\n\n1. e4 e5 1/2-1/2',
+    '[Event "{"]\n[Result "1-0"]\n\n1. f3 e5 2. g4 Qh4# 1-0',
+  ]) {
+    assert.throws(
+      () => parseImportedPgn(pgn),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+});
+
+test("parseImportedPgn rejects decisive results for drawn terminal positions", () => {
+  for (const fen of [
+    "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1",
+    "8/8/8/8/8/8/K7/7k w - - 0 1",
+  ]) {
+    assert.throws(
+      () =>
+        parseImportedPgn(
+          `[SetUp "1"]\n[FEN "${fen}"]\n[Result "1-0"]\n\n1-0`,
+        ),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+  assert.doesNotThrow(() =>
+    parseImportedPgn(
+      '[SetUp "1"]\n[FEN "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1"]\n[Result "1/2-1/2"]\n\n1/2-1/2',
+    ),
+  );
+});
+
+test("parseImportedPgn validates FEN counters in setup headers", () => {
+  assert.throws(
+    () =>
+      parseImportedPgn(
+        '[SetUp "1"]\n[FEN "8/8/8/8/8/8/K7/7k w - - 0 1e2"]\n\n*',
+      ),
+    (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+  );
+});
+
+test("parseImportedPgn rejects counter overflow while replaying moves", () => {
+  assert.throws(
+    () =>
+      parseImportedPgn(
+        '[SetUp "1"]\n[FEN "8/8/8/8/8/8/K7/7k b - - 0 9007199254740991"]\n\n9007199254740991... Kh2 *',
+      ),
+    (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+  );
+});
+
+test("pgnOf records terminal draws without overwriting declared results", () => {
+  const stalemate = new Chess("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1");
+  const exported = pgnOf(stalemate);
+  assert.match(exported, /\[Result "1\/2-1\/2"\]/);
+  assert.doesNotThrow(() => parseImportedPgn(exported));
+
+  const claimed = parseImportedPgn(
+    '[Termination "Black resigned"]\n[Result "1-0"]\n\n1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8 1-0',
+  );
+  assert.match(pgnOf(claimed), /\[Result "1-0"\]/);
 });

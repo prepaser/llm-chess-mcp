@@ -108,7 +108,7 @@ test("rethrows caller cancellation from the Lichess fallback", async () => {
   });
 
   const pending = computeCandidates(
-    new Chess("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1"),
+    new Chess(),
     1500,
     1,
     1,
@@ -119,6 +119,60 @@ test("rethrows caller cancellation from the Lichess fallback", async () => {
   controller.abort(cause);
 
   await assert.rejects(pending, (error: unknown) => error === cause);
+});
+
+test("terminal positions skip candidate sources and discard supplied candidates", async () => {
+  let analyzeCalls = 0;
+  let humanCalls = 0;
+  let explorerCalls = 0;
+  const terminal = new Chess("8/8/8/8/8/8/K7/7k w - - 0 1");
+  const computeCandidates = createCandidateComputation({
+    analyze: async () => {
+      analyzeCalls += 1;
+      return [sfLine("a2a3", 10)];
+    },
+    humanMoveDistribution: async () => {
+      humanCalls += 1;
+      return [{ uci: "a2a3", san: "Ka3", prob: 1 }];
+    },
+    explorerEnabled: () => true,
+    openingExplorer: async () => {
+      explorerCalls += 1;
+      return {
+        db: "lichess",
+        white: 1,
+        draws: 0,
+        black: 0,
+        moves: [],
+        opening: null,
+      };
+    },
+    explorerFailureReason: () => "upstream",
+  });
+
+  assert.deepEqual(
+    await computeCandidates(
+      terminal,
+      1500,
+      1,
+      1,
+      1,
+      { db: "lichess", speeds: [], ratings: [] },
+    ),
+    { candidates: [], moveSensitivity: { level: "low", topMoveSpreadCp: null } },
+  );
+  assert.deepEqual([analyzeCalls, humanCalls, explorerCalls], [0, 0, 0]);
+
+  assert.deepEqual(
+    candidateSetFromData(
+      terminal,
+      1500,
+      [sfLine("a2a3", 10)],
+      [{ uci: "a2a3", san: "Ka3", prob: 1 }],
+      { status: "disabled", totalGames: null, moves: [] },
+    ),
+    { candidates: [], moveSensitivity: { level: "low", topMoveSpreadCp: null } },
+  );
 });
 
 test("merges engine, Maia, and opening data without dropping unique moves", () => {

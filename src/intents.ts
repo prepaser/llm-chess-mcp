@@ -134,6 +134,12 @@ export function candidateSetFromData(
   maiaMoves: Maia3Move[],
   lichessResult: LichessCandidateData,
 ): CandidateSet {
+  if (chess.isGameOver()) {
+    return {
+      candidates: [],
+      moveSensitivity: { level: "low", topMoveSpreadCp: null },
+    };
+  }
   const turn = chess.turn();
   const maiaByUci = new Map(maiaMoves.map((move) => [move.uci, move.prob]));
   const legalUcis = new Set(
@@ -233,6 +239,13 @@ export function createCandidateComputation(
     lichess,
     signal,
   ) => {
+    signal?.throwIfAborted();
+    if (chess.isGameOver()) {
+      return {
+        candidates: [],
+        moveSensitivity: { level: "low", topMoveSpreadCp: null },
+      };
+    }
     const [sfLines, maiaMoves, lichessResult] = await Promise.all([
       dependencies.analyze(chess.fen(), sfDepth, sfMultipv, signal),
       dependencies.humanMoveDistribution(chess, elo, elo, maiaTopN, signal),

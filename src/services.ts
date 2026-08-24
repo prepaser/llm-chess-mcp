@@ -10,7 +10,6 @@ import { defaultGameStore } from "./games.js";
 import type { GameStore } from "./games.js";
 import { createCandidateComputation, rankByIntent } from "./intents.js";
 import type { CandidateSet, LichessOpts } from "./intents.js";
-import { humanMoveDistribution } from "./maia3/inference.js";
 import type { Candidate, Intent, Maia3Move, SfLine } from "./types.js";
 
 export interface AppServices {
@@ -51,6 +50,20 @@ export interface AppServices {
 
 const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) =>
   stockfish.analyze(fen, depth, multipv, signal);
+const humanMoveDistribution: AppServices["humanMoveDistribution"] = async (
+  chess,
+  elo,
+  opponentElo,
+  topN,
+  signal,
+) =>
+  (await import("./maia3/inference.js")).humanMoveDistribution(
+    chess,
+    elo,
+    opponentElo,
+    topN,
+    signal,
+  );
 const openExplorer: AppServices["openingExplorer"] = (
   chess,
   db,
@@ -84,3 +97,24 @@ export const defaultAppServices: AppServices = {
   computeCandidates,
   rankByIntent,
 };
+
+export type DefaultAppServicesLease = {
+  services: AppServices;
+  release(): Promise<void>;
+};
+
+let defaultAppServicesLeaseCount = 0;
+
+export function acquireDefaultAppServices(): DefaultAppServicesLease {
+  defaultAppServicesLeaseCount += 1;
+  let released = false;
+  return {
+    services: defaultAppServices,
+    async release(): Promise<void> {
+      if (released) return;
+      released = true;
+      defaultAppServicesLeaseCount -= 1;
+      if (defaultAppServicesLeaseCount === 0) await defaultAppServices.quit();
+    },
+  };
+}

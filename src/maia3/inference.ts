@@ -111,6 +111,7 @@ export async function humanMoveDistribution(
   signal?: AbortSignal,
 ): Promise<Maia3Move[]> {
   signal?.throwIfAborted();
+  if (chess.isGameOver()) return [];
   const legal = chess.moves({ verbose: true });
   if (legal.length === 0) return [];
   const s = await getSession();

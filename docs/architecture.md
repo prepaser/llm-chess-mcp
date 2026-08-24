@@ -28,6 +28,9 @@ The server is assembled from injected `AppServices`, not from tool-level global
 lookups. Production constructs one service set for the process; tests pass
 small fakes or controlled implementations. This keeps transport registration
 separate from engine startup, network I/O, time, and storage.
+Default `buildServer()` and `serveHttp()` handles share a reference-counted
+service lease; closing the last handle terminates Stockfish. Injected services
+remain caller-owned.
 
 ```text
 stdio --------> entrypoint -> buildServer(AppServices) -> tool modules
@@ -142,8 +145,9 @@ sends one UCI `stop` and keeps the queue fenced until `bestmove`; if the engine
 does not stop within the grace period, the worker is terminated before queued
 work reinitializes it. Partial lines from a cancelled request are never returned.
 
-Maia runs in-process with the bundled ONNX model (5M by default). Its inference
-session is lazy and shared after successful creation. For each snapshot it
+Maia runs in-process with the bundled ONNX model (5M by default). The native
+addon and inference session are loaded lazily and the session is shared after
+successful creation. For each snapshot it
 tokenizes position history, supplies both Elo inputs, masks logits to legal
 moves, mirrors black-to-move moves for the model vocabulary, and normalizes the
 remaining logits. The output is human move likelihood, never an evaluation.
@@ -155,10 +159,11 @@ Lichess is optional and token-gated. The explorer validates speed/rating filters
 locally and forbids filters for `masters`. Each request has a five-second
 attempt timeout, at most two attempts, and a twelve-second overall budget.
 Only timeouts, network failures, HTTP 429, and 5xx responses retry. `Retry-After`
-is honored only when it fits the remaining budget and does not exceed two
-seconds; authentication errors, other 4xx responses, invalid input, and
-malformed responses fail without retry. Successful payloads are checked against
-the legal moves of the snapshot before they can affect a candidate result.
+is honored only when it fits the remaining budget. Requests are serialized
+process-wide, and a 429 applies a shared cooldown; a missing `Retry-After`
+defaults to one minute. Authentication errors, other 4xx responses, invalid
+input, and malformed responses fail without retry. Successful payloads are
+checked against the legal moves of the snapshot before they can affect a candidate result.
 Caller cancellation is combined with each attempt timeout and also interrupts
 retry backoff; it is never converted into an Explorer availability failure.
 

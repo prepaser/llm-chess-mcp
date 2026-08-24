@@ -53,6 +53,10 @@ test("parseCli rejects unknown and valueless options", () => {
   assert.throws(() => parseCli(["--unknown"]), /unknown option: --unknown/);
   assert.throws(() => parseCli(["--transport"]), /--transport requires a value/);
   assert.throws(() => parseCli(["--http=1"]), /--http takes no value/);
+  assert.throws(
+    () => parseCli(["--http", "--allowed-host", "evil.com/path"]),
+    /HTTP hostnames must be non-empty hostnames/,
+  );
 });
 
 test("parseCli rejects invalid ports and paths", () => {
@@ -60,7 +64,14 @@ test("parseCli rejects invalid ports and paths", () => {
     assert.throws(() => parseCli(["--http", "--port", port]), /--port must be/);
   }
 
-  for (const path of ["mcp", "/mcp?debug=1", "/mcp#fragment"]) {
+  for (const path of [
+    "mcp",
+    "//mcp",
+    "/chess/../mcp",
+    "/chess/%2e%2e/mcp",
+    "/mcp?debug=1",
+    "/mcp#fragment",
+  ]) {
     assert.throws(() => parseCli(["--http", "--path", path]), /--path must be an absolute URL path/);
   }
 });

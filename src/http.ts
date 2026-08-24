@@ -15,7 +15,7 @@ import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { buildServer } from "./server.js";
 import { HttpWorkAdmission } from "./http-work.js";
 import type { WorkRunner } from "./http-work.js";
-import { defaultAppServices } from "./services.js";
+import { acquireDefaultAppServices, defaultAppServices } from "./services.js";
 import type { AppServices } from "./services.js";
 
 export type HttpServerOptions = {
@@ -64,7 +64,6 @@ type HttpLimits = Required<
 >;
 
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"] as const;
-let defaultServiceHandleCount = 0;
 const DEFAULT_LIMITS: HttpLimits = {
   maxSessions: 64,
   sessionIdleTtlMs: 30 * 60 * 1_000,
@@ -97,11 +96,26 @@ function bindHost(host: string): string {
     : host;
 }
 
+function canonicalIpv4Host(host: string): string | undefined {
+  if (!/^\d+(?:\.\d+){0,3}$/.test(host)) return undefined;
+  try {
+    const canonical = new URL(`http://${host}`).hostname;
+    return isIP(canonical) === 4 ? canonical : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeIpv4BindHost(host: string): string {
+  const unwrapped = bindHost(host);
+  return canonicalIpv4Host(unwrapped) ?? host;
+}
+
 function normalizeAllowedHost(host: string): string {
   const normalized = host.toLowerCase();
   const unwrapped = bindHost(normalized);
-  if (isIP(unwrapped) !== 6) return normalized;
-  return new URL(`http://[${unwrapped}]`).hostname;
+  if (isIP(unwrapped) === 6) return new URL(`http://[${unwrapped}]`).hostname;
+  return canonicalIpv4Host(unwrapped) ?? normalized;
 }
 
 function jsonError(
@@ -136,12 +150,27 @@ function closeWithError(
   jsonError(res, status, message, { connection: "close", ...headers });
 }
 
-function requestPath(req: IncomingMessage): string | null {
+function canonicalPath(path: string): string | null {
+  if (
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    path.includes("?") ||
+    path.includes("#")
+  ) {
+    return null;
+  }
   try {
-    return new URL(req.url ?? "/", "http://localhost").pathname;
+    return new URL(path, "http://localhost").pathname === path ? path : null;
   } catch {
     return null;
   }
+}
+
+function requestPath(req: IncomingMessage): string | null {
+  const raw = req.url;
+  if (raw === undefined) return null;
+  const queryIndex = raw.search(/[?#]/);
+  return canonicalPath(queryIndex === -1 ? raw : raw.slice(0, queryIndex));
 }
 
 function sessionId(req: IncomingMessage): string | null | undefined {
@@ -366,7 +395,7 @@ export async function serveHttp(
 ): Promise<HttpServerHandle> {
   const appServices = services ?? defaultAppServices;
   const ownsServices = services === undefined;
-  const host = options.host ?? "127.0.0.1";
+  const host = normalizeIpv4BindHost(options.host ?? "127.0.0.1");
   const listenHost = bindHost(host);
   const requestedPort = options.port ?? 3_000;
   const path = options.path ?? "/mcp";
@@ -380,10 +409,13 @@ export async function serveHttp(
   if (!host || !Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65_535) {
     throw new Error("invalid HTTP listen address");
   }
-  if (!path.startsWith("/") || path.includes("?") || path.includes("#")) {
+  if (canonicalPath(path) === null) {
     throw new Error("invalid HTTP endpoint path");
   }
-  if (allowedHosts.length === 0 || allowedHosts.some((value) => !value)) {
+  if (
+    allowedHosts.length === 0 ||
+    allowedHosts.some((value) => !value || /[/?#]/.test(value))
+  ) {
     throw new Error("at least one allowed HTTP hostname is required");
   }
   const limits = resolveLimits(options);
@@ -654,7 +686,7 @@ export async function serveHttp(
   server.requestTimeout = 0;
   server.timeout = limits.socketTimeoutMs;
   server.keepAliveTimeout = limits.keepAliveTimeoutMs;
-  if (ownsServices) defaultServiceHandleCount += 1;
+  const lease = ownsServices ? acquireDefaultAppServices() : undefined;
   try {
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error): void => reject(error);
@@ -665,9 +697,7 @@ export async function serveHttp(
       });
     });
   } catch (error) {
-    if (ownsServices && --defaultServiceHandleCount === 0) {
-      await appServices.quit();
-    }
+    await lease?.release();
     throw error;
   }
   server.on("error", (error) => console.error("HTTP server failed", error));
@@ -702,9 +732,7 @@ export async function serveHttp(
         try {
           await closeNodeServer(server);
         } finally {
-          if (ownsServices && --defaultServiceHandleCount === 0) {
-            await appServices.quit();
-          }
+          await lease?.release();
         }
       })()),
   };

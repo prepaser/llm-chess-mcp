@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/server";
-import { defaultAppServices } from "./services.js";
+import { acquireDefaultAppServices } from "./services.js";
 import type { AppServices } from "./services.js";
 import { registerAnalysisTools } from "./tools/analysis.js";
 import { registerCandidateTools } from "./tools/candidates.js";
@@ -11,7 +11,7 @@ const { version: SERVER_VERSION } = createRequire(import.meta.url)(
   "../package.json",
 ) as { version: string };
 
-export function buildServer(services: AppServices = defaultAppServices): McpServer {
+function buildServerWithServices(services: AppServices): McpServer {
   const server = new McpServer(
     { name: "llm-chess-mcp", version: SERVER_VERSION },
     { capabilities: { tools: {} } },
@@ -21,4 +21,21 @@ export function buildServer(services: AppServices = defaultAppServices): McpServ
   registerCandidateTools(server, services);
   registerExplorerTool(server, services);
   return server;
+}
+
+export function buildServer(services?: AppServices): McpServer {
+  if (services !== undefined) return buildServerWithServices(services);
+
+  const lease = acquireDefaultAppServices();
+  try {
+    const server = buildServerWithServices(lease.services);
+    const closeServer = server.close.bind(server);
+    let shutdown: Promise<void> | undefined;
+    server.close = (): Promise<void> =>
+      (shutdown ??= closeServer().finally(() => lease.release()));
+    return server;
+  } catch (error) {
+    void lease.release();
+    throw error;
+  }
 }

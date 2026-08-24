@@ -34,6 +34,22 @@ function splitOption(arg: string): [string, string] | null {
   return index === -1 ? null : [arg.slice(0, index), arg.slice(index + 1)];
 }
 
+function isCanonicalHttpPath(path: string): boolean {
+  if (
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    path.includes("?") ||
+    path.includes("#")
+  ) {
+    return false;
+  }
+  try {
+    return new URL(path, "http://localhost").pathname === path;
+  } catch {
+    return false;
+  }
+}
+
 export function parseCli(args: string[]): CliOptions {
   let transport: TransportKind = "stdio";
   let host = "127.0.0.1";
@@ -101,11 +117,11 @@ export function parseCli(args: string[]): CliOptions {
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error("--port must be between 1 and 65535");
   }
-  if (!path.startsWith("/") || path.includes("?") || path.includes("#")) {
+  if (!isCanonicalHttpPath(path)) {
     throw new Error("--path must be an absolute URL path without query or fragment");
   }
-  if (!host || allowedHosts.some((value) => !value)) {
-    throw new Error("HTTP hostnames must not be empty");
+  if (!host || allowedHosts.some((value) => !value || /[/?#]/.test(value))) {
+    throw new Error("HTTP hostnames must be non-empty hostnames");
   }
   if (transport === "stdio" && hasHttpOption) {
     throw new Error("HTTP options require --transport http");

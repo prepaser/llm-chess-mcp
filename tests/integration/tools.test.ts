@@ -476,6 +476,56 @@ test("game_legal_moves marks en passant as a capture", async (t) => {
   });
 });
 
+test("game_legal_moves returns no executable moves after game over", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    await context.client.close();
+    await context.server.close();
+  });
+
+  const created = await success(context.client, "create_game", {
+    fen: "8/8/8/8/8/8/K7/7k w - - 0 1",
+  });
+  const legal = await success(context.client, "game_legal_moves", {
+    game_id: created.game_id,
+  });
+
+  assert.equal(legal.count, 0);
+  assert.deepEqual(legal.moves, []);
+});
+
+test("game_pgn exports a checkmate result that round-trips through import", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    await context.client.close();
+    await context.server.close();
+  });
+
+  const created = await success(context.client, "create_game", {});
+  const gameId = String(created.game_id);
+  for (const [revision, move] of ["f3", "e5", "g4", "Qh4#"].entries()) {
+    await success(context.client, "game_play_move", {
+      game_id: gameId,
+      move,
+      expected_revision: revision,
+    });
+  }
+
+  const exported = await success(context.client, "game_pgn", { game_id: gameId });
+  assert.match(String(exported.pgn), /\[Result "0-1"\]/);
+  assert.match(String(exported.pgn), /Qh4# 0-1/);
+
+  const imported = await success(context.client, "game_import_pgn", {
+    pgn: String(exported.pgn),
+  });
+  assert.equal(imported.isCheckmate, true);
+  const roundTrip = await success(context.client, "game_pgn", {
+    game_id: imported.game_id,
+  });
+  assert.match(String(roundTrip.pgn), /\[Result "0-1"\]/);
+  assert.match(String(roundTrip.pgn), /Qh4# 0-1/);
+});
+
 test("handler failures retain structured error envelopes", async (t) => {
   const context = await fixture();
   t.after(async () => {
@@ -558,6 +608,31 @@ test("candidate payload keeps the original position when injected computation mu
   assert.equal(payload.fen, before.chess.fen());
   assert.equal(payload.turn, before.chess.turn());
   assert.equal(context.games.getSnapshot(gameId).chess.fen(), before.chess.fen());
+});
+
+test("candidate tools return no moves for terminal games", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    await context.client.close();
+    await context.server.close();
+  });
+  const gameId = context.games.createGame("8/8/8/8/8/8/K7/7k w - - 0 1");
+
+  const args = { game_id: gameId, analysis_level: "fast" as const };
+  const candidates = await success(context.client, "move_candidates", args);
+  assert.deepEqual(candidates.candidates, []);
+  assert.deepEqual(candidates.moveSensitivity, {
+    level: "low",
+    topMoveSpreadCp: null,
+  });
+
+  const byIntent = await success(context.client, "move_candidates_by_intent", {
+    ...args,
+    intent: "natural",
+  });
+  assert.deepEqual(byIntent.candidates, []);
+  assert.deepEqual(context.calls.candidates, []);
+  assert.deepEqual(context.calls.intents, []);
 });
 
 test("move evaluation reports terminal draw reasons without analyzing successors", async (t) => {

@@ -7,6 +7,10 @@ export const MAX_EVALUATED_MOVES = 10;
 export const MAX_PGN_BYTES = 1024 * 1024;
 export const MAX_PGN_PLIES = 4096;
 
+const PGN_RESULTS = ["1-0", "0-1", "1/2-1/2", "*"] as const;
+
+type PgnResult = (typeof PGN_RESULTS)[number];
+
 type MoveDescriptor = {
   from: Square;
   to: Square;
@@ -18,9 +22,35 @@ function moveDescriptor(move: Move): MoveDescriptor {
   return move.promotion ? { ...base, promotion: move.promotion } : base;
 }
 
+function isSafeDecimal(value: string, minimum: number): boolean {
+  return (
+    /^(?:0|[1-9]\d*)$/.test(value) &&
+    Number.isSafeInteger(Number(value)) &&
+    Number(value) >= minimum
+  );
+}
+
+export function assertSafeFenCounters(fen: string): void {
+  const fields = fen.split(/\s+/);
+  if (fields.length >= 5 && !isSafeDecimal(fields[4] ?? "", 0)) {
+    throw new ChessError(
+      "INVALID_FEN",
+      "FEN halfmove clock must be a non-negative safe decimal integer",
+    );
+  }
+  if (fields.length >= 6 && !isSafeDecimal(fields[5] ?? "", 1)) {
+    throw new ChessError(
+      "INVALID_FEN",
+      "FEN fullmove number must be a positive safe decimal integer",
+    );
+  }
+}
+
 export function snapshotChess(chess: Chess): Chess {
   const history = chess.history({ verbose: true });
-  const snapshot = new Chess(history[0]?.before ?? chess.fen());
+  const initialFen = history[0]?.before ?? chess.fen();
+  assertSafeFenCounters(initialFen);
+  const snapshot = new Chess(initialFen);
   const comments = new Map(
     chess.getComments().map(({ fen, comment }) => [fen, comment]),
   );
@@ -36,6 +66,7 @@ export function snapshotChess(chess: Chess): Chess {
     snapshot.move(moveDescriptor(move));
     restoreComment();
   }
+  assertSafeFenCounters(snapshot.fen());
   return snapshot;
 }
 
@@ -48,30 +79,122 @@ export function drawResult(chess: Chess): DrawResult | null {
   return "draw";
 }
 
-function declaredPgnResults(pgn: string): string[] {
-  const headerResults = [...pgn.matchAll(/^\s*\[Result\s+"([^"]*)"\s*\]\s*$/gm)].map(
-    (match) => match[1] ?? "",
-  );
-  const movetext = pgn
-    .replace(/^\s*\[.*\]\s*$/gm, "")
-    .replace(/\{[^}]*\}/gs, "")
-    .replace(/;[^\r\n]*/g, "");
+function withoutPgnComments(pgn: string): string {
+  let result = "";
+  let braceComment = false;
+  let lineComment = false;
+  let quoted = false;
+  let escaped = false;
+
+  for (const char of pgn) {
+    if (braceComment) {
+      if (char === "}") braceComment = false;
+      result += char === "\n" || char === "\r" ? char : " ";
+      continue;
+    }
+    if (lineComment) {
+      if (char === "\n" || char === "\r") {
+        lineComment = false;
+        result += char;
+      } else {
+        result += " ";
+      }
+      continue;
+    }
+    if (quoted) {
+      result += char;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === '"') {
+      quoted = true;
+      result += char;
+      continue;
+    }
+    if (char === "{") {
+      braceComment = true;
+      result += " ";
+    } else if (char === ";") {
+      lineComment = true;
+      result += " ";
+    } else {
+      result += char;
+    }
+  }
+  return result;
+}
+
+function isPgnResult(value: string): value is PgnResult {
+  return (PGN_RESULTS as readonly string[]).includes(value);
+}
+
+function declaredPgnResult(pgn: string): PgnResult | undefined {
+  const visiblePgn = withoutPgnComments(pgn);
+  const headerResults = [
+    ...visiblePgn.matchAll(
+      /^\s*\[\s*Result\s+"((?:\\.|[^"\\])*)"\s*\]\s*$/gm,
+    ),
+  ].map((match) => match[1] ?? "");
+  const movetext = visiblePgn.replace(/^\s*\[[^\r\n]*\]\s*$/gm, "");
   const markers = [
     ...movetext.matchAll(/(?:^|\s)(1-0|0-1|1\/2-1\/2|\*)(?=\s|$)/g),
   ].map((match) => match[1] ?? "");
-  return [...headerResults, ...markers];
+  const results = [...headerResults, ...markers];
+
+  if (!results.every(isPgnResult)) {
+    throw new ChessError("INVALID_PGN", "invalid PGN result");
+  }
+  const result = results[0];
+  if (results.some((value) => value !== result)) {
+    throw new ChessError("INVALID_PGN", "PGN result header and marker disagree");
+  }
+  return result;
 }
 
-function validateCheckmateResult(chess: Chess, pgn: string): void {
-  if (!chess.isCheckmate()) return;
+function validatePgnFenCounters(pgn: string): void {
+  for (const match of withoutPgnComments(pgn).matchAll(
+    /^\s*\[\s*FEN\s+"((?:\\.|[^"\\])*)"\s*\]\s*$/gim,
+  )) {
+    assertSafeFenCounters(match[1] ?? "");
+  }
+}
 
-  const expected = chess.turn() === "w" ? "0-1" : "1-0";
-  if (declaredPgnResults(pgn).some((result) => result !== expected)) {
+function validateResultForPosition(chess: Chess, result: PgnResult | undefined): void {
+  if (result === undefined) return;
+
+  if (chess.isCheckmate()) {
+    const expected = chess.turn() === "w" ? "0-1" : "1-0";
+    if (result === expected) return;
     throw new ChessError(
       "INVALID_PGN",
       `checkmate result must be ${expected}`,
     );
   }
+
+  if (
+    (chess.isStalemate() || chess.isInsufficientMaterial()) &&
+    (result === "1-0" || result === "0-1")
+  ) {
+    throw new ChessError(
+      "INVALID_PGN",
+      "a drawn position cannot have a decisive result",
+    );
+  }
+}
+
+export function pgnOf(chess: Chess): string {
+  const result = chess.isCheckmate()
+    ? (chess.turn() === "w" ? "0-1" : "1-0")
+    : chess.isDraw() && (!chess.getHeaders().Result || chess.getHeaders().Result === "*")
+      ? "1/2-1/2"
+      : undefined;
+  if (result === undefined) return chess.pgn();
+
+  const snapshot = snapshotChess(chess);
+  snapshot.setHeader("Result", result);
+  return snapshot.pgn();
 }
 
 export function parseImportedPgn(pgn: string): Chess {
@@ -81,6 +204,8 @@ export function parseImportedPgn(pgn: string): Chess {
       `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
     );
   }
+  validatePgnFenCounters(pgn);
+  const result = declaredPgnResult(pgn);
 
   let chess: Chess;
   try {
@@ -89,13 +214,14 @@ export function parseImportedPgn(pgn: string): Chess {
   } catch {
     throw new ChessError("INVALID_PGN", "invalid or illegal PGN");
   }
+  assertSafeFenCounters(chess.fen());
   if (chess.history().length > MAX_PGN_PLIES) {
     throw new ChessError(
       "PGN_TOO_MANY_MOVES",
       `PGN exceeds the ${MAX_PGN_PLIES}-ply limit`,
     );
   }
-  validateCheckmateResult(chess, pgn);
+  validateResultForPosition(chess, result);
   return chess;
 }
 

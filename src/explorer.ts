@@ -35,9 +35,9 @@ export const lichessRatingSchema = z.union([
 
 export const EXPLORER_ATTEMPT_TIMEOUT_MS = 5_000;
 export const EXPLORER_MAX_ATTEMPTS = 2;
-export const EXPLORER_MAX_RETRY_DELAY_MS = 2_000;
 export const EXPLORER_DEFAULT_RETRY_DELAY_MS = 250;
 export const EXPLORER_TOTAL_TIMEOUT_MS = 12_000;
+export const EXPLORER_RATE_LIMIT_COOLDOWN_MS = 60_000;
 
 export const EXPLORER_ERROR_KINDS = [
   "disabled",
@@ -83,6 +83,7 @@ export type ExplorerFetch = (
 
 export interface ExplorerRequestOptions {
   fetch?: ExplorerFetch;
+  limiter?: ExplorerLimiter;
   sleep?: (ms: number) => Promise<void>;
   timeout?: (ms: number) => AbortSignal;
   signal?: AbortSignal;
@@ -102,7 +103,7 @@ const responseSchema = z.object({
       white: countSchema,
       draws: countSchema,
       black: countSchema,
-      averageRating: z.number().nonnegative().optional(),
+      averageRating: z.number().int().nonnegative().optional(),
     }),
   ),
   opening: z
@@ -142,6 +143,12 @@ function retryAfterMs(value: string | null, now: number): number {
     : Date.parse(value) - now;
   if (!Number.isFinite(delay)) return EXPLORER_DEFAULT_RETRY_DELAY_MS;
   return Math.max(0, delay);
+}
+
+function rateLimitCooldownMs(value: string | null, now: number): number {
+  return value === null || value.trim() === ""
+    ? EXPLORER_RATE_LIMIT_COOLDOWN_MS
+    : retryAfterMs(value, now);
 }
 
 function isRetryable(kind: ExplorerErrorKind): boolean {
@@ -185,11 +192,152 @@ async function sleepWithSignal(
   });
 }
 
+async function awaitWithSignal<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  throwIfAborted(signal);
+  if (!signal) return promise;
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason);
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (cause) => {
+        cleanup();
+        reject(cause);
+      },
+    );
+  });
+}
+
+export interface ExplorerLimiterOptions {
+  callerSignal: AbortSignal | undefined;
+  deadline: number;
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
+}
+
+export interface ExplorerLimiter {
+  readonly pending: number;
+  run<T>(
+    options: ExplorerLimiterOptions,
+    request: () => Promise<T>,
+  ): Promise<T>;
+  cooldown(ms: number, now: number): void;
+}
+
+interface QueuedRequest {
+  onAbort: () => void;
+  signal: AbortSignal | undefined;
+  start: () => void;
+}
+
+class RequestLimiter implements ExplorerLimiter {
+  #active = false;
+  #cooldownUntil = 0;
+  #queue: QueuedRequest[] = [];
+
+  get pending(): number {
+    return this.#queue.length;
+  }
+
+  cooldown(ms: number, now: number): void {
+    this.#cooldownUntil = Math.max(this.#cooldownUntil, now + ms);
+  }
+
+  run<T>(
+    options: ExplorerLimiterOptions,
+    request: () => Promise<T>,
+  ): Promise<T> {
+    throwIfAborted(options.callerSignal);
+    if (this.#active) return this.#enqueue(options, request);
+    this.#active = true;
+    return this.#run(options, request);
+  }
+
+  #enqueue<T>(
+    options: ExplorerLimiterOptions,
+    request: () => Promise<T>,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let waiter: QueuedRequest;
+      const remove = () => {
+        const index = this.#queue.indexOf(waiter);
+        if (index < 0) return;
+        this.#queue.splice(index, 1);
+        waiter.signal?.removeEventListener("abort", waiter.onAbort);
+        reject(waiter.signal?.reason);
+      };
+      waiter = {
+        onAbort: remove,
+        signal: options.callerSignal,
+        start: () => {
+          void this.#run(options, request).then(resolve, reject);
+        },
+      };
+      this.#queue.push(waiter);
+      options.callerSignal?.addEventListener("abort", remove, { once: true });
+      if (options.callerSignal?.aborted) remove();
+    });
+  }
+
+  async #run<T>(
+    options: ExplorerLimiterOptions,
+    request: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      const cooldownWait = this.#waitForCooldown(options);
+      if (cooldownWait) await cooldownWait;
+      throwIfAborted(options.callerSignal);
+      return await request();
+    } finally {
+      this.#active = false;
+      this.#startNext();
+    }
+  }
+
+  #startNext(): void {
+    const waiter = this.#queue.shift();
+    if (!waiter) return;
+    waiter.signal?.removeEventListener("abort", waiter.onAbort);
+    this.#active = true;
+    waiter.start();
+  }
+
+  #waitForCooldown(options: ExplorerLimiterOptions): Promise<void> | undefined {
+    const cooldownUntil = this.#cooldownUntil;
+    const delay = cooldownUntil - options.now();
+    if (delay <= 0) return;
+    if (delay >= options.deadline - options.now()) {
+      throw error("rate_limited");
+    }
+    return sleepWithSignal(options.sleep, delay, options.callerSignal).then(() => {
+      if (this.#cooldownUntil === cooldownUntil) this.#cooldownUntil = 0;
+    });
+  }
+}
+
+export function createExplorerLimiter(): ExplorerLimiter {
+  return new RequestLimiter();
+}
+
+const processExplorerLimiter = createExplorerLimiter();
+
 interface ExplorerSetup {
   callerSignal: AbortSignal | undefined;
   db: "lichess" | "masters";
   deadline: number;
   legalMoves: Map<string, string>;
+  limiter: ExplorerLimiter;
   now: () => number;
   request: ExplorerFetch;
   sleep: (ms: number) => Promise<void>;
@@ -199,6 +347,10 @@ interface ExplorerSetup {
 }
 
 interface SuccessfulAttempt {
+  result: ExplorerResult;
+}
+
+interface SuccessfulResponse {
   response: Response;
   signal: AbortSignal;
 }
@@ -248,6 +400,7 @@ function setupExplorerRequest(
     legalMoves: new Map(
       chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
     ),
+    limiter: options.limiter ?? processExplorerLimiter,
     now,
     request: options.fetch ?? globalThis.fetch,
     sleep:
@@ -262,6 +415,33 @@ function setupExplorerRequest(
 async function attemptRequest(
   setup: ExplorerSetup,
 ): Promise<SuccessfulAttempt | FailedAttempt> {
+  return setup.limiter.run(setup, async () => {
+    const attempt = await attemptRequestUnlocked(setup);
+    if ("error" in attempt) return attempt;
+    return {
+      result: await normalizeSuccessfulResponse(
+        attempt.response,
+        attempt.signal,
+        setup,
+      ),
+    };
+  });
+}
+
+async function discardResponse(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    if (response.body) await awaitWithSignal(response.body.cancel(), signal);
+  } catch {
+    throwIfAborted(signal);
+  }
+}
+
+async function attemptRequestUnlocked(
+  setup: ExplorerSetup,
+): Promise<SuccessfulResponse | FailedAttempt> {
   const { callerSignal, deadline, now, request, timeout, token, url } = setup;
   throwIfAborted(callerSignal);
   const remaining = deadline - now();
@@ -295,9 +475,18 @@ async function attemptRequest(
       : response.status >= 500 && response.status <= 599
         ? "upstream"
         : "http";
+  const retryAfter = response.headers.get("retry-after");
+  await discardResponse(response, callerSignal);
+  if (kind === "rate_limited") {
+    const rateLimitedAt = now();
+    setup.limiter.cooldown(
+      rateLimitCooldownMs(retryAfter, rateLimitedAt),
+      rateLimitedAt,
+    );
+  }
   return {
     error: error(kind, response.status),
-    retryAfter: response.headers.get("retry-after"),
+    retryAfter,
   };
 }
 
@@ -355,12 +544,25 @@ async function normalizeSuccessfulResponse(
   };
 }
 
-async function retryAfterNetworkFailure(setup: ExplorerSetup): Promise<void> {
-  const delay = Math.min(
-    EXPLORER_DEFAULT_RETRY_DELAY_MS,
-    Math.max(0, setup.deadline - setup.now()),
-  );
+async function retryAfterFailure(
+  setup: ExplorerSetup,
+  delay: number,
+  originalError: ExplorerError,
+): Promise<void> {
+  if (delay >= setup.deadline - setup.now()) throw originalError;
   await sleepWithSignal(setup.sleep, delay, setup.callerSignal);
+  if (setup.deadline - setup.now() <= 0) throw originalError;
+}
+
+async function retryAfterNetworkFailure(
+  setup: ExplorerSetup,
+  originalError: ExplorerError,
+): Promise<void> {
+  await retryAfterFailure(
+    setup,
+    EXPLORER_DEFAULT_RETRY_DELAY_MS,
+    originalError,
+  );
 }
 
 export async function openingExplorer(
@@ -373,39 +575,43 @@ export async function openingExplorer(
   const setup = setupExplorerRequest(chess, db, speeds, ratings, options);
   let lastError = error("network");
   for (let attempt = 0; attempt < EXPLORER_MAX_ATTEMPTS; attempt += 1) {
-    const attemptResult = await attemptRequest(setup);
+    let attemptResult: SuccessfulAttempt | FailedAttempt;
+    try {
+      attemptResult = await attemptRequest(setup);
+    } catch (cause) {
+      if (cause instanceof ExplorerError && cause.kind === "rate_limited") {
+        throw cause;
+      }
+      if (!(cause instanceof ExplorerError) || !isRetryable(cause.kind)) {
+        throw cause;
+      }
+      lastError = cause;
+      if (attempt + 1 >= EXPLORER_MAX_ATTEMPTS) throw lastError;
+      await retryAfterNetworkFailure(setup, lastError);
+      continue;
+    }
     if ("error" in attemptResult) {
       lastError = attemptResult.error;
       if (!isRetryable(lastError.kind) || attempt + 1 >= EXPLORER_MAX_ATTEMPTS) {
         throw lastError;
       }
       if (attemptResult.retryAfter === undefined) {
-        await retryAfterNetworkFailure(setup);
+        await retryAfterNetworkFailure(setup, lastError);
         continue;
       }
-      const delay = retryAfterMs(attemptResult.retryAfter, setup.now());
-      const retryBudget = Math.max(0, setup.deadline - setup.now());
-      if (delay > EXPLORER_MAX_RETRY_DELAY_MS || delay >= retryBudget) {
-        throw lastError;
+      const delay =
+        lastError.kind === "rate_limited"
+          ? rateLimitCooldownMs(attemptResult.retryAfter, setup.now())
+          : retryAfterMs(attemptResult.retryAfter, setup.now());
+      if (lastError.kind === "rate_limited") {
+        if (delay >= setup.deadline - setup.now()) throw lastError;
+        continue;
       }
-      await sleepWithSignal(setup.sleep, delay, setup.callerSignal);
+      await retryAfterFailure(setup, delay, lastError);
       continue;
     }
 
-    try {
-      return await normalizeSuccessfulResponse(
-        attemptResult.response,
-        attemptResult.signal,
-        setup,
-      );
-    } catch (cause) {
-      if (!(cause instanceof ExplorerError) || !isRetryable(cause.kind)) {
-        throw cause;
-      }
-      lastError = cause;
-      if (attempt + 1 >= EXPLORER_MAX_ATTEMPTS) throw lastError;
-      await retryAfterNetworkFailure(setup);
-    }
+    return attemptResult.result;
   }
 
   throw lastError;
