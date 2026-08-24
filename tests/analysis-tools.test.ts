@@ -71,6 +71,7 @@ test("move_evaluate classifies terminal draws from the mover's prior score", asy
       cpLoss: expected.cpLoss,
       classification: expected.classification,
       pv: [],
+      pvSan: [],
     });
   }
 

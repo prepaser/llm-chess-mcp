@@ -214,12 +214,13 @@ function fakeServices(): {
     analyze: async (fen, depth, multipv) => {
       calls.analysis.push({ fen, depth, multipv });
       if (faults.analysis) throw new Error("fake analysis failure");
+      const legal = new Chess(fen).moves({ verbose: true });
       return Array.from({ length: multipv }, (_, index) => ({
         multipv: index + 1,
         scoreCp: 70 - index * 35,
         scoreMate: null,
         wdl: [520 - index * 50, 330, 150 + index * 50],
-        pv: [index === 0 ? "e2e4" : "d2d4"],
+        pv: legal[index] ? [legal[index].lan] : [],
       }));
     },
     quit: async () => {
@@ -334,6 +335,10 @@ test("all tools expose contracts and execute with isolated fake services", async
   });
   assert.equal(analyzed.analysis_level, "fast");
   assert.equal(array(analyzed.lines).length, 2);
+  assert.deepEqual(
+    array(analyzed.lines).map((line) => object(line).pvSan),
+    [["a3"], ["a4"]],
+  );
   assert.equal(context.calls.analysis[0]?.depth, 9);
 
   const human = await success(context.client, "human_move_distribution", {
@@ -360,6 +365,7 @@ test("all tools expose contracts and execute with isolated fake services", async
   assert.equal(evaluation.move, "e4");
   assert.equal(evaluation.result, "ongoing");
   assert.equal(evaluation.classification, "inaccuracy");
+  assert.deepEqual(evaluation.pvSan, ["Nc6"]);
   assert.equal(context.games.getGame(gameId).revision, 0);
 
   const candidateArgs = {

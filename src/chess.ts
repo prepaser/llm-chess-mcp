@@ -97,3 +97,19 @@ export function parseMove(chess: Chess, move: string): Move {
 export function playParsedMove(chess: Chess, move: Move): Move {
   return chess.move(moveDescriptor(move));
 }
+
+export function pvToSan(chess: Chess, pv: readonly string[]): string[] {
+  const copy = new Chess(chess.fen());
+  const san: string[] = [];
+  for (const uci of pv) {
+    try {
+      const move = parseMove(copy, uci);
+      san.push(move.san);
+      playParsedMove(copy, move);
+    } catch (error) {
+      if (!(error instanceof ChessError)) throw error;
+      break;
+    }
+  }
+  return san;
+}

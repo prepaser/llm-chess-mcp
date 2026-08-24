@@ -1718,7 +1718,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Evaluate one or more moves with Stockfish without mutating the game. Pass a single move string or an array of moves to compare. Returns, for each move, the score after the move (from the mover's perspective), cpLoss vs the best move, and a classification (best/excellent/good/inaccuracy/mistake/blunder).",
+      "description": "Evaluate one or more moves with Stockfish without mutating the game. Pass a single move string or an array of moves to compare. Returns, for each move, the score after the move (from the mover's perspective), cpLoss vs the best move, a classification (best/excellent/good/inaccuracy/mistake/blunder), and the continuation as UCI pv and SAN pvSan.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -1812,6 +1812,12 @@
                   },
                   "type": "array"
                 },
+                "pvSan": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
                 "result": {
                   "enum": [
                     "ongoing",
@@ -1857,7 +1863,8 @@
                 "bestCp",
                 "cpLoss",
                 "classification",
-                "pv"
+                "pv",
+                "pvSan"
               ],
               "type": "object"
             },
@@ -2087,7 +2094,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Run Stockfish on the current position and return the top engine lines (multipv). Scores are from the side-to-move perspective: positive cp = side to move is better; mate N = side to move mates in N. wdl is [win, draw, loss] in permille for the side to move. Use analysis_level (fast/normal/deep) or explicit depth/multipv. Does NOT mutate the game.",
+      "description": "Run Stockfish on the current position and return the top engine lines (multipv) as UCI pv and SAN pvSan. Scores are from the side-to-move perspective: positive cp = side to move is better; mate N = side to move mates in N. wdl is [win, draw, loss] in permille for the side to move. Use analysis_level (fast/normal/deep) or explicit depth/multipv. Does NOT mutate the game.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
@@ -2153,6 +2160,12 @@
                   },
                   "type": "array"
                 },
+                "pvSan": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
                 "scoreCp": {
                   "anyOf": [
                     {
@@ -2200,7 +2213,8 @@
                 "scoreCp",
                 "scoreMate",
                 "wdl",
-                "pv"
+                "pv",
+                "pvSan"
               ],
               "type": "object"
             },

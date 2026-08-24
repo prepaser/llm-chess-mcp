@@ -60,7 +60,7 @@ export const TOOL_META = {
   position_analyze: {
     title: "Analyze Chess Position",
     description:
-      "Run Stockfish on the current position and return the top engine lines (multipv). Scores are from the side-to-move perspective: positive cp = side to move is better; mate N = side to move mates in N. wdl is [win, draw, loss] in permille for the side to move. Use analysis_level (fast/normal/deep) or explicit depth/multipv. Does NOT mutate the game.",
+      "Run Stockfish on the current position and return the top engine lines (multipv) as UCI pv and SAN pvSan. Scores are from the side-to-move perspective: positive cp = side to move is better; mate N = side to move mates in N. wdl is [win, draw, loss] in permille for the side to move. Use analysis_level (fast/normal/deep) or explicit depth/multipv. Does NOT mutate the game.",
     annotations: readOnly(),
   },
   human_move_distribution: {
@@ -72,7 +72,7 @@ export const TOOL_META = {
   move_evaluate: {
     title: "Evaluate Chess Moves",
     description:
-      "Evaluate one or more moves with Stockfish without mutating the game. Pass a single move string or an array of moves to compare. Returns, for each move, the score after the move (from the mover's perspective), cpLoss vs the best move, and a classification (best/excellent/good/inaccuracy/mistake/blunder).",
+      "Evaluate one or more moves with Stockfish without mutating the game. Pass a single move string or an array of moves to compare. Returns, for each move, the score after the move (from the mover's perspective), cpLoss vs the best move, a classification (best/excellent/good/inaccuracy/mistake/blunder), and the continuation as UCI pv and SAN pvSan.",
     annotations: readOnly(),
   },
   move_candidates: {

@@ -148,6 +148,7 @@ test(
       });
       assert.equal(analyzed.revision, 1);
       assert.equal((analyzed.lines as unknown[]).length, 1);
+      assert.ok(Array.isArray((analyzed.lines as JsonObject[])[0]?.pvSan));
 
       const human = await success(client, "human_move_distribution", {
         game_id: gameId,
@@ -165,6 +166,7 @@ test(
       assert.equal(evaluated.revision, 1);
       assert.equal((evaluated.results as unknown[]).length, 1);
       assert.equal((evaluated.results as JsonObject[])[0]?.move, "e5");
+      assert.ok(Array.isArray((evaluated.results as JsonObject[])[0]?.pvSan));
 
       const candidateArgs = {
         game_id: gameId,

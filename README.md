@@ -279,7 +279,7 @@ codex mcp add llm-chess-mcp --command npx --args -y llm-chess-mcp --env LICHESS_
 | `game_legal_moves` | All legal moves with metadata |
 | `game_pgn` | Export the game as PGN |
 | `game_import_pgn` | Import a PGN into a new game |
-| `position_analyze` | Stockfish multipv lines (cp/mate/WDL + PV), `analysis_level` preset |
+| `position_analyze` | Stockfish multipv lines (cp/mate/WDL + UCI/SAN PV), `analysis_level` preset |
 | `human_move_distribution` | Maia3 human-move probabilities at a target Elo |
 | `move_evaluate` | Score one or more moves + cpLoss + classification |
 | `move_candidates` | **Primary tool**: unified candidates (objective + human + opening) |
@@ -307,6 +307,9 @@ human-readable summary and must not be parsed as data.
   `best / excellent / good / inaccuracy / mistake / blunder`.
 - `maia3Prob` is a **human-likelihood**, not move quality. A high-probability move
   can still be objectively bad.
+- Analysis continuations return `pv` in UCI and the same legal prefix in
+  `pvSan` as SAN. If an engine line contains an invalid move, `pvSan` stops
+  before it while the original `pv` remains unchanged.
 
 ## Candidate structure
 

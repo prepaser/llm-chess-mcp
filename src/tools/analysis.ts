@@ -4,6 +4,7 @@ import {
   drawResult,
   parseMove,
   playParsedMove,
+  pvToSan,
   snapshotChess,
 } from "../chess.js";
 import {
@@ -61,6 +62,7 @@ export function registerAnalysisTools(
             scoreMate: line.scoreMate,
             wdl: line.wdl,
             pv: line.pv,
+            pvSan: pvToSan(chess, line.pv),
           })),
         };
         return toolResult(
@@ -143,6 +145,7 @@ export function registerAnalysisTools(
               cpLoss: null,
               classification: "best",
               pv: [],
+              pvSan: [],
             });
             continue;
           }
@@ -162,6 +165,7 @@ export function registerAnalysisTools(
                   ? (classifyCpLoss(cpLoss) as MoveEvaluation["classification"])
                   : null,
               pv: [],
+              pvSan: [],
             });
             continue;
           }
@@ -175,6 +179,7 @@ export function registerAnalysisTools(
           const cpLoss =
             afterCp !== null && beforeCp !== null ? beforeCp - afterCp : null;
 
+          const pv = after?.pv ?? [];
           results.push({
             move: parsed.san,
             uci: parsed.lan,
@@ -187,7 +192,8 @@ export function registerAnalysisTools(
               cpLoss !== null
                 ? (classifyCpLoss(cpLoss) as MoveEvaluation["classification"])
                 : null,
-            pv: after?.pv ?? [],
+            pv,
+            pvSan: pvToSan(copy, pv),
           });
         }
 

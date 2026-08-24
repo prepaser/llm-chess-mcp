@@ -51,6 +51,11 @@ export const SfLineSchema = z.strictObject({
   pv: z.array(z.string()),
 });
 
+export const AnalysisLineSchema = z.strictObject({
+  ...SfLineSchema.shape,
+  pvSan: z.array(z.string()),
+});
+
 export const OpeningStatsSchema = z.strictObject({
   status: z.enum(["available", "no_data", "unavailable", "disabled"]),
   reason: z.enum(EXPLORER_ERROR_KINDS).optional(),
@@ -136,7 +141,7 @@ export const PositionAnalyzeOutputSchema = z.strictObject({
   turn: color,
   revision,
   analysis_level: z.enum(["fast", "normal", "deep"]),
-  lines: z.array(SfLineSchema),
+  lines: z.array(AnalysisLineSchema),
 });
 
 export const Maia3MoveSchema = z.strictObject({
@@ -173,6 +178,7 @@ const moveEvaluation = z.strictObject({
     .enum(["best", "excellent", "good", "inaccuracy", "mistake", "blunder"])
     .nullable(),
   pv: z.array(z.string()),
+  pvSan: z.array(z.string()),
 });
 
 export const MoveEvaluateOutputSchema = z.strictObject({

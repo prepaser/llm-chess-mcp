@@ -5,6 +5,7 @@ import {
   drawResult,
   parseMove,
   playParsedMove,
+  pvToSan,
   snapshotChess,
   stateOf,
 } from "../src/chess.js";
@@ -72,6 +73,32 @@ test("parseMove accepts SAN without check suffix and UCI", () => {
   assert.throws(
     () => parseMove(chess, "e2e5"),
     (error) => error instanceof ChessError && error.code === "ILLEGAL_MOVE",
+  );
+});
+
+test("pvToSan converts legal UCI prefixes without mutating the position", () => {
+  const chess = new Chess();
+  const fen = chess.fen();
+
+  assert.deepEqual(
+    pvToSan(chess, ["e2e4", "e7e5", "g1f3", "b8c6", "e2e5"]),
+    ["e4", "e5", "Nf3", "Nc6"],
+  );
+  assert.equal(chess.fen(), fen);
+  assert.deepEqual(
+    pvToSan(
+      new Chess("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1"),
+      ["e1g1", "e8c8"],
+    ),
+    ["O-O", "O-O-O"],
+  );
+  assert.deepEqual(
+    pvToSan(new Chess("7k/P7/8/8/8/8/8/K7 w - - 0 1"), ["a7a8q"]),
+    ["a8=Q+"],
+  );
+  assert.deepEqual(
+    pvToSan(new Chess(), ["f2f3", "e7e5", "g2g4", "d8h4"]),
+    ["f3", "e5", "g4", "Qh4#"],
   );
 });
 
