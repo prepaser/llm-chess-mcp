@@ -26,7 +26,9 @@
     "contract:update": "pnpm build && node scripts/tool-contract.mjs --write",
     "contract:check": "pnpm build && node scripts/tool-contract.mjs",
     "dev": "tsx src/index.ts",
+    "dev:http": "tsx src/index.ts --transport http",
     "start": "node dist/index.js",
+    "start:http": "node dist/index.js --transport http",
     "test:unit": "tsx --test tests/*.test.ts",
     "test:integration": "tsx --test tests/integration/*.test.ts",
     "test:e2e": "pnpm build && tsx --test tests/e2e/*.test.ts",
@@ -41,6 +43,7 @@
     "export:maia3": "python scripts/export_maia3.py"
   },
   "dependencies": {
+    "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "chess.js": "^1.4.0",
     "onnxruntime-node": "^1.27.0",

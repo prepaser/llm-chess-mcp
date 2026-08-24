@@ -1,15 +1,18 @@
 # Architecture
 
-`llm-chess-mcp` is a stateful MCP server over stdio. It owns chess-game state
-and exposes deterministic tool contracts; Stockfish, Maia3, and Lichess add
-independent signals without changing a game unless `game_play_move` succeeds.
+`llm-chess-mcp` is a stateful MCP server over stdio or Streamable HTTP. It owns
+chess-game state and exposes deterministic tool contracts; Stockfish, Maia3,
+and Lichess add independent signals without changing a game unless
+`game_play_move` succeeds.
 
 ## Runtime boundary
 
 `src/index.ts` is the executable boundary. It loads environment configuration,
-creates the server through `buildServer`, and passes it to `serveStdio`. Stdout
-is reserved for MCP JSON-RPC traffic; diagnostics belong on stderr. When stdin
-closes, the entrypoint closes the transport and terminates Stockfish.
+parses transport options, and creates servers through `buildServer`. stdio is
+the default; HTTP mode binds an explicit endpoint and creates one MCP server per
+Streamable HTTP session. All sessions share application services and game state.
+Stdout is reserved for protocol traffic; diagnostics belong on stderr. Shutdown
+closes active transports before terminating Stockfish.
 
 The server is assembled from injected `AppServices`, not from tool-level global
 lookups. Production constructs one service set for the process; tests pass
@@ -17,11 +20,11 @@ small fakes or controlled implementations. This keeps transport registration
 separate from engine startup, network I/O, time, and storage.
 
 ```text
-stdio -> entrypoint -> buildServer(AppServices) -> tool modules
-                                               |-> GameStore
-                                               |-> Stockfish service
-                                               |-> Maia service
-                                               `-> Lichess explorer
+stdio --------> entrypoint -> buildServer(AppServices) -> tool modules
+Streamable HTTP --^                                   |-> GameStore
+                                                      |-> Stockfish service
+                                                      |-> Maia service
+                                                      `-> Lichess explorer
 ```
 
 The tool modules have narrow ownership:

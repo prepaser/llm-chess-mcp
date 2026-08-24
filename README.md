@@ -70,6 +70,34 @@ pnpm test:package
 `pnpm test:live` queries Lichess only when `LICHESS_TOKEN` is set; otherwise it
 skips without making a network request.
 
+## Transports
+
+stdio remains the default transport and requires no flags. To expose a local
+Streamable HTTP endpoint instead:
+
+```bash
+pnpm build
+node dist/index.js --transport http
+```
+
+The server listens on `http://127.0.0.1:3000/mcp` and supports Streamable HTTP
+sessions, JSON responses, and SSE. The equivalent development command is
+`pnpm dev:http`.
+
+HTTP options:
+
+```text
+--host <host>            Bind host (default: 127.0.0.1)
+--port <port>            Listen port (default: 3000)
+--path <path>            Endpoint path (default: /mcp)
+--allowed-host <host>    Allowed Host/Origin hostname; repeat as needed
+```
+
+Binding to `0.0.0.0` or `::` requires at least one `--allowed-host`. HTTP mode
+does not provide authentication or TLS; use a trusted network or an
+authenticated reverse proxy when exposing it beyond localhost. Origin values
+are validated when present, but the server does not emit browser CORS headers.
+
 ### Export Maia3 to ONNX (build-time only)
 
 This step needs Python + PyTorch once. It downloads the Maia3 checkpoint, verifies

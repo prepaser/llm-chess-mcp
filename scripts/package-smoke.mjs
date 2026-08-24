@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { Client } from "@modelcontextprotocol/client";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const execFile = promisify(execFileCallback);
@@ -169,6 +170,68 @@ async function smoke(bin, cwd) {
   }
 }
 
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      assert.ok(address && typeof address === "object");
+      server.close((error) => (error ? reject(error) : resolve(address.port)));
+    });
+  });
+}
+
+async function smokeHttp(bin, cwd) {
+  const port = await freePort();
+  const endpoint = `http://127.0.0.1:${port}/mcp`;
+  const child = spawn(bin, ["--transport", "http", "--port", String(port)], {
+    cwd,
+    env: serverEnv(),
+    shell: process.platform === "win32",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const exited = new Promise((resolve) =>
+    child.once("exit", (code, signal) => resolve([code, signal])),
+  );
+  const ready = new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`packed HTTP server did not start: ${stderr}`)),
+      TIMEOUT_MS,
+    );
+    child.stderr.on("data", () => {
+      if (!stderr.includes(`listening on ${endpoint}`)) return;
+      clearTimeout(timer);
+      resolve();
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      reject(new Error(`packed HTTP server exited early with ${code}: ${stderr}`));
+    });
+  });
+  const transport = new StreamableHTTPClientTransport(new URL(endpoint));
+  const client = new Client({ name: "package-http-smoke", version: "1.0.0" });
+
+  try {
+    await ready;
+    await client.connect(transport);
+    const created = await call(client, "create_game", {});
+    assert.equal(typeof created.game_id, "string");
+    await client.close();
+    child.kill("SIGTERM");
+    const [code, signal] = await exited;
+    assert.equal(code, 0, stderr);
+    assert.equal(signal, null);
+  } finally {
+    await client.close().catch(() => {});
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  }
+}
+
 const workspace = await mkdtemp(join(tmpdir(), "llm-chess-mcp-package-smoke-"));
 try {
   const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
@@ -195,6 +258,7 @@ try {
     process.platform === "win32" ? constants.F_OK : constants.X_OK,
   );
   await smoke(bin, workspace);
+  await smokeHttp(bin, workspace);
   console.log("package smoke passed");
 } finally {
   await rm(workspace, { recursive: true, force: true });
