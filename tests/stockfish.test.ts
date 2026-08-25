@@ -97,6 +97,32 @@ test("analysis info parser merges partial updates and resets scores", () => {
     parseAnalysisInfo("info depth 1 multipv invalid score cp 42 pv e2e4"),
     null,
   );
+  assert.equal(parseAnalysisInfo("info depth 1 multipv 0 score cp 42"), null);
+  assert.equal(
+    parseAnalysisInfo("info depth 1 multipv 1oops score cp 42 pv e2e4"),
+    null,
+  );
+  assert.equal(
+    parseAnalysisInfo(`info depth 1 multipv ${"9".repeat(400)} score cp 42`),
+    null,
+  );
+
+  const malformedNumbers = parseAnalysisInfo(
+    `info depth 4 multipv 1 score cp ${"9".repeat(400)} wdl ${"9".repeat(400)} 0 0 pv d2d4`,
+  );
+  assert.ok(malformedNumbers);
+  assert.deepEqual(mergeAnalysisInfo(withPv, malformedNumbers), {
+    ...withPv,
+    pv: ["d2d4"],
+  });
+  const malformedSuffixes = parseAnalysisInfo(
+    "info depth 4 multipv 1 score cp 42oops wdl 1 2 3oops pv d2d4",
+  );
+  assert.ok(malformedSuffixes);
+  assert.deepEqual(mergeAnalysisInfo(withPv, malformedSuffixes), {
+    ...withPv,
+    pv: ["d2d4"],
+  });
   assert.equal(parseAnalysisInfo("bestmove e2e4"), null);
 });
 
@@ -122,6 +148,24 @@ test("synchronous initialization callback completes the handshake", async () => 
   });
 
   assert.equal((await stockfish.analyze("fen", 1, 1))[0]?.scoreCp, 42);
+});
+
+test("synchronous initialization callback terminates a distinct returned engine", async () => {
+  const returned = engine();
+  const initialized = respondingEngine(true);
+  const stockfish = new Stockfish({
+    init: (_flavor, callback) => {
+      callback(null, initialized);
+      return returned;
+    },
+    timeouts: { init: 50, handshake: 50, analyze: 50 },
+  });
+
+  assert.equal((await stockfish.analyze("fen", 1, 1))[0]?.scoreCp, 42);
+  assert.equal(returned.terminations, 1);
+  assert.equal(initialized.terminations, 0);
+  await stockfish.quit();
+  assert.equal(initialized.terminations, 1);
 });
 
 test("initialization callback failure terminates its engine and reinitializes queued work", async () => {

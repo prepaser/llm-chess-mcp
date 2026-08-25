@@ -601,6 +601,106 @@ test("bounds stalled non-OK body cancellation by the attempt timeout", async () 
   assert.equal(calls, 2);
 });
 
+test("bounds stalled successful body cancellation by the attempt timeout", async () => {
+  const limiter = createExplorerLimiter();
+  const attempt = new AbortController();
+  let calls = 0;
+  let beginRead: (() => void) | undefined;
+  const bodyReadStarted = new Promise<void>((resolve) => {
+    beginRead = resolve;
+  });
+  let beginCancel: (() => void) | undefined;
+  const cancellationStarted = new Promise<void>((resolve) => {
+    beginCancel = resolve;
+  });
+  const fetch: ExplorerFetch = async () => {
+    calls += 1;
+    if (calls > 1) return response();
+    return new Response(
+      new ReadableStream({
+        pull: () => {
+          beginRead?.();
+          return new Promise<void>(() => {});
+        },
+        cancel: () => {
+          beginCancel?.();
+          return new Promise<void>(() => {});
+        },
+      }),
+    );
+  };
+  const requestOptions = options(fetch, {
+    limiter,
+    sleep: async () => undefined,
+    timeout: () => (calls === 0 ? attempt.signal : AbortSignal.timeout(1_000)),
+  });
+  const first = openingExplorer(new Chess(), "lichess", [], [], requestOptions);
+  const second = openingExplorer(
+    new Chess(),
+    "masters",
+    [],
+    [],
+    requestOptions,
+  );
+
+  await bodyReadStarted;
+  attempt.abort();
+  await cancellationStarted;
+  await Promise.all([first, second]);
+  assert.equal(calls, 3);
+});
+
+test("bounds stalled successful cleanup after caller cancellation", async () => {
+  const limiter = createExplorerLimiter();
+  const caller = new AbortController();
+  const attempt = new AbortController();
+  const cause = new Error("caller cancelled during stalled successful cleanup");
+  let calls = 0;
+  let beginRead: (() => void) | undefined;
+  const bodyReadStarted = new Promise<void>((resolve) => {
+    beginRead = resolve;
+  });
+  const fetch: ExplorerFetch = async () => {
+    calls += 1;
+    if (calls > 1) return response();
+    return new Response(
+      new ReadableStream({
+        pull: () => {
+          beginRead?.();
+          return new Promise<void>(() => {});
+        },
+        cancel: () => new Promise<void>(() => {}),
+      }),
+    );
+  };
+  const requestOptions = options(fetch, {
+    limiter,
+    timeout: () => (calls === 0 ? attempt.signal : AbortSignal.timeout(1_000)),
+  });
+  const first = openingExplorer(new Chess(), "lichess", [], [], {
+    ...requestOptions,
+    signal: caller.signal,
+  });
+  const second = openingExplorer(
+    new Chess(),
+    "masters",
+    [],
+    [],
+    requestOptions,
+  );
+
+  await bodyReadStarted;
+  caller.abort(cause);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  assert.equal(limiter.pending, 1);
+
+  attempt.abort();
+  await assert.rejects(first, (error: unknown) => error === cause);
+  await second;
+  assert.equal(calls, 2);
+});
+
 test("coordinates a shared 429 cooldown across queued explorer calls", async () => {
   const limiter = createExplorerLimiter();
   let now = 0;

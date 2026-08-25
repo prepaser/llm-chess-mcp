@@ -17,7 +17,12 @@ export interface ExplorerTransportOptions {
 }
 
 export type ExplorerTransportResult =
-  | { type: "success"; response: Response; signal: AbortSignal }
+  | {
+      type: "success";
+      response: Response;
+      signal: AbortSignal;
+      cleanupSignal: AbortSignal;
+    }
   | { type: "failure"; error: ExplorerError; retryAfter: string | null };
 
 async function discardResponse(
@@ -70,7 +75,9 @@ export async function requestExplorerTransport(
   }
 
   throwIfAborted(callerSignal);
-  if (response.ok) return { type: "success", response, signal };
+  if (response.ok) {
+    return { type: "success", response, signal, cleanupSignal: attemptSignal };
+  }
 
   const kind = errorKindForStatus(response.status);
   const retryAfter = response.headers.get("retry-after");

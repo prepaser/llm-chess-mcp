@@ -2,6 +2,7 @@ import { z } from "zod/v4";
 import {
   awaitWithAbort,
   explorerError,
+  EXPLORER_ATTEMPT_TIMEOUT_MS,
   throwIfAborted,
 } from "./explorer-core.js";
 import type { ExplorerResult } from "./explorer-core.js";
@@ -29,11 +30,17 @@ const responseSchema = z.object({
 
 export interface ExplorerResponseOptions {
   callerSignal: AbortSignal | undefined;
+  cleanupSignal?: AbortSignal;
   db: "lichess" | "masters";
   legalMoves: ReadonlyMap<string, string>;
 }
 
-async function readJson(response: Response, signal: AbortSignal): Promise<unknown> {
+async function readJson(
+  response: Response,
+  signal: AbortSignal,
+  callerSignal?: AbortSignal,
+  cleanupSignal?: AbortSignal,
+): Promise<unknown> {
   const reader = response.body?.getReader();
   if (!reader) return JSON.parse("");
 
@@ -49,7 +56,14 @@ async function readJson(response: Response, signal: AbortSignal): Promise<unknow
     return JSON.parse(text);
   } catch (cause) {
     if (signal.aborted) {
-      await reader.cancel(signal.reason).catch(() => {});
+      const cancellation = reader.cancel(signal.reason);
+      if (callerSignal?.aborted) {
+        const deadline =
+          cleanupSignal ?? AbortSignal.timeout(EXPLORER_ATTEMPT_TIMEOUT_MS);
+        await awaitWithAbort(deadline, () => cancellation).catch(() => {});
+      } else {
+        void cancellation.catch(() => {});
+      }
       signal.throwIfAborted();
     }
     throw cause;
@@ -65,7 +79,12 @@ export async function normalizeExplorerResponse(
 ): Promise<ExplorerResult> {
   let body: unknown;
   try {
-    body = await readJson(response, signal);
+    body = await readJson(
+      response,
+      signal,
+      options.callerSignal,
+      options.cleanupSignal,
+    );
   } catch (cause) {
     throwIfAborted(options.callerSignal);
     if (signal.aborted || cause instanceof TypeError) {

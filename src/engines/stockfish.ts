@@ -193,7 +193,9 @@ export class Stockfish {
         },
       );
 
-      if (!callbackCalled && this.session === session && !session.readySettled) {
+      if (callbackCalled) {
+        if (engine !== session.engine) this.terminate(engine);
+      } else if (this.session === session && !session.readySettled) {
         session.engine = engine;
         engine.listener = () => {};
       }

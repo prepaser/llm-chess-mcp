@@ -12,33 +12,52 @@ export type AnalysisInfo = {
   pv?: string[];
 };
 
-function parseScore(token: string): Score {
-  if (token.startsWith("cp")) return { cp: Number(token.slice(2)), mate: null };
-  return { cp: null, mate: Number(token.slice(4)) };
+function parseInteger(value: string): number | undefined {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function parseScore(token: string): Score | undefined {
+  const value = parseInteger(token.slice(token.startsWith("cp") ? 2 : 4));
+  if (value === undefined) return;
+  return token.startsWith("cp")
+    ? { cp: value, mate: null }
+    : { cp: null, mate: value };
 }
 
 function parseWdl(line: string): Wdl | undefined {
   const groups = line.match(
-    / wdl (?<wins>\d+) (?<draws>\d+) (?<losses>\d+)/,
+    / wdl (?<wins>\d+) (?<draws>\d+) (?<losses>\d+)(?=\s|$)/,
   )?.groups;
   if (!groups) return;
-  return [Number(groups.wins), Number(groups.draws), Number(groups.losses)];
+  const { wins: winToken, draws: drawToken, losses: lossToken } = groups;
+  if (!winToken || !drawToken || !lossToken) return;
+  const wins = parseInteger(winToken);
+  const draws = parseInteger(drawToken);
+  const losses = parseInteger(lossToken);
+  if (wins === undefined || draws === undefined || losses === undefined) return;
+  return [wins, draws, losses];
 }
 
 export function parseAnalysisInfo(line: string): AnalysisInfo | null {
   if (!line.startsWith("info") || !line.includes(" multipv ")) return null;
 
-  const multipv = line.match(/multipv (?<value>\d+)/)?.groups?.value;
-  if (!multipv) return null;
+  const multipvToken = line.match(
+    /multipv (?<value>\d+)(?=\s|$)/,
+  )?.groups?.value;
+  if (!multipvToken) return null;
+  const multipv = parseInteger(multipvToken);
+  if (multipv === undefined || multipv < 1) return null;
 
   const scoreToken = line.match(
-    / score (?<value>cp -?\d+|mate -?\d+)/,
+    / score (?<value>cp -?\d+|mate -?\d+)(?=\s|$)/,
   )?.groups?.value;
+  const score = scoreToken ? parseScore(scoreToken) : undefined;
   const wdl = parseWdl(line);
   const pv = line.match(/ pv (?<value>.+)$/)?.groups?.value;
   return {
-    multipv: Number(multipv),
-    ...(scoreToken ? { score: parseScore(scoreToken) } : {}),
+    multipv,
+    ...(score ? { score } : {}),
     ...(wdl ? { wdl } : {}),
     ...(pv ? { pv: pv.split(" ") } : {}),
   };

@@ -215,7 +215,7 @@ async function attemptRequest(
           result: await normalizeExplorerResponse(
             transport.response,
             transport.signal,
-            setup,
+            { ...setup, cleanupSignal: transport.cleanupSignal },
           ),
         };
       } catch (cause) {
