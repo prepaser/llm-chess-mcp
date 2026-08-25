@@ -68,7 +68,7 @@ test(
   { timeout: 120_000 },
   async () => {
     const env = childEnv();
-    assert.equal("LICHESS_TOKEN" in env, false);
+    assert.equal(env.LICHESS_TOKEN, "");
 
     const transport = new StdioClientTransport({
       command: process.execPath,

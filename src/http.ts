@@ -564,6 +564,7 @@ export async function serveHttp(
   };
 
   const headerTimers = new WeakMap<Socket, NodeJS.Timeout>();
+  const connections = new Set<Socket>();
   const server = createServer(
     {
       maxHeaderSize: limits.maxHeaderBytes,
@@ -590,11 +591,15 @@ export async function serveHttp(
     },
   );
   server.on("connection", (socket) => {
+    connections.add(socket);
     socket.setTimeout(limits.headersTimeoutMs, () => socket.destroy());
     const timer = setTimeout(() => socket.destroy(), limits.headersTimeoutMs);
     timer.unref();
     headerTimers.set(socket, timer);
-    socket.once("close", () => clearTimeout(timer));
+    socket.once("close", () => {
+      clearTimeout(timer);
+      connections.delete(socket);
+    });
   });
   server.maxConnections = limits.maxConnections;
   server.maxHeadersCount = limits.maxHeaderCount;
@@ -638,8 +643,10 @@ export async function serveHttp(
         closing = true;
         clearInterval(sessionSweep);
         await sessions.closeAll(stopSession);
+        const closed = closeNodeServer(server);
+        for (const socket of connections) socket.destroy();
         try {
-          await closeNodeServer(server);
+          await closed;
         } finally {
           await lease?.release();
         }

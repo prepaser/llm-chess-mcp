@@ -6,17 +6,27 @@ import { fileURLToPath } from "node:url";
 export const REPO = fileURLToPath(new URL("../..", import.meta.url));
 export const CALL_TIMEOUT_MS = 30_000;
 export const CHILD_TIMEOUT_MS = 10_000;
+export const E2E_MAIA3_MODEL = "5m";
+export const E2E_STOCKFISH_FLAVOR = "lite-single";
+const E2E_RUNTIME_ENV_KEYS = new Set([
+  "LICHESS_TOKEN",
+  "MAIA3_MODEL",
+  "STOCKFISH_FLAVOR",
+]);
 
 export function childEnv(
-  excluded: readonly string[] = ["LICHESS_TOKEN"],
+  source: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
-  const excludedKeys = new Set(excluded);
-  return Object.fromEntries(
-    Object.entries(process.env).filter(
+  const env = Object.fromEntries(
+    Object.entries(source).filter(
       (entry): entry is [string, string] =>
-        !excludedKeys.has(entry[0]) && entry[1] !== undefined,
+        !E2E_RUNTIME_ENV_KEYS.has(entry[0]) && entry[1] !== undefined,
     ),
   );
+  env.LICHESS_TOKEN = "";
+  env.MAIA3_MODEL = E2E_MAIA3_MODEL;
+  env.STOCKFISH_FLAVOR = E2E_STOCKFISH_FLAVOR;
+  return env;
 }
 
 export function freePort(): Promise<number> {

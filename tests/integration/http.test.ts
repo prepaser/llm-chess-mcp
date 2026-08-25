@@ -140,6 +140,26 @@ function abandonedPost(
   return { destroy: () => req.destroy() };
 }
 
+function partialPost(url: string): Promise<{ destroy(): void }> {
+  return new Promise((resolve, reject) => {
+    const endpoint = new URL(url);
+    const socket = connect(Number(endpoint.port), endpoint.hostname, () => {
+      socket.write(
+        [
+          "POST /mcp HTTP/1.1",
+          "Host: 127.0.0.1",
+          "Content-Type: application/json",
+          "Content-Length: 100",
+          "",
+          "{",
+        ].join("\r\n"),
+        () => resolve({ destroy: () => socket.destroy() }),
+      );
+    });
+    socket.once("error", reject);
+  });
+}
+
 function waitForConnectionClose(url: string, payload: string, label: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const endpoint = new URL(url);
@@ -669,6 +689,26 @@ test("Streamable HTTP returns JSON-RPC 408 before closing a timed out body", asy
   assert.match(response, /connection: close/i);
   assert.match(response, /\"jsonrpc\":\"2\.0\"/);
   assert.match(response, /request body timed out/);
+});
+
+test("Streamable HTTP shutdown closes partial uploads promptly", async (t) => {
+  const http = await serveHttp(
+    { port: 0, bodyTimeoutMs: 10_000, socketTimeoutMs: 10_000 },
+    fakeServices(new GameStore()),
+  );
+  const upload = await partialPost(http.url);
+  t.after(async () => {
+    upload.destroy();
+    await http.close();
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await Promise.race([
+    http.close(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("HTTP shutdown waited for a partial body")), 1_000),
+    ),
+  ]);
 });
 
 test("Streamable HTTP accepts bracketed IPv6 bind hosts", async (t) => {

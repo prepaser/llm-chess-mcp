@@ -23,13 +23,14 @@ export type ExplorerTransportResult =
 async function discardResponse(
   response: Response,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const body = response.body;
     if (body) await awaitWithAbort(signal, () => body.cancel());
   } catch {
-    throwIfAborted(signal);
+    return !signal?.aborted;
   }
+  return true;
 }
 
 function errorKindForStatus(status: number): ExplorerError["kind"] {
@@ -73,7 +74,15 @@ export async function requestExplorerTransport(
 
   const kind = errorKindForStatus(response.status);
   const retryAfter = response.headers.get("retry-after");
-  await discardResponse(response, callerSignal);
+  const discarded = await discardResponse(response, attemptSignal);
+  throwIfAborted(callerSignal);
+  if (!discarded) {
+    return {
+      type: "failure",
+      error: explorerError("timeout"),
+      retryAfter: null,
+    };
+  }
   return {
     type: "failure",
     error: explorerError(kind, response.status),
