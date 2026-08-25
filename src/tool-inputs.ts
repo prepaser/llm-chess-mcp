@@ -6,7 +6,7 @@ import {
   lichessRatingSchema,
   lichessSpeedSchema,
 } from "./explorer.js";
-import { INTENTS } from "./types.js";
+import { ANALYSIS_LEVELS, INTENTS } from "./domain.js";
 import type { ToolName } from "./tool-names.js";
 
 const lichessSpeedsSchema = z
@@ -18,12 +18,55 @@ const lichessRatingsSchema = z
   .max(LICHESS_RATINGS.length)
   .refine((values) => new Set(values).size === values.length, "duplicate ratings");
 
-function mastersFilterIssue(
-  db: "lichess" | "masters",
-  speeds: readonly string[],
-  ratings: readonly number[],
-): boolean {
-  return db === "masters" && (speeds.length > 0 || ratings.length > 0);
+const explorerFilterFields = {
+  db: z.enum(["lichess", "masters"]),
+  speeds: lichessSpeedsSchema.default([]),
+  ratings: lichessRatingsSchema.default([]),
+};
+
+type ExplorerFilterValues = {
+  db: "lichess" | "masters";
+  speeds: string[];
+  ratings: number[];
+};
+
+function addExplorerFilterIssue(
+  filters: ExplorerFilterValues,
+  ctx: z.RefinementCtx,
+  path: "db" | "lichess_db",
+): void {
+  if (filters.db !== "masters" || (!filters.speeds.length && !filters.ratings.length)) {
+    return;
+  }
+  ctx.addIssue({
+    code: "custom",
+    message: "masters does not support speed or rating filters",
+    path: [path],
+  });
+}
+
+export const ExplorerFiltersSchema = z
+  .object(explorerFilterFields)
+  .superRefine((filters, ctx) => addExplorerFilterIssue(filters, ctx, "db"));
+
+export type ExplorerFilters = z.output<typeof ExplorerFiltersSchema>;
+
+export function explorerFilters(
+  filters: ExplorerFilters,
+): ExplorerFilters {
+  return filters;
+}
+
+export function candidateExplorerFilters(input: {
+  lichess_db: ExplorerFilters["db"];
+  lichess_speeds: ExplorerFilters["speeds"];
+  lichess_ratings: ExplorerFilters["ratings"];
+}): ExplorerFilters {
+  return explorerFilters({
+    db: input.lichess_db,
+    speeds: input.lichess_speeds,
+    ratings: input.lichess_ratings,
+  });
 }
 
 export const CreateGameInputSchema = z.object({ fen: z.string().optional() });
@@ -39,7 +82,7 @@ export const GamePlayMoveInputSchema = z.object({
 });
 export const PositionAnalyzeInputSchema = z.object({
   game_id: z.string(),
-  analysis_level: z.enum(["fast", "normal", "deep"]).default("normal"),
+  analysis_level: z.enum(ANALYSIS_LEVELS).default("normal"),
   depth: z.number().int().min(1).max(30).optional(),
   multipv: z.number().int().min(1).max(10).optional(),
 });
@@ -61,12 +104,12 @@ export const MoveEvaluateInputSchema = z.object({
 const candidateFields = {
   game_id: z.string(),
   elo: z.number().int().min(600).max(2600).default(1500),
-  analysis_level: z.enum(["fast", "normal", "deep"]).default("normal"),
+  analysis_level: z.enum(ANALYSIS_LEVELS).default("normal"),
   sf_depth: z.number().int().min(1).max(30).optional(),
   sf_multipv: z.number().int().min(1).max(10).optional(),
-  lichess_db: z.enum(["lichess", "masters"]).default("lichess"),
-  lichess_speeds: lichessSpeedsSchema.default([]),
-  lichess_ratings: lichessRatingsSchema.default([]),
+  lichess_db: explorerFilterFields.db.default("lichess"),
+  lichess_speeds: explorerFilterFields.speeds,
+  lichess_ratings: explorerFilterFields.ratings,
 };
 
 export const MoveCandidatesInputSchema = z
@@ -75,19 +118,7 @@ export const MoveCandidatesInputSchema = z
     maia_top_n: z.number().int().min(1).max(20).default(5),
   })
   .superRefine((value, ctx) => {
-    if (
-      mastersFilterIssue(
-        value.lichess_db,
-        value.lichess_speeds,
-        value.lichess_ratings,
-      )
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        message: "masters does not support speed or rating filters",
-        path: ["lichess_db"],
-      });
-    }
+    addExplorerFilterIssue(candidateExplorerFilters(value), ctx, "lichess_db");
   });
 
 export const MoveCandidatesByIntentInputSchema = z
@@ -97,36 +128,18 @@ export const MoveCandidatesByIntentInputSchema = z
     maia_top_n: z.number().int().min(1).max(20).default(10),
   })
   .superRefine((value, ctx) => {
-    if (
-      mastersFilterIssue(
-        value.lichess_db,
-        value.lichess_speeds,
-        value.lichess_ratings,
-      )
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        message: "masters does not support speed or rating filters",
-        path: ["lichess_db"],
-      });
-    }
+    addExplorerFilterIssue(candidateExplorerFilters(value), ctx, "lichess_db");
   });
 
 export const OpeningExplorerInputSchema = z
   .object({
     game_id: z.string(),
-    db: z.enum(["lichess", "masters"]).default("lichess"),
-    speeds: lichessSpeedsSchema.default([]),
-    ratings: lichessRatingsSchema.default([]),
+    db: explorerFilterFields.db.default("lichess"),
+    speeds: explorerFilterFields.speeds,
+    ratings: explorerFilterFields.ratings,
   })
   .superRefine((value, ctx) => {
-    if (mastersFilterIssue(value.db, value.speeds, value.ratings)) {
-      ctx.addIssue({
-        code: "custom",
-        message: "masters does not support speed or rating filters",
-        path: ["db"],
-      });
-    }
+    addExplorerFilterIssue(explorerFilters(value), ctx, "db");
   });
 
 export const GameImportPgnInputSchema = z.object({ pgn: z.string() });

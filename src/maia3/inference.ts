@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 import { buildInput } from "./tokenize.js";
 import { VOCAB_SIZE, vocabIndex } from "./vocab.js";
 import { mirrorMove } from "./mirror.js";
-import type { Maia3Move } from "../types.js";
+import type { Maia3Move } from "../domain.js";
 
 let session: ort.InferenceSession | null = null;
 let sessionPromise: Promise<ort.InferenceSession> | null = null;

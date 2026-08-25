@@ -1,21 +1,29 @@
 import type { ServerContext } from "@modelcontextprotocol/server";
+import type { ExplorerErrorKind } from "./domain.js";
 import { ChessError } from "./errors.js";
 import { ExplorerError } from "./explorer.js";
-import type { ExplorerErrorKind } from "./explorer.js";
 import type * as z from "zod/v4";
 
 const UNABORTABLE_SIGNAL = new AbortController().signal;
 
-export type ToolResult = {
+export type ToolResult<StructuredContent extends Record<string, unknown> = Record<string, unknown>> = {
   content: { type: "text"; text: string }[];
-  structuredContent: Record<string, unknown>;
+  structuredContent: StructuredContent;
   isError?: boolean;
 };
 
-export function toolResult(
-  structuredContent: Record<string, unknown>,
+type SchemaOutput<Schema extends z.ZodType> = z.output<Schema> extends Record<
+  string,
+  unknown
+>
+  ? z.output<Schema>
+  : never;
+
+export function toolResult<Schema extends z.ZodType>(
+  _schema: Schema,
+  structuredContent: SchemaOutput<Schema>,
   summary: string,
-): ToolResult {
+): ToolResult<SchemaOutput<Schema>> {
   return {
     content: [{ type: "text", text: summary }],
     structuredContent,
@@ -34,17 +42,27 @@ function explorerErrorCode(kind: ExplorerErrorKind): string {
   return `LICHESS_${kind.toUpperCase()}`;
 }
 
-export function safeHandler<Schema extends z.ZodType>(
-  schema: Schema,
-  handler: (args: z.output<Schema>, signal: AbortSignal) => Promise<ToolResult>,
-): (args: z.input<Schema>, context?: ServerContext) => Promise<ToolResult> {
+export function safeHandler<
+  InputSchema extends z.ZodType,
+  OutputSchema extends z.ZodType,
+>(
+  inputSchema: InputSchema,
+  _outputSchema: OutputSchema,
+  handler: (
+    args: z.output<InputSchema>,
+    signal: AbortSignal,
+  ) => Promise<ToolResult<SchemaOutput<OutputSchema>>>,
+): (
+  args: z.input<InputSchema>,
+  context?: ServerContext,
+) => Promise<ToolResult> {
   return async (args, context) => {
     const signal = context?.mcpReq.signal ?? UNABORTABLE_SIGNAL;
     try {
       signal.throwIfAborted();
-      if (context) return await handler(args as z.output<Schema>, signal);
+      if (context) return await handler(args as z.output<InputSchema>, signal);
 
-      const parsed = schema.safeParse(args);
+      const parsed = inputSchema.safeParse(args);
       if (!parsed.success) return toolError("INVALID_INPUT", "invalid tool input");
       return await handler(parsed.data, signal);
     } catch (error) {

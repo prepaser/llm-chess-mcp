@@ -14,8 +14,8 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
 test("HTTP work admission holds capacity until downstream work settles", async () => {
   const admission = new HttpWorkAdmission(1, 1);
   const lifecycle = new AbortController();
-  const first = admission.session(lifecycle.signal);
-  const second = admission.session(new AbortController().signal);
+  const first = admission.forSession(lifecycle.signal);
+  const second = admission.forSession(new AbortController().signal);
   const blocked = deferred();
   const running = first(new AbortController().signal, async () => {
     await blocked.promise;
@@ -41,7 +41,7 @@ test("HTTP work admission holds capacity until downstream work settles", async (
 test("HTTP work admission enforces session capacity and pre-abort", async () => {
   const admission = new HttpWorkAdmission(2, 1);
   const lifecycle = new AbortController();
-  const run = admission.session(lifecycle.signal);
+  const run = admission.forSession(lifecycle.signal);
   const blocked = deferred();
   const running = run(new AbortController().signal, () => blocked.promise);
 
@@ -61,4 +61,14 @@ test("HTTP work admission enforces session capacity and pre-abort", async () => 
     running,
     (error: unknown) => error instanceof Error && error.name === "AbortError",
   );
+});
+
+test("HTTP work admission keeps its legacy session alias", async () => {
+  const admission = new HttpWorkAdmission(1, 1);
+  const lifecycle = new AbortController();
+  const result = await admission.session(lifecycle.signal)(
+    new AbortController().signal,
+    async () => 42,
+  );
+  assert.equal(result, 42);
 });

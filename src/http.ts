@@ -13,8 +13,20 @@ import {
 import type { McpServer } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { buildServer } from "./server.js";
-import { HttpWorkAdmission } from "./http-work.js";
-import type { WorkRunner } from "./http-work.js";
+import {
+  HttpWorkAdmission,
+  withSessionWorkAdmission,
+} from "./http-work.js";
+import {
+  bindHttpHost,
+  canonicalHttpPath,
+  DEFAULT_HTTP_HOST,
+  DEFAULT_HTTP_PATH,
+  DEFAULT_HTTP_PORT,
+  isWildcardHttpBindHost,
+} from "./http-config.js";
+import { HttpPostAdmission } from "./http-posts.js";
+import { HttpSessionRegistry } from "./http-sessions.js";
 import { acquireDefaultAppServices, defaultAppServices } from "./services.js";
 import type { AppServices } from "./services.js";
 
@@ -90,12 +102,6 @@ function isLocalHost(host: string): boolean {
   );
 }
 
-function bindHost(host: string): string {
-  return host.startsWith("[") && host.endsWith("]") && host.includes(":")
-    ? host.slice(1, -1)
-    : host;
-}
-
 function canonicalIpv4Host(host: string): string | undefined {
   if (!/^\d+(?:\.\d+){0,3}$/.test(host)) return undefined;
   try {
@@ -107,13 +113,13 @@ function canonicalIpv4Host(host: string): string | undefined {
 }
 
 function normalizeIpv4BindHost(host: string): string {
-  const unwrapped = bindHost(host);
+  const unwrapped = bindHttpHost(host);
   return canonicalIpv4Host(unwrapped) ?? host;
 }
 
 function normalizeAllowedHost(host: string): string {
   const normalized = host.toLowerCase();
-  const unwrapped = bindHost(normalized);
+  const unwrapped = bindHttpHost(normalized);
   if (isIP(unwrapped) === 6) return new URL(`http://[${unwrapped}]`).hostname;
   return canonicalIpv4Host(unwrapped) ?? normalized;
 }
@@ -150,27 +156,11 @@ function closeWithError(
   jsonError(res, status, message, { connection: "close", ...headers });
 }
 
-function canonicalPath(path: string): string | null {
-  if (
-    !path.startsWith("/") ||
-    path.startsWith("//") ||
-    path.includes("?") ||
-    path.includes("#")
-  ) {
-    return null;
-  }
-  try {
-    return new URL(path, "http://localhost").pathname === path ? path : null;
-  } catch {
-    return null;
-  }
-}
-
 function requestPath(req: IncomingMessage): string | null {
   const raw = req.url;
   if (raw === undefined) return null;
   const queryIndex = raw.search(/[?#]/);
-  return canonicalPath(queryIndex === -1 ? raw : raw.slice(0, queryIndex));
+  return canonicalHttpPath(queryIndex === -1 ? raw : raw.slice(0, queryIndex));
 }
 
 function sessionId(req: IncomingMessage): string | null | undefined {
@@ -349,58 +339,17 @@ async function parsePostBody(
   return body;
 }
 
-const UNABORTABLE_SIGNAL = new AbortController().signal;
-
-function scopedServices(services: AppServices, run: WorkRunner): AppServices {
-  return {
-    ...services,
-    analyze: (fen, depth, multipv, request) =>
-      run(request ?? UNABORTABLE_SIGNAL, (signal) =>
-        services.analyze(fen, depth, multipv, signal),
-      ),
-    humanMoveDistribution: (chess, elo, opponentElo, topN, request) =>
-      run(request ?? UNABORTABLE_SIGNAL, (signal) =>
-        services.humanMoveDistribution(chess, elo, opponentElo, topN, signal),
-      ),
-    openingExplorer: (chess, db, speeds, ratings, request) =>
-      run(request ?? UNABORTABLE_SIGNAL, (signal) =>
-        services.openingExplorer(chess, db, speeds, ratings, signal),
-      ),
-    computeCandidates: (
-      chess,
-      elo,
-      sfDepth,
-      sfMultipv,
-      maiaTopN,
-      lichess,
-      request,
-    ) =>
-      run(request ?? UNABORTABLE_SIGNAL, (signal) =>
-        services.computeCandidates(
-          chess,
-          elo,
-          sfDepth,
-          sfMultipv,
-          maiaTopN,
-          lichess,
-          signal,
-        ),
-      ),
-  };
-}
-
 export async function serveHttp(
   options: HttpServerOptions = {},
   services?: AppServices,
 ): Promise<HttpServerHandle> {
   const appServices = services ?? defaultAppServices;
   const ownsServices = services === undefined;
-  const host = normalizeIpv4BindHost(options.host ?? "127.0.0.1");
-  const listenHost = bindHost(host);
-  const requestedPort = options.port ?? 3_000;
-  const path = options.path ?? "/mcp";
-  const wildcard = listenHost === "0.0.0.0" || listenHost === "::";
-  if (wildcard && options.allowedHosts === undefined) {
+  const host = normalizeIpv4BindHost(options.host ?? DEFAULT_HTTP_HOST);
+  const listenHost = bindHttpHost(host);
+  const requestedPort = options.port ?? DEFAULT_HTTP_PORT;
+  const path = options.path ?? DEFAULT_HTTP_PATH;
+  if (isWildcardHttpBindHost(host) && options.allowedHosts === undefined) {
     throw new Error("wildcard HTTP binding requires allowed hostnames");
   }
   const allowedHosts = [
@@ -409,7 +358,7 @@ export async function serveHttp(
   if (!host || !Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65_535) {
     throw new Error("invalid HTTP listen address");
   }
-  if (canonicalPath(path) === null) {
+  if (canonicalHttpPath(path) === null) {
     throw new Error("invalid HTTP endpoint path");
   }
   if (
@@ -420,12 +369,13 @@ export async function serveHttp(
   }
   const limits = resolveLimits(options);
 
-  const sessions = new Map<string, Session>();
-  const initializing = new Set<Session>();
+  const sessions = new HttpSessionRegistry<Session>(limits.maxSessions);
   let closing = false;
-  let pendingInitializations = 0;
-  let activePosts = 0;
   const workAdmission = new HttpWorkAdmission(
+    limits.maxConcurrentPosts,
+    limits.maxConcurrentPostsPerSession,
+  );
+  const postAdmission = new HttpPostAdmission<Session>(
     limits.maxConcurrentPosts,
     limits.maxConcurrentPostsPerSession,
   );
@@ -436,49 +386,145 @@ export async function serveHttp(
     await session.server.close();
   };
 
-  const closeSession = async (id: string, session: Session): Promise<void> => {
-    if (sessions.get(id) !== session) return;
-    sessions.delete(id);
-    await stopSession(session);
+  const closeSession = (id: string, session: Session): Promise<void> =>
+    sessions.close(id, session, stopSession);
+
+  const reapExpiredSessions = (): Promise<void> =>
+    sessions.reap(limits.sessionIdleTtlMs, stopSession);
+
+  const withParsedPostBody = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    work: (body: unknown) => Promise<void>,
+  ): Promise<void> => {
+    const body = await parsePostBody(req, limits.maxRequestBodyBytes, limits.bodyTimeoutMs);
+    if (!body.ok) {
+      closeWithError(req, res, body.status, body.message);
+      return;
+    }
+    await work(body.value);
   };
 
-  const reapExpiredSessions = async (): Promise<void> => {
-    const now = Date.now();
-    await Promise.allSettled(
-      [...sessions.entries()]
-        .filter(
-          ([, session]) =>
-            session.activeRequests === 0 && now - session.lastUsedAt >= limits.sessionIdleTtlMs,
-        )
-        .map(([id, session]) => closeSession(id, session)),
-    );
-  };
-
-  const withActiveSession = async <T>(
-    session: Session,
-    work: () => Promise<T>,
-  ): Promise<T> => {
-    session.activeRequests += 1;
-    session.lastUsedAt = Date.now();
+  const withAdmittedPost = async (
+    session: Session | undefined,
+    req: IncomingMessage,
+    res: ServerResponse,
+    work: () => Promise<void>,
+  ): Promise<void> => {
+    const admission = postAdmission.tryAcquire(session);
+    if (admission === 429) {
+      closeWithError(req, res, 429, "MCP session request limit reached", { "retry-after": "1" });
+      return;
+    }
+    if (admission === 503) {
+      closeWithError(req, res, 503, "server request limit reached", { "retry-after": "1" });
+      return;
+    }
     try {
-      return await work();
+      await work();
     } finally {
-      session.activeRequests -= 1;
-      session.lastUsedAt = Date.now();
+      admission.release();
     }
   };
 
-  const releasePost = (session: Session | undefined): void => {
-    activePosts -= 1;
-    if (session) session.activePosts -= 1;
+  const handleExistingSession = async (
+    id: string,
+    session: Session,
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> => {
+    if (req.method === "DELETE") {
+      const protocolVersion = req.headers["mcp-protocol-version"];
+      if (
+        protocolVersion !== undefined &&
+        (typeof protocolVersion !== "string" ||
+          !SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion))
+      ) {
+        closeWithError(req, res, 400, "unsupported MCP protocol version");
+        return;
+      }
+      await closeSession(id, session);
+      res.writeHead(200);
+      res.end();
+      return;
+    }
+    if (req.method === "POST") {
+      await withAdmittedPost(session, req, res, () =>
+        sessions.withActive(session, () =>
+          withParsedPostBody(req, res, (body) =>
+            session.transport.handleRequest(req, res, body),
+          ),
+        ),
+      );
+      return;
+    }
+    await sessions.withActive(session, () => session.transport.handleRequest(req, res));
   };
 
-  const acquirePost = (session: Session | undefined): 429 | 503 | undefined => {
-    if (session && session.activePosts >= limits.maxConcurrentPostsPerSession) return 429;
-    if (activePosts >= limits.maxConcurrentPosts) return 503;
-    activePosts += 1;
-    if (session) session.activePosts += 1;
-    return undefined;
+  const handleInitialization = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<void> => {
+    if (req.method !== "POST") {
+      closeWithError(req, res, 400, "MCP session initialization requires POST");
+      return;
+    }
+    await withAdmittedPost(undefined, req, res, () =>
+      withParsedPostBody(req, res, async (body) => {
+        if (!isInitializeRequest(body)) {
+          closeWithError(req, res, 400, "MCP session initialization required");
+          return;
+        }
+        await reapExpiredSessions();
+        if (closing) {
+          closeWithError(req, res, 503, "server is shutting down", { "retry-after": "1" });
+          return;
+        }
+        const reservation = sessions.tryReserve();
+        if (!reservation) {
+          closeWithError(req, res, 503, "MCP session limit reached", { "retry-after": "1" });
+          return;
+        }
+        try {
+          const transport = new NodeStreamableHTTPServerTransport({
+            sessionIdGenerator: randomUUID,
+            onsessioninitialized: (id) => reservation.initialized(id),
+            onsessionclosed: (id) => reservation.closed(id),
+          });
+          const abort = new AbortController();
+          const mcp = buildServer(
+            withSessionWorkAdmission(
+              appServices,
+              workAdmission.forSession(abort.signal),
+            ),
+          );
+          const session: Session = {
+            server: mcp,
+            transport,
+            abort,
+            lastUsedAt: Date.now(),
+            activeRequests: 0,
+            activePosts: 0,
+          };
+          reservation.attach(session);
+          transport.onclose = () => {
+            session.abort.abort(new DOMException("MCP session closed", "AbortError"));
+            reservation.close();
+          };
+          try {
+            await sessions.withActive(session, async () => {
+              await mcp.connect(transport);
+              await transport.handleRequest(req, res, body);
+            });
+          } finally {
+            if (!reservation.finish()) await mcp.close();
+          }
+        } catch (error) {
+          reservation.finish();
+          throw error;
+        }
+      }),
+    );
   };
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -491,7 +537,6 @@ export async function serveHttp(
       return;
     }
     if (!validateRequestHeaders(req, res, allowedHosts)) return;
-
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {
       closeWithError(req, res, 405, "MCP method not allowed", { allow: "GET, POST, DELETE" });
       return;
@@ -506,145 +551,16 @@ export async function serveHttp(
       closeWithError(req, res, 400, "invalid MCP session ID");
       return;
     }
-    if (id !== undefined) {
-      const session = sessions.get(id);
-      if (!session) {
-        closeWithError(req, res, 404, "MCP session not found");
-        return;
-      }
-      if (req.method === "DELETE") {
-        const protocolVersion = req.headers["mcp-protocol-version"];
-        if (
-          protocolVersion !== undefined &&
-          (typeof protocolVersion !== "string" ||
-            !SUPPORTED_PROTOCOL_VERSIONS.includes(protocolVersion))
-        ) {
-          closeWithError(req, res, 400, "unsupported MCP protocol version");
-          return;
-        }
-        await closeSession(id, session);
-        res.writeHead(200);
-        res.end();
-        return;
-      }
-      if (req.method === "POST") {
-        const rejected = acquirePost(session);
-        if (rejected === 429) {
-          closeWithError(req, res, 429, "MCP session request limit reached", { "retry-after": "1" });
-          return;
-        }
-        if (rejected === 503) {
-          closeWithError(req, res, 503, "server request limit reached", { "retry-after": "1" });
-          return;
-        }
-        try {
-          await withActiveSession(session, async () => {
-            const body = await parsePostBody(
-              req,
-              limits.maxRequestBodyBytes,
-              limits.bodyTimeoutMs,
-            );
-            if (!body.ok) {
-              closeWithError(req, res, body.status, body.message);
-              return;
-            }
-            await session.transport.handleRequest(req, res, body.value);
-          });
-        } finally {
-          releasePost(session);
-        }
-        return;
-      }
-      await withActiveSession(session, () => session.transport.handleRequest(req, res));
+    if (id === undefined) {
+      await handleInitialization(req, res);
       return;
     }
-
-    if (req.method !== "POST") {
-      closeWithError(req, res, 400, "MCP session initialization requires POST");
+    const session = sessions.get(id);
+    if (!session) {
+      closeWithError(req, res, 404, "MCP session not found");
       return;
     }
-    const rejected = acquirePost(undefined);
-    if (rejected === 503) {
-      closeWithError(req, res, 503, "server request limit reached", { "retry-after": "1" });
-      return;
-    }
-    try {
-      const body = await parsePostBody(
-        req,
-        limits.maxRequestBodyBytes,
-        limits.bodyTimeoutMs,
-      );
-      if (!body.ok) {
-        closeWithError(req, res, body.status, body.message);
-        return;
-      }
-      if (!isInitializeRequest(body.value)) {
-        closeWithError(req, res, 400, "MCP session initialization required");
-        return;
-      }
-      await reapExpiredSessions();
-      if (closing) {
-        closeWithError(req, res, 503, "server is shutting down", { "retry-after": "1" });
-        return;
-      }
-      if (sessions.size + pendingInitializations >= limits.maxSessions) {
-        closeWithError(req, res, 503, "MCP session limit reached", { "retry-after": "1" });
-        return;
-      }
-      pendingInitializations += 1;
-
-      let initializedId: string | undefined;
-      let session: Session;
-      let hasReservation = true;
-      const transport = new NodeStreamableHTTPServerTransport({
-        sessionIdGenerator: randomUUID,
-        onsessioninitialized: (newId) => {
-          initializedId = newId;
-          initializing.delete(session);
-          if (hasReservation) {
-            hasReservation = false;
-            pendingInitializations -= 1;
-          }
-          session.lastUsedAt = Date.now();
-          sessions.set(newId, session);
-        },
-        onsessionclosed: (closedId) => {
-          const current = sessions.get(closedId);
-          if (current === session) sessions.delete(closedId);
-        },
-      });
-      const abort = new AbortController();
-      const mcp = buildServer(
-        scopedServices(appServices, workAdmission.session(abort.signal)),
-      );
-      session = {
-        server: mcp,
-        transport,
-        abort,
-        lastUsedAt: Date.now(),
-        activeRequests: 0,
-        activePosts: 0,
-      };
-      initializing.add(session);
-      transport.onclose = () => {
-        session.abort.abort(new DOMException("MCP session closed", "AbortError"));
-        if (initializedId && sessions.get(initializedId) === session) {
-          sessions.delete(initializedId);
-        }
-      };
-      try {
-        await withActiveSession(session, async () => {
-          await mcp.connect(transport);
-          await transport.handleRequest(req, res, body.value);
-        });
-      } finally {
-        initializing.delete(session);
-        if (hasReservation) pendingInitializations -= 1;
-        if (!initializedId) await mcp.close();
-      }
-    } finally {
-      releasePost(undefined);
-    }
+    await handleExistingSession(id, session, req, res);
   };
 
   const headerTimers = new WeakMap<Socket, NodeJS.Timeout>();
@@ -721,14 +637,7 @@ export async function serveHttp(
       (shutdown ??= (async () => {
         closing = true;
         clearInterval(sessionSweep);
-        const pending = [...initializing];
-        initializing.clear();
-        await Promise.allSettled(
-          [
-            ...[...sessions.entries()].map(([id, session]) => closeSession(id, session)),
-            ...pending.map(stopSession),
-          ],
-        );
+        await sessions.closeAll(stopSession);
         try {
           await closeNodeServer(server);
         } finally {

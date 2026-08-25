@@ -10,17 +10,19 @@ import { defaultGameStore } from "./games.js";
 import type { GameStore } from "./games.js";
 import { createCandidateComputation, rankByIntent } from "./intents.js";
 import type { CandidateSet, LichessOpts } from "./intents.js";
-import type { Candidate, Intent, Maia3Move, SfLine } from "./types.js";
+import type { Candidate, Intent, Maia3Move, SfLine } from "./domain.js";
 
-export interface AppServices {
+export interface GameServices {
   games: GameStore;
+}
+
+export interface AnalysisServices {
   analyze(
     fen: string,
     depth: number,
     multipv: number,
     signal?: AbortSignal,
   ): Promise<SfLine[]>;
-  quit(): Promise<void>;
   humanMoveDistribution(
     chess: Chess,
     elo: number,
@@ -28,6 +30,9 @@ export interface AppServices {
     topN: number,
     signal?: AbortSignal,
   ): Promise<Maia3Move[]>;
+}
+
+export interface ExplorerServices {
   explorerEnabled(): boolean;
   openingExplorer(
     chess: Chess,
@@ -36,6 +41,9 @@ export interface AppServices {
     ratings: readonly number[],
     signal?: AbortSignal,
   ): Promise<ExplorerResult>;
+}
+
+export interface CandidateServices {
   computeCandidates(
     chess: Chess,
     elo: number,
@@ -47,6 +55,18 @@ export interface AppServices {
   ): Promise<CandidateSet>;
   rankByIntent(candidates: Candidate[], intent: Intent): Candidate[];
 }
+
+export interface LifecycleServices {
+  quit(): Promise<void>;
+}
+
+export interface AppServices
+  extends
+    GameServices,
+    AnalysisServices,
+    ExplorerServices,
+    CandidateServices,
+    LifecycleServices {}
 
 const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) =>
   stockfish.analyze(fen, depth, multipv, signal);
@@ -103,18 +123,36 @@ export type DefaultAppServicesLease = {
   release(): Promise<void>;
 };
 
-let defaultAppServicesLeaseCount = 0;
+export type AppServicesLeaseManager = {
+  acquire(): DefaultAppServicesLease;
+};
 
-export function acquireDefaultAppServices(): DefaultAppServicesLease {
-  defaultAppServicesLeaseCount += 1;
-  let released = false;
+export function createAppServicesLeaseManager(
+  services: AppServices,
+): AppServicesLeaseManager {
+  let leaseCount = 0;
+
   return {
-    services: defaultAppServices,
-    async release(): Promise<void> {
-      if (released) return;
-      released = true;
-      defaultAppServicesLeaseCount -= 1;
-      if (defaultAppServicesLeaseCount === 0) await defaultAppServices.quit();
+    acquire(): DefaultAppServicesLease {
+      leaseCount += 1;
+      let released = false;
+      return {
+        services,
+        async release(): Promise<void> {
+          if (released) return;
+          released = true;
+          leaseCount -= 1;
+          if (leaseCount === 0) await services.quit();
+        },
+      };
     },
   };
+}
+
+const defaultAppServicesLeaseManager = createAppServicesLeaseManager(
+  defaultAppServices,
+);
+
+export function acquireDefaultAppServices(): DefaultAppServicesLease {
+  return defaultAppServicesLeaseManager.acquire();
 }

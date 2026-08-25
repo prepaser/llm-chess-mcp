@@ -1070,102 +1070,339 @@
                   "type": "object"
                 },
                 "opening": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "averageRating": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "averageRating": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "black": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                        "black": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "draws": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                        "draws": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "frequency": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                        "frequency": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "games": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                        "games": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
+                        "status": {
+                          "const": "available",
+                          "type": "string"
+                        },
+                        "white": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
-                      ]
-                    },
-                    "reason": {
-                      "enum": [
-                        "disabled",
-                        "invalid_input",
-                        "timeout",
-                        "network",
-                        "auth",
-                        "rate_limited",
-                        "upstream",
-                        "http",
-                        "invalid_response"
+                      },
+                      "required": [
+                        "status",
+                        "games",
+                        "frequency",
+                        "white",
+                        "draws",
+                        "black",
+                        "averageRating"
                       ],
-                      "type": "string"
+                      "type": "object"
                     },
-                    "status": {
-                      "enum": [
-                        "available",
-                        "no_data",
-                        "unavailable",
-                        "disabled"
-                      ],
-                      "type": "string"
-                    },
-                    "white": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "averageRating": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
+                        "black": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "draws": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frequency": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "games": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "status": {
+                          "const": "no_data",
+                          "type": "string"
+                        },
+                        "white": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
-                      ]
+                      },
+                      "required": [
+                        "status",
+                        "games",
+                        "frequency",
+                        "white",
+                        "draws",
+                        "black",
+                        "averageRating"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "averageRating": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "black": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "draws": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frequency": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "games": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reason": {
+                          "enum": [
+                            "disabled",
+                            "invalid_input",
+                            "timeout",
+                            "network",
+                            "auth",
+                            "rate_limited",
+                            "upstream",
+                            "http",
+                            "invalid_response"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "white": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "games",
+                        "frequency",
+                        "white",
+                        "draws",
+                        "black",
+                        "averageRating"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "averageRating": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "black": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "draws": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frequency": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "games": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "status": {
+                          "const": "disabled",
+                          "type": "string"
+                        },
+                        "white": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "games",
+                        "frequency",
+                        "white",
+                        "draws",
+                        "black",
+                        "averageRating"
+                      ],
+                      "type": "object"
                     }
-                  },
-                  "required": [
-                    "status",
-                    "games",
-                    "frequency",
-                    "white",
-                    "draws",
-                    "black",
-                    "averageRating"
-                  ],
-                  "type": "object"
+                  ]
                 },
                 "san": {
                   "type": "string"
@@ -1521,102 +1758,339 @@
                   "type": "object"
                 },
                 "opening": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "averageRating": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "averageRating": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "black": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                        "black": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "draws": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                        "draws": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "frequency": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                        "frequency": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "games": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                        "games": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
+                        "status": {
+                          "const": "available",
+                          "type": "string"
+                        },
+                        "white": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
-                      ]
-                    },
-                    "reason": {
-                      "enum": [
-                        "disabled",
-                        "invalid_input",
-                        "timeout",
-                        "network",
-                        "auth",
-                        "rate_limited",
-                        "upstream",
-                        "http",
-                        "invalid_response"
+                      },
+                      "required": [
+                        "status",
+                        "games",
+                        "frequency",
+                        "white",
+                        "draws",
+                        "black",
+                        "averageRating"
                       ],
-                      "type": "string"
+                      "type": "object"
                     },
-                    "status": {
-                      "enum": [
-                        "available",
-                        "no_data",
-                        "unavailable",
-                        "disabled"
-                      ],
-                      "type": "string"
-                    },
-                    "white": {
-                      "anyOf": [
-                        {
-                          "type": "number"
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "averageRating": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
-                        {
-                          "type": "null"
+                        "black": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "draws": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frequency": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "games": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "status": {
+                          "const": "no_data",
+                          "type": "string"
+                        },
+                        "white": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
-                      ]
+                      },
+                      "required": [
+                        "status",
+                        "games",
+                        "frequency",
+                        "white",
+                        "draws",
+                        "black",
+                        "averageRating"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "averageRating": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "black": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "draws": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frequency": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "games": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "reason": {
+                          "enum": [
+                            "disabled",
+                            "invalid_input",
+                            "timeout",
+                            "network",
+                            "auth",
+                            "rate_limited",
+                            "upstream",
+                            "http",
+                            "invalid_response"
+                          ],
+                          "type": "string"
+                        },
+                        "status": {
+                          "const": "unavailable",
+                          "type": "string"
+                        },
+                        "white": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "reason",
+                        "games",
+                        "frequency",
+                        "white",
+                        "draws",
+                        "black",
+                        "averageRating"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "averageRating": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "black": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "draws": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "frequency": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "games": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "status": {
+                          "const": "disabled",
+                          "type": "string"
+                        },
+                        "white": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "games",
+                        "frequency",
+                        "white",
+                        "draws",
+                        "black",
+                        "averageRating"
+                      ],
+                      "type": "object"
                     }
-                  },
-                  "required": [
-                    "status",
-                    "games",
-                    "frequency",
-                    "white",
-                    "draws",
-                    "black",
-                    "averageRating"
-                  ],
-                  "type": "object"
+                  ]
                 },
                 "san": {
                   "type": "string"

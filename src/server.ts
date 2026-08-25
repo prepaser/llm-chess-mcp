@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/server";
 import { acquireDefaultAppServices } from "./services.js";
-import type { AppServices } from "./services.js";
+import type { AppServices, DefaultAppServicesLease } from "./services.js";
 import { registerAnalysisTools } from "./tools/analysis.js";
 import { registerCandidateTools } from "./tools/candidates.js";
 import { registerExplorerTool } from "./tools/explorer.js";
@@ -23,10 +23,7 @@ function buildServerWithServices(services: AppServices): McpServer {
   return server;
 }
 
-export function buildServer(services?: AppServices): McpServer {
-  if (services !== undefined) return buildServerWithServices(services);
-
-  const lease = acquireDefaultAppServices();
+function buildServerWithLease(lease: DefaultAppServicesLease): McpServer {
   try {
     const server = buildServerWithServices(lease.services);
     const closeServer = server.close.bind(server);
@@ -38,4 +35,9 @@ export function buildServer(services?: AppServices): McpServer {
     void lease.release();
     throw error;
   }
+}
+
+export function buildServer(services?: AppServices): McpServer {
+  if (services !== undefined) return buildServerWithServices(services);
+  return buildServerWithLease(acquireDefaultAppServices());
 }

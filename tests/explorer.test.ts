@@ -634,7 +634,10 @@ test("does not retry after Retry-After exceeds the request budget", async () => 
 
   await assert.rejects(
     openingExplorer(new Chess(), "lichess", [], [], options(fetch)),
-    expectKind("rate_limited"),
+    (cause: unknown) =>
+      cause instanceof ExplorerError &&
+      expectKind("rate_limited")(cause) &&
+      cause.status === 429,
   );
   assert.equal(calls, 1);
 });

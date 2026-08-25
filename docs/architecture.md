@@ -28,6 +28,9 @@ The server is assembled from injected `AppServices`, not from tool-level global
 lookups. Production constructs one service set for the process; tests pass
 small fakes or controlled implementations. This keeps transport registration
 separate from engine startup, network I/O, time, and storage.
+`AppServices` is the compatibility composite of narrower game, analysis,
+candidate, explorer, and lifecycle capabilities; tool modules accept only the
+capabilities they use.
 Default `buildServer()` and `serveHttp()` handles share a reference-counted
 service lease; closing the last handle terminates Stockfish. Injected services
 remain caller-owned.
@@ -52,6 +55,12 @@ The tool modules have narrow ownership:
 Tool modules validate inputs, take a game snapshot where needed, call services,
 and adapt data to output schemas. They do not reach into another module's
 storage or manage an engine session directly.
+
+Core chess types and finite vocabularies live in `domain.ts`; tool schemas adapt
+those types to MCP contracts rather than defining the domain model. `chess.ts`
+remains the public chess facade while FEN-safe copying and PGN processing are
+isolated in `chess-copy.ts` and `pgn.ts`. Candidate construction and intent
+ranking are likewise separate policies.
 
 ## App services and game lifecycle
 
@@ -123,6 +132,9 @@ session active without consuming POST permits. Header, upload, connection,
 socket, and keep-alive limits are enforced by the Node listener.
 `bodyTimeoutMs` bounds body upload only; engine and network work use their own
 timeouts and MCP cancellation rather than a transport-wide request deadline.
+Session reservations/expiry, POST admission, and downstream work admission are
+independent state owners. The listener orchestrates them without duplicating
+their counters or release rules.
 
 The server has no MCP OAuth endpoints, OAuth discovery metadata, bearer-token
 validation, or browser CORS support. A reverse proxy may implement its own
@@ -135,15 +147,18 @@ the proxy explicitly; do not treat an `Origin` header as authentication.
 Stockfish is a single worker-backed engine, so its service serializes analysis
 requests through a bounded queue (32 active or waiting requests). It lazily
 initializes the configured packaged flavor, performs the UCI/ready handshake,
-and gives each request an analysis timeout plus a stop grace period. Init,
-handshake, or analysis failure invalidates and terminates the worker; a queued
-later request initializes a fresh worker. Queue capacity fails fast, and
-shutdown invalidates work from the old generation.
+and gives each request an analysis timeout plus a stop grace period. Init or
+handshake failure, an engine command failure, or an analysis that does not stop
+within its grace period invalidates and terminates the worker; a queued later
+request initializes a fresh worker. Queue capacity fails fast, and shutdown
+invalidates work from the old generation.
 
 Request cancellation removes waiting analyses immediately. An active analysis
 sends one UCI `stop` and keeps the queue fenced until `bestmove`; if the engine
 does not stop within the grace period, the worker is terminated before queued
-work reinitializes it. Partial lines from a cancelled request are never returned.
+work reinitializes it. A timed-out request that receives `bestmove` during that
+grace period is rejected, but its now-idle worker is reused. Partial lines from
+a cancelled request are never returned.
 
 Maia runs in-process with the bundled ONNX model (5M by default). The native
 addon and inference session are loaded lazily and the session is shared after
@@ -166,6 +181,10 @@ input, and malformed responses fail without retry. Successful payloads are
 checked against the legal moves of the snapshot before they can affect a candidate result.
 Caller cancellation is combined with each attempt timeout and also interrupts
 retry backoff; it is never converted into an Explorer availability failure.
+Its limiter, HTTP transport, response normalization, and retry policy are
+separate internal modules, but response consumption remains inside the limiter
+slot. Cancellation closes and awaits an in-flight response body before the next
+serialized request starts.
 
 ## Result and contract rules
 

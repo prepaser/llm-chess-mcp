@@ -1,8 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import type * as z from "zod/v4";
 import { ANALYSIS_PRESETS } from "../eval.js";
+import type { Candidate } from "../domain.js";
 import type { AppServices } from "../services.js";
-import { TOOL_INPUT_SCHEMAS } from "../tool-inputs.js";
+import {
+  candidateExplorerFilters,
+  TOOL_INPUT_SCHEMAS,
+} from "../tool-inputs.js";
 import { TOOL_META } from "../tool-meta.js";
 import { safeHandler, toolResult } from "../tool-result.js";
 import { TOOL_OUTPUT_SCHEMAS } from "../tool-schemas.js";
@@ -12,21 +16,14 @@ type CandidateServices = Pick<
   "games" | "computeCandidates" | "rankByIntent"
 >;
 
-type CandidateToolInput = {
-  game_id: string;
-  elo: number;
-  analysis_level: keyof typeof ANALYSIS_PRESETS;
-  sf_depth?: number | undefined;
-  sf_multipv?: number | undefined;
-  maia_top_n: number;
-  lichess_db: "lichess" | "masters";
-  lichess_speeds: string[];
-  lichess_ratings: number[];
-};
-
-type CandidatePayload = z.output<
-  typeof TOOL_OUTPUT_SCHEMAS.move_candidates
+type CandidateToolInput = z.output<
+  typeof TOOL_INPUT_SCHEMAS.move_candidates
 >;
+
+type CandidatePayload = Omit<
+  z.output<typeof TOOL_OUTPUT_SCHEMAS.move_candidates>,
+  "candidates"
+> & { candidates: Candidate[] };
 
 async function candidatePayload(
   services: CandidateServices,
@@ -65,11 +62,11 @@ async function candidatePayload(
     sf_depth ?? preset.depth,
     sf_multipv ?? preset.multipv,
     maia_top_n,
-    {
-      db: lichess_db,
-      speeds: lichess_speeds,
-      ratings: lichess_ratings,
-    },
+    candidateExplorerFilters({
+      lichess_db,
+      lichess_speeds,
+      lichess_ratings,
+    }),
     signal,
   );
   signal.throwIfAborted();
@@ -100,10 +97,12 @@ export function registerCandidateTools(
     },
     safeHandler(
       moveCandidatesSchema,
+      TOOL_OUTPUT_SCHEMAS.move_candidates,
       async (input, signal) => {
         const payload = await candidatePayload(services, input, signal);
 
         return toolResult(
+          TOOL_OUTPUT_SCHEMAS.move_candidates,
           payload,
           `${payload.candidates.length} candidates for game ${payload.game_id} at revision ${payload.revision}`,
         );
@@ -121,6 +120,7 @@ export function registerCandidateTools(
     },
     safeHandler(
       byIntentSchema,
+      TOOL_OUTPUT_SCHEMAS.move_candidates_by_intent,
       async ({ intent, ...input }, signal) => {
         const payload = await candidatePayload(services, input, signal);
         const candidates = payload.candidates.length
@@ -128,6 +128,7 @@ export function registerCandidateTools(
           : [];
 
         return toolResult(
+          TOOL_OUTPUT_SCHEMAS.move_candidates_by_intent,
           {
             ...payload,
             intent,

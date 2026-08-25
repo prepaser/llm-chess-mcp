@@ -48,6 +48,7 @@ export function registerAnalysisTools(
     },
     safeHandler(
       TOOL_INPUT_SCHEMAS.position_analyze,
+      TOOL_OUTPUT_SCHEMAS.position_analyze,
       async ({ game_id, analysis_level, depth, multipv }, signal) => {
         const { chess, revision } = services.games.getSnapshot(game_id);
         const preset = ANALYSIS_PRESETS[analysis_level];
@@ -70,6 +71,7 @@ export function registerAnalysisTools(
           })),
         };
         return toolResult(
+          TOOL_OUTPUT_SCHEMAS.position_analyze,
           payload,
           `Analyzed game ${game_id} at revision ${revision}; ${payload.lines.length} lines`,
         );
@@ -86,6 +88,7 @@ export function registerAnalysisTools(
     },
     safeHandler(
       TOOL_INPUT_SCHEMAS.human_move_distribution,
+      TOOL_OUTPUT_SCHEMAS.human_move_distribution,
       async ({ game_id, elo, oppo_elo, top_n }, signal) => {
         const { chess, revision } = services.games.getSnapshot(game_id);
         const opponentElo = oppo_elo ?? elo;
@@ -104,6 +107,7 @@ export function registerAnalysisTools(
           moves,
         };
         return toolResult(
+          TOOL_OUTPUT_SCHEMAS.human_move_distribution,
           payload,
           `${moves.length} Maia3 moves for game ${game_id} at revision ${revision}`,
         );
@@ -120,6 +124,7 @@ export function registerAnalysisTools(
     },
     safeHandler(
       TOOL_INPUT_SCHEMAS.move_evaluate,
+      TOOL_OUTPUT_SCHEMAS.move_evaluate,
       async ({ game_id, move, depth }, signal) => {
         const { chess, revision } = services.games.getSnapshot(game_id);
         const moves = Array.isArray(move) ? move : [move];
@@ -162,10 +167,7 @@ export function registerAnalysisTools(
               scoreMate: null,
               bestCp: beforeCp,
               cpLoss,
-              classification:
-                cpLoss !== null
-                  ? (classifyCpLoss(cpLoss) as MoveEvaluation["classification"])
-                  : null,
+              classification: cpLoss !== null ? classifyCpLoss(cpLoss) : null,
               pv: [],
               pvSan: [],
             });
@@ -190,16 +192,14 @@ export function registerAnalysisTools(
             scoreMate: moverEval?.type === "mate" ? moverEval.plies : null,
             bestCp: beforeCp,
             cpLoss,
-            classification:
-              cpLoss !== null
-                ? (classifyCpLoss(cpLoss) as MoveEvaluation["classification"])
-                : null,
+            classification: cpLoss !== null ? classifyCpLoss(cpLoss) : null,
             pv,
             pvSan: pvToSan(copy, pv),
           });
         }
 
         return toolResult(
+          TOOL_OUTPUT_SCHEMAS.move_evaluate,
           { game_id, revision, results },
           `Evaluated ${results.length} move${results.length === 1 ? "" : "s"} in game ${game_id}`,
         );

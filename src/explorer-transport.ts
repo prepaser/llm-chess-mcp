@@ -1,0 +1,82 @@
+import {
+  awaitWithAbort,
+  explorerError,
+  EXPLORER_ATTEMPT_TIMEOUT_MS,
+  throwIfAborted,
+} from "./explorer-core.js";
+import type { ExplorerError, ExplorerFetch } from "./explorer-core.js";
+
+export interface ExplorerTransportOptions {
+  callerSignal: AbortSignal | undefined;
+  deadline: number;
+  now: () => number;
+  request: ExplorerFetch;
+  timeout: (ms: number) => AbortSignal;
+  token: string;
+  url: string;
+}
+
+export type ExplorerTransportResult =
+  | { type: "success"; response: Response; signal: AbortSignal }
+  | { type: "failure"; error: ExplorerError; retryAfter: string | null };
+
+async function discardResponse(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    const body = response.body;
+    if (body) await awaitWithAbort(signal, () => body.cancel());
+  } catch {
+    throwIfAborted(signal);
+  }
+}
+
+function errorKindForStatus(status: number): ExplorerError["kind"] {
+  if (status === 401 || status === 403) return "auth";
+  if (status === 429) return "rate_limited";
+  if (status >= 500 && status <= 599) return "upstream";
+  return "http";
+}
+
+export async function requestExplorerTransport(
+  options: ExplorerTransportOptions,
+): Promise<ExplorerTransportResult> {
+  const { callerSignal, deadline, now, request, timeout, token, url } = options;
+  throwIfAborted(callerSignal);
+  const remaining = deadline - now();
+  if (remaining <= 0) throw explorerError("timeout");
+  const attemptSignal = timeout(
+    Math.max(1, Math.min(EXPLORER_ATTEMPT_TIMEOUT_MS, remaining)),
+  );
+  const signal = AbortSignal.any(
+    callerSignal ? [callerSignal, attemptSignal] : [attemptSignal],
+  );
+
+  let response: Response;
+  try {
+    response = await request(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal,
+    });
+  } catch {
+    throwIfAborted(callerSignal);
+    return {
+      type: "failure",
+      error: explorerError(signal.aborted ? "timeout" : "network"),
+      retryAfter: null,
+    };
+  }
+
+  throwIfAborted(callerSignal);
+  if (response.ok) return { type: "success", response, signal };
+
+  const kind = errorKindForStatus(response.status);
+  const retryAfter = response.headers.get("retry-after");
+  await discardResponse(response, callerSignal);
+  return {
+    type: "failure",
+    error: explorerError(kind, response.status),
+    retryAfter,
+  };
+}

@@ -6,6 +6,10 @@ import {
   type StockfishEngine,
   type StockfishInit,
 } from "../src/engines/stockfish.js";
+import {
+  mergeAnalysisInfo,
+  parseAnalysisInfo,
+} from "../src/engines/stockfish-info.js";
 
 function engine(
   onCommand: (engine: StockfishEngine, command: string) => void = () => {},
@@ -60,6 +64,42 @@ test("resolveStockfishFlavor accepts package keywords and rejects paths", () => 
   );
 });
 
+test("analysis info parser merges partial updates and resets scores", () => {
+  const mate = parseAnalysisInfo(
+    "info depth 1 multipv 1 score mate -3 wdl 100 200 700",
+  );
+  assert.ok(mate);
+  const withMate = mergeAnalysisInfo(undefined, mate);
+  assert.deepEqual(withMate, {
+    multipv: 1,
+    scoreCp: null,
+    scoreMate: -3,
+    wdl: [100, 200, 700],
+    pv: [],
+  });
+
+  const pv = parseAnalysisInfo("info depth 2 multipv 1 pv e2e4 e7e5");
+  assert.ok(pv);
+  const withPv = mergeAnalysisInfo(withMate, pv);
+  assert.deepEqual(withPv, {
+    ...withMate,
+    pv: ["e2e4", "e7e5"],
+  });
+
+  const cp = parseAnalysisInfo("info depth 3 multipv 1 score cp 42");
+  assert.ok(cp);
+  assert.deepEqual(mergeAnalysisInfo(withPv, cp), {
+    ...withPv,
+    scoreCp: 42,
+    scoreMate: null,
+  });
+  assert.equal(
+    parseAnalysisInfo("info depth 1 multipv invalid score cp 42 pv e2e4"),
+    null,
+  );
+  assert.equal(parseAnalysisInfo("bestmove e2e4"), null);
+});
+
 test("initialization times out when its callback never arrives", async () => {
   const current = engine();
   const stockfish = new Stockfish({
@@ -69,6 +109,78 @@ test("initialization times out when its callback never arrives", async () => {
 
   await assert.rejects(stockfish.analyze("fen", 1, 1), /init timeout/);
   assert.equal(current.terminations, 1);
+});
+
+test("synchronous initialization callback completes the handshake", async () => {
+  const current = respondingEngine(true);
+  const stockfish = new Stockfish({
+    init: (_flavor, callback) => {
+      callback(null, current);
+      return current;
+    },
+    timeouts: { init: 50, handshake: 50, analyze: 50 },
+  });
+
+  assert.equal((await stockfish.analyze("fen", 1, 1))[0]?.scoreCp, 42);
+});
+
+test("initialization callback failure terminates its engine and reinitializes queued work", async () => {
+  const first = engine();
+  const second = respondingEngine(true);
+  let attempt = 0;
+  const stockfish = new Stockfish({
+    init: (_flavor, callback) => {
+      const current = attempt++ === 0 ? first : second;
+      queueMicrotask(() =>
+        callback(current === first ? new Error("init failed") : null, current),
+      );
+      return current;
+    },
+    timeouts: { init: 50, handshake: 50, analyze: 50 },
+  });
+
+  const failed = stockfish.analyze("first", 1, 1);
+  const queued = stockfish.analyze("second", 1, 1);
+
+  await assert.rejects(failed, /init failed/);
+  assert.equal((await queued)[0]?.scoreCp, 42);
+  assert.equal(first.terminations, 1);
+  assert.equal(second.terminations, 0);
+});
+
+test("late initialization callbacks terminate their delivered engine", async () => {
+  let callback!: (error: Error | null, current: StockfishEngine) => void;
+  const returned = engine();
+  const late = engine();
+  const stockfish = new Stockfish({
+    init: (_flavor, initCallback) => {
+      callback = initCallback;
+      return returned;
+    },
+    timeouts: { init: 5 },
+  });
+
+  await assert.rejects(stockfish.analyze("fen", 1, 1), /init timeout/);
+  assert.equal(returned.terminations, 1);
+
+  callback(null, late);
+  assert.equal(late.terminations, 1);
+});
+
+test("initialization callback replaces the returned engine", async () => {
+  const returned = engine();
+  const initialized = respondingEngine(true);
+  const stockfish = new Stockfish({
+    init: (_flavor, callback) => {
+      queueMicrotask(() => callback(null, initialized));
+      return returned;
+    },
+    timeouts: { init: 50, handshake: 50, analyze: 50 },
+  });
+
+  assert.equal((await stockfish.analyze("fen", 1, 1))[0]?.scoreCp, 42);
+  assert.equal(returned.terminations, 1);
+  assert.equal(initialized.terminations, 0);
 });
 
 test("analyze timeout resets the engine and queued work reinitializes", async () => {
@@ -96,26 +208,43 @@ test("analyze timeout resets the engine and queued work reinitializes", async ()
   assert.equal(second.terminations, 0);
 });
 
-test("analyze timeout rejects when stop produces a bestmove", async () => {
+test("analyze timeout rejects but reuses an engine that stops cleanly", async () => {
+  let initCalls = 0;
+  let analyses = 0;
   const current = engine((current, command) => {
     if (command === "uci") {
       queueMicrotask(() => current.listener?.("uciok"));
     } else if (command === "isready") {
       queueMicrotask(() => current.listener?.("readyok"));
+    } else if (command.startsWith("go depth ")) {
+      analyses++;
+      if (analyses === 2) {
+        queueMicrotask(() => {
+          current.listener?.("info depth 1 multipv 1 score cp 42 pv e2e4");
+          current.listener?.("bestmove e2e4");
+        });
+      }
     } else if (command === "stop") {
       queueMicrotask(() => current.listener?.("bestmove e2e4"));
     }
   });
   const stockfish = new Stockfish({
-    init: initializer([current]),
+    init: (_flavor, callback) => {
+      initCalls++;
+      queueMicrotask(() => callback(null, current));
+      return current;
+    },
     timeouts: { init: 50, handshake: 50, analyze: 5, stopGrace: 50 },
   });
 
   await assert.rejects(stockfish.analyze("fen", 1, 1), /analyze timeout/);
+  assert.equal((await stockfish.analyze("next", 1, 1))[0]?.scoreCp, 42);
   assert.equal(current.commands.filter((command) => command === "stop").length, 1);
+  assert.equal(initCalls, 1);
+  assert.equal(current.terminations, 0);
 });
 
-test("analysis ignores malformed multipv lines and defaults missing fields", async () => {
+test("analysis merges partial UCI updates, sorts ranks, and ignores malformed lines", async () => {
   const current = engine((current, command) => {
     if (command === "uci") {
       queueMicrotask(() => current.listener?.("uciok"));
@@ -124,11 +253,11 @@ test("analysis ignores malformed multipv lines and defaults missing fields", asy
     } else if (command.startsWith("go depth ")) {
       queueMicrotask(() => {
         current.listener?.("info depth 1 multipv invalid score cp 999 pv a1a2");
+        current.listener?.("info depth 1 multipv 2");
         current.listener?.(
           "info depth 1 multipv 1 score mate -3 wdl 100 200 700 pv e2e4",
         );
-        current.listener?.("info depth 2 multipv 1 nodes 1000 nps 500000");
-        current.listener?.("info depth 1 multipv 2");
+        current.listener?.("info depth 2 multipv 1 pv e2e4");
         current.listener?.("bestmove e2e4");
       });
     }

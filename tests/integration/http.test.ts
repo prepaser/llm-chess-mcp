@@ -527,7 +527,13 @@ test("Streamable HTTP rejects noncanonical endpoint paths", async (t) => {
   for (const path of ["//mcp", "/chess/../mcp", "/chess/%2e%2e/mcp"]) {
     assert.equal((await rawHttpRequest(http.url, path)).status, 404, path);
   }
-  for (const path of ["//mcp", "/chess/../mcp", "/chess/%2e%2e/mcp"]) {
+  for (const path of [
+    "//mcp",
+    "/chess/../mcp",
+    "/chess/%2e%2e/mcp",
+    "/mcp?debug=1",
+    "/mcp#fragment",
+  ]) {
     await assert.rejects(
       serveHttp({ port: 0, path }, fakeServices(new GameStore())),
       /invalid HTTP endpoint path/,

@@ -1,11 +1,26 @@
 import * as z from "zod/v4";
-import { EXPLORER_ERROR_KINDS } from "./explorer.js";
-import { INTENTS } from "./types.js";
+import {
+  ANALYSIS_LEVELS,
+  COLORS,
+  EXPLORER_ERROR_KINDS,
+  INTENTS,
+  MOVE_EVALUATION_RESULTS,
+  MOVE_CLASSIFICATIONS,
+  PIECES,
+  PROMOTIONS,
+  type Candidate,
+  type ChessState,
+  type LichessMove,
+  type Maia3Move,
+  type MoveSensitivity,
+  type SfLine,
+  type Wdl,
+} from "./domain.js";
 import type { ToolName } from "./tool-names.js";
 
 const revision = z.number().int().min(0);
-const color = z.enum(["w", "b"]);
-const wdl = z.tuple([z.number(), z.number(), z.number()]);
+const color = z.enum(COLORS);
+const wdl = z.tuple([z.number(), z.number(), z.number()]) satisfies z.ZodType<Wdl>;
 
 export const StateSchema = z.strictObject({
   fen: z.string(),
@@ -33,7 +48,7 @@ export const StateSchema = z.strictObject({
     blackKingside: z.boolean(),
     blackQueenside: z.boolean(),
   }),
-});
+}) satisfies z.ZodType<ChessState>;
 
 export const SfLineSchema = z.strictObject({
   multipv: z.number().int().min(1),
@@ -41,23 +56,32 @@ export const SfLineSchema = z.strictObject({
   scoreMate: z.number().nullable(),
   wdl: wdl.nullable(),
   pv: z.array(z.string()),
-});
+}) satisfies z.ZodType<SfLine>;
 
 export const AnalysisLineSchema = z.strictObject({
   ...SfLineSchema.shape,
   pvSan: z.array(z.string()),
 });
 
-export const OpeningStatsSchema = z.strictObject({
-  status: z.enum(["available", "no_data", "unavailable", "disabled"]),
-  reason: z.enum(EXPLORER_ERROR_KINDS).optional(),
+const openingStatsValues = {
   games: z.number().nullable(),
   frequency: z.number().nullable(),
   white: z.number().nullable(),
   draws: z.number().nullable(),
   black: z.number().nullable(),
   averageRating: z.number().nullable(),
-});
+};
+
+export const OpeningStatsSchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.literal("available"), ...openingStatsValues }),
+  z.strictObject({ status: z.literal("no_data"), ...openingStatsValues }),
+  z.strictObject({
+    status: z.literal("unavailable"),
+    reason: z.enum(EXPLORER_ERROR_KINDS),
+    ...openingStatsValues,
+  }),
+  z.strictObject({ status: z.literal("disabled"), ...openingStatsValues }),
+]);
 
 export const CandidateSchema = z.strictObject({
   uci: z.string(),
@@ -77,7 +101,7 @@ export const CandidateSchema = z.strictObject({
     opponentElo: z.number(),
   }),
   opening: OpeningStatsSchema,
-});
+}) satisfies z.ZodType<Candidate>;
 
 export const OpeningSchema = z
   .strictObject({
@@ -113,9 +137,9 @@ const legalMove = z.strictObject({
   uci: z.string(),
   from: z.string().regex(/^[a-h][1-8]$/),
   to: z.string().regex(/^[a-h][1-8]$/),
-  piece: z.enum(["p", "n", "b", "r", "q", "k"]),
-  captured: z.enum(["p", "n", "b", "r", "q", "k"]).nullable(),
-  promotion: z.enum(["n", "b", "r", "q"]).nullable(),
+  piece: z.enum(PIECES),
+  captured: z.enum(PIECES).nullable(),
+  promotion: z.enum(PROMOTIONS).nullable(),
   isCapture: z.boolean(),
   isCheck: z.boolean(),
 });
@@ -132,7 +156,7 @@ export const PositionAnalyzeOutputSchema = z.strictObject({
   fen: z.string(),
   turn: color,
   revision,
-  analysis_level: z.enum(["fast", "normal", "deep"]),
+  analysis_level: z.enum(ANALYSIS_LEVELS),
   lines: z.array(AnalysisLineSchema),
 });
 
@@ -140,7 +164,7 @@ export const Maia3MoveSchema = z.strictObject({
   uci: z.string(),
   san: z.string(),
   prob: z.number(),
-});
+}) satisfies z.ZodType<Maia3Move>;
 
 export const HumanMoveDistributionOutputSchema = z.strictObject({
   game_id: z.string(),
@@ -153,21 +177,13 @@ export const HumanMoveDistributionOutputSchema = z.strictObject({
 const moveEvaluation = z.strictObject({
   move: z.string(),
   uci: z.string(),
-  result: z.enum([
-    "ongoing",
-    "checkmate",
-    "stalemate",
-    "insufficient_material",
-    "threefold_repetition",
-    "fifty_move_rule",
-    "draw",
-  ]),
+  result: z.enum(MOVE_EVALUATION_RESULTS),
   scoreCp: z.number().nullable(),
   scoreMate: z.number().nullable(),
   bestCp: z.number().nullable(),
   cpLoss: z.number().nullable(),
   classification: z
-    .enum(["best", "excellent", "good", "inaccuracy", "mistake", "blunder"])
+    .enum(MOVE_CLASSIFICATIONS)
     .nullable(),
   pv: z.array(z.string()),
   pvSan: z.array(z.string()),
@@ -182,7 +198,7 @@ export const MoveEvaluateOutputSchema = z.strictObject({
 export const MoveSensitivitySchema = z.strictObject({
   level: z.enum(["low", "medium", "high"]),
   topMoveSpreadCp: z.number().nullable(),
-});
+}) satisfies z.ZodType<MoveSensitivity>;
 
 const candidatesBase = {
   game_id: z.string(),
@@ -190,7 +206,7 @@ const candidatesBase = {
   fen: z.string(),
   turn: color,
   elo: z.number(),
-  analysis_level: z.enum(["fast", "normal", "deep"]),
+  analysis_level: z.enum(ANALYSIS_LEVELS),
   moveSensitivity: MoveSensitivitySchema,
   candidates: z.array(CandidateSchema),
 };
@@ -210,7 +226,7 @@ export const LichessMoveSchema = z.strictObject({
   black: z.number(),
   count: z.number(),
   averageRating: z.number().nullable(),
-});
+}) satisfies z.ZodType<LichessMove>;
 
 export const OpeningExplorerOutputSchema = z.strictObject({
   game_id: z.string(),

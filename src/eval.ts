@@ -1,4 +1,8 @@
-import type { SfLine } from "./types.js";
+import {
+  type AnalysisLevel,
+  type MoveClassification,
+  type SfLine,
+} from "./domain.js";
 
 export type Eval =
   | { type: "cp"; value: number }
@@ -32,9 +36,9 @@ export const CLASSIFICATION = {
   good: 80,
   inaccuracy: 150,
   mistake: 300,
-} as const;
+} as const satisfies Record<Exclude<MoveClassification, "blunder">, number>;
 
-export function classifyCpLoss(cpLoss: number): string {
+export function classifyCpLoss(cpLoss: number): MoveClassification {
   if (cpLoss <= CLASSIFICATION.best) return "best";
   if (cpLoss < CLASSIFICATION.excellent) return "excellent";
   if (cpLoss < CLASSIFICATION.good) return "good";
@@ -43,7 +47,8 @@ export function classifyCpLoss(cpLoss: number): string {
   return "blunder";
 }
 
-export type AnalysisLevel = "fast" | "normal" | "deep";
+export { ANALYSIS_LEVELS } from "./domain.js";
+export type { AnalysisLevel } from "./domain.js";
 
 export const ANALYSIS_PRESETS: Record<
   AnalysisLevel,

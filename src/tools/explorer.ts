@@ -1,7 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { ChessError } from "../errors.js";
 import type { AppServices } from "../services.js";
-import { OpeningExplorerInputSchema } from "../tool-inputs.js";
+import {
+  explorerFilters,
+  OpeningExplorerInputSchema,
+} from "../tool-inputs.js";
 import { TOOL_META } from "../tool-meta.js";
 import { safeHandler, toolResult } from "../tool-result.js";
 import { OpeningExplorerOutputSchema } from "../tool-schemas.js";
@@ -24,6 +27,7 @@ export function registerExplorerTool(
     },
     safeHandler(
       OpeningExplorerInputSchema,
+      OpeningExplorerOutputSchema,
       async ({ game_id, db, speeds, ratings }, signal) => {
         if (!services.explorerEnabled()) {
           throw new ChessError(
@@ -32,9 +36,17 @@ export function registerExplorerTool(
           );
         }
         const { chess, revision } = services.games.getSnapshot(game_id);
-        const result = await services.openingExplorer(chess, db, speeds, ratings, signal);
+        const filters = explorerFilters({ db, speeds, ratings });
+        const result = await services.openingExplorer(
+          chess,
+          filters.db,
+          filters.speeds,
+          filters.ratings,
+          signal,
+        );
         return toolResult(
-          { game_id, revision, ...result },
+          OpeningExplorerOutputSchema,
+          { game_id, revision, ...result, db: filters.db },
           `Lichess ${db} returned ${result.moves.length} moves for game ${game_id}`,
         );
       },

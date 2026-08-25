@@ -7,7 +7,7 @@ import {
   snapshotChess,
 } from "./chess.js";
 import { ChessError } from "./errors.js";
-import type { GameRecord } from "./types.js";
+import type { GameRecord } from "./domain.js";
 
 export const MAX_GAMES = 1_000;
 export const GAME_TTL_MS = 60 * 60 * 1_000;

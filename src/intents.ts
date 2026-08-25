@@ -1,29 +1,23 @@
 import { Chess } from "chess.js";
-import type { ExplorerErrorKind, ExplorerResult } from "./explorer.js";
+import type { ExplorerResult } from "./explorer.js";
 import { toEval, evalToCp } from "./eval.js";
 import type {
   Candidate,
-  Intent,
+  ExplorerErrorKind,
   LichessMove,
   Maia3Move,
   MoveSensitivity,
   Objective,
   OpeningStats,
   SfLine,
-} from "./types.js";
+} from "./domain.js";
+
+export { rankByIntent } from "./intent-ranking.js";
 
 export interface LichessOpts {
   db: "lichess" | "masters";
   speeds: string[];
   ratings: number[];
-}
-
-function softmax(values: number[], temperature: number): number[] {
-  const scaled = values.map((v) => v / temperature);
-  const max = Math.max(...scaled);
-  const exps = scaled.map((v) => Math.exp(v - max));
-  const sum = exps.reduce((a, b) => a + b, 0);
-  return exps.map((e) => e / sum);
 }
 
 function toSan(chess: Chess, uci: string): string {
@@ -178,8 +172,7 @@ export function candidateSetFromData(
     const lichess = lichessByUci.get(uci);
     let opening: OpeningStats;
     if (lichess) {
-      opening = {
-        status: lichessResult.status,
+      const stats = {
         games: lichess.count,
         frequency: totalGames > 0 ? lichess.count / totalGames : null,
         white: lichess.white,
@@ -187,6 +180,14 @@ export function candidateSetFromData(
         black: lichess.black,
         averageRating: lichess.averageRating,
       };
+      opening =
+        lichessResult.status === "unavailable"
+          ? {
+              status: lichessResult.status,
+              reason: lichessResult.reason,
+              ...stats,
+            }
+          : { status: lichessResult.status, ...stats };
     } else {
       const empty = {
         games: null,
@@ -278,12 +279,6 @@ export function createCandidateComputation(
   };
 }
 
-function winMargin(c: Candidate): number | null {
-  const wdl = c.objective.wdl;
-  if (!wdl) return null;
-  return wdl[0] - wdl[2];
-}
-
 export function computeMoveSensitivity(sfLines: SfLine[]): MoveSensitivity {
   const cps = sfLines
     .map((l) => toEval(l))
@@ -295,80 +290,4 @@ export function computeMoveSensitivity(sfLines: SfLine[]): MoveSensitivity {
   const spread = Math.max(...cps) - Math.min(...cps);
   const level = spread >= 200 ? "high" : spread >= 80 ? "medium" : "low";
   return { level, topMoveSpreadCp: spread };
-}
-
-export function rankByIntent(
-  candidates: Candidate[],
-  intent: Intent,
-): Candidate[] {
-  const withSf = candidates.filter((c) => c.objective.moverCp !== null);
-  const bestMargin = withSf.length
-    ? Math.max(...withSf.map((c) => winMargin(c) ?? -Infinity))
-    : 0;
-
-  const balancedSfProbs = new Map<Candidate, number>();
-  if (intent === "balanced" && withSf.length > 0) {
-    const probabilities = softmax(
-      withSf.map((candidate) => candidate.objective.moverCp ?? 0),
-      100,
-    );
-    for (const [index, candidate] of withSf.entries()) {
-      balancedSfProbs.set(candidate, probabilities[index] ?? 0);
-    }
-  }
-  const scored = candidates.map((c) => {
-    let score: number;
-    switch (intent) {
-      case "best":
-        score = c.objective.moverCp ?? -Infinity;
-        break;
-      case "strong": {
-        const sf = c.objective.moverCp ?? -Infinity;
-        const human = c.human.maia3Prob ?? 0;
-        score = human > 0 ? sf : -Infinity;
-        break;
-      }
-      case "natural":
-        score = c.human.maia3Prob ?? -Infinity;
-        break;
-      case "balanced": {
-        score =
-          0.5 * (balancedSfProbs.get(c) ?? 0) +
-          0.5 * (c.human.maia3Prob ?? 0);
-        break;
-      }
-      case "ease_off": {
-        const margin = winMargin(c);
-        const human = c.human.maia3Prob ?? 0;
-        if (margin === null || human === 0) {
-          score = -Infinity;
-          break;
-        }
-        const drop = bestMargin - margin;
-        const modest = drop >= 15 && drop <= 50 && margin > 0;
-        score = modest ? human : -Infinity;
-        break;
-      }
-      case "give_chance": {
-        const margin = winMargin(c);
-        const human = c.human.maia3Prob ?? 0;
-        if (margin === null || human === 0) {
-          score = -Infinity;
-          break;
-        }
-        const drop = bestMargin - margin;
-        const meaningful = drop >= 50 && drop <= 150;
-        score = meaningful ? human : -Infinity;
-        break;
-      }
-    }
-    return { c, score };
-  });
-
-  const ranked = scored
-    .filter((x) => x.score !== -Infinity)
-    .sort((a, b) => b.score - a.score)
-    .map((x) => x.c);
-
-  return ranked;
 }

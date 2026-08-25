@@ -10,7 +10,14 @@ import { buildServer } from "./server.js";
 export { buildServer } from "./server.js";
 export { serveHttp } from "./http.js";
 export type { HttpServerHandle, HttpServerOptions } from "./http.js";
-export type { AppServices } from "./services.js";
+export type {
+  AnalysisServices,
+  AppServices,
+  CandidateServices,
+  ExplorerServices,
+  GameServices,
+  LifecycleServices,
+} from "./services.js";
 export {
   drawResult,
   MAX_EVALUATED_MOVES,

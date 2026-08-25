@@ -1,3 +1,11 @@
+import {
+  DEFAULT_HTTP_HOST,
+  DEFAULT_HTTP_PATH,
+  DEFAULT_HTTP_PORT,
+  isCanonicalHttpPath,
+  isWildcardHttpBindHost,
+} from "./http-config.js";
+
 export type TransportKind = "stdio" | "http";
 
 export type CliOptions = {
@@ -34,27 +42,11 @@ function splitOption(arg: string): [string, string] | null {
   return index === -1 ? null : [arg.slice(0, index), arg.slice(index + 1)];
 }
 
-function isCanonicalHttpPath(path: string): boolean {
-  if (
-    !path.startsWith("/") ||
-    path.startsWith("//") ||
-    path.includes("?") ||
-    path.includes("#")
-  ) {
-    return false;
-  }
-  try {
-    return new URL(path, "http://localhost").pathname === path;
-  } catch {
-    return false;
-  }
-}
-
 export function parseCli(args: string[]): CliOptions {
   let transport: TransportKind = "stdio";
-  let host = "127.0.0.1";
-  let port = 3_000;
-  let path = "/mcp";
+  let host = DEFAULT_HTTP_HOST;
+  let port = DEFAULT_HTTP_PORT;
+  let path = DEFAULT_HTTP_PATH;
   let help = false;
   let hasHttpOption = false;
   const allowedHosts: string[] = [];
@@ -128,7 +120,7 @@ export function parseCli(args: string[]): CliOptions {
   }
   if (
     transport === "http" &&
-    (host === "0.0.0.0" || host === "::" || host === "[::]") &&
+    isWildcardHttpBindHost(host) &&
     allowedHosts.length === 0
   ) {
     throw new Error("wildcard HTTP binding requires at least one --allowed-host");

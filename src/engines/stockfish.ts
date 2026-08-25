@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
-import type { SfLine } from "../types.js";
+import type { SfLine } from "../domain.js";
+import { mergeAnalysisInfo, parseAnalysisInfo } from "./stockfish-info.js";
 
 const require = createRequire(import.meta.url);
 
@@ -21,7 +22,7 @@ export type StockfishEngine = {
 };
 
 export type StockfishInit = (
-  enginePath: string,
+  flavor: string,
   cb: (err: Error | null, engine: StockfishEngine) => void,
 ) => StockfishEngine;
 
@@ -42,18 +43,18 @@ export type StockfishOptions = {
 type Session = {
   engine: StockfishEngine | null;
   ready: Promise<void>;
-  initSettled: boolean;
+  readySettled: boolean;
   initTimer: NodeJS.Timeout | null;
   resolve: () => void;
   reject: (error: Error) => void;
-  aborts: Set<(error: Error) => void>;
+  invalidators: Set<(error: Error) => void>;
 };
 
 type AnalysisRequest = {
   cancelled: boolean;
   cancellation: Error | null;
   started: boolean;
-  released: boolean;
+  admissionReleased: boolean;
   signal: AbortSignal | undefined;
   abortListener: (() => void) | null;
   stop: ((error: Error) => void) | null;
@@ -98,26 +99,12 @@ function abortError(signal: AbortSignal): Error {
   return asError(signal.reason ?? "stockfish request cancelled");
 }
 
-function parseScore(token: string): { cp: number | null; mate: number | null } {
-  if (token.startsWith("cp")) return { cp: Number(token.slice(2)), mate: null };
-  if (token.startsWith("mate")) return { cp: null, mate: Number(token.slice(4)) };
-  return { cp: null, mate: null };
-}
-
-function parseWdl(line: string): [number, number, number] | null {
-  const groups = line.match(
-    / wdl (?<wins>\d+) (?<draws>\d+) (?<losses>\d+)/,
-  )?.groups;
-  if (!groups) return null;
-  return [Number(groups.wins), Number(groups.draws), Number(groups.losses)];
-}
-
 export class Stockfish {
   private session: Session | null = null;
   private queue: QueuedAnalysis[] = [];
-  private queueRunning = false;
+  private runInProgress = false;
   private queueScheduled = false;
-  private queued = 0;
+  private admitted = 0;
   private quitGeneration = 0;
   private readonly terminated = new WeakSet<StockfishEngine>();
   private readonly initEngine: StockfishInit | undefined;
@@ -153,11 +140,11 @@ export class Stockfish {
     const session: Session = {
       engine: null,
       ready,
-      initSettled: false,
+      readySettled: false,
       initTimer: null,
       resolve,
       reject,
-      aborts: new Set(),
+      invalidators: new Set(),
     };
     this.session = session;
     session.initTimer = setTimeout(
@@ -178,7 +165,7 @@ export class Stockfish {
             this.terminate(initializedEngine);
             return;
           }
-          if (session.initSettled) {
+          if (session.readySettled) {
             if (initializedEngine !== session.engine) this.terminate(initializedEngine);
             return;
           }
@@ -196,8 +183,8 @@ export class Stockfish {
           session.initTimer = null;
           this.handshake(session).then(
             () => {
-              if (this.session !== session || session.initSettled) return;
-              session.initSettled = true;
+              if (this.session !== session || session.readySettled) return;
+              session.readySettled = true;
               session.resolve();
             },
             (handshakeError: unknown) =>
@@ -206,7 +193,7 @@ export class Stockfish {
         },
       );
 
-      if (!callbackCalled && this.session === session && !session.initSettled) {
+      if (!callbackCalled && this.session === session && !session.readySettled) {
         session.engine = engine;
         engine.listener = () => {};
       }
@@ -227,11 +214,13 @@ export class Stockfish {
 
       let stage = 0;
       let settled = false;
+      let unregisterInvalidator: (() => void) | null = null;
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        session.aborts.delete(abort);
+        unregisterInvalidator?.();
+        unregisterInvalidator = null;
         if (engine.listener === listener) engine.listener = null;
         if (error) reject(error);
         else resolve();
@@ -254,7 +243,7 @@ export class Stockfish {
         this.timeouts.handshake,
       );
 
-      session.aborts.add(abort);
+      unregisterInvalidator = this.registerInvalidator(session, abort);
       engine.listener = listener;
       try {
         engine.sendCommand("uci");
@@ -264,10 +253,18 @@ export class Stockfish {
     });
   }
 
-  private release(request: AnalysisRequest): void {
-    if (request.released) return;
-    request.released = true;
-    this.queued--;
+  private registerInvalidator(
+    session: Session,
+    invalidator: (error: Error) => void,
+  ): () => void {
+    session.invalidators.add(invalidator);
+    return () => session.invalidators.delete(invalidator);
+  }
+
+  private releaseAdmission(request: AnalysisRequest): void {
+    if (request.admissionReleased) return;
+    request.admissionReleased = true;
+    this.admitted--;
     if (request.signal && request.abortListener) {
       request.signal.removeEventListener("abort", request.abortListener);
     }
@@ -275,44 +272,38 @@ export class Stockfish {
   }
 
   private scheduleQueue(): void {
-    if (this.queueRunning || this.queueScheduled) return;
+    if (this.runInProgress || this.queueScheduled) return;
     this.queueScheduled = true;
     queueMicrotask(() => {
       this.queueScheduled = false;
-      if (this.queueRunning) return;
+      if (this.runInProgress) return;
       const next = this.queue.shift();
       if (!next) return;
       if (next.request.cancelled) {
-        this.release(next.request);
+        this.releaseAdmission(next.request);
         this.scheduleQueue();
         return;
       }
 
-      this.queueRunning = true;
+      this.runInProgress = true;
       void next.run().finally(() => {
-        this.release(next.request);
-        this.queueRunning = false;
+        this.releaseAdmission(next.request);
+        this.runInProgress = false;
         this.scheduleQueue();
       });
     });
   }
 
-  private removeQueued(request: AnalysisRequest): boolean {
+  private removeQueued(request: AnalysisRequest): void {
     const index = this.queue.findIndex((item) => item.request === request);
-    if (index < 0) return false;
+    if (index < 0) return;
     this.queue.splice(index, 1);
-    return true;
   }
 
-  private enqueue(request: AnalysisRequest, fn: () => Promise<void>): boolean {
-    if (this.queued >= this.maxQueue) {
-      return false;
-    }
-
-    this.queued++;
+  private enqueue(request: AnalysisRequest, fn: () => Promise<void>): void {
+    this.admitted++;
     this.queue.push({ request, run: fn });
     this.scheduleQueue();
-    return true;
   }
 
   analyze(
@@ -324,6 +315,9 @@ export class Stockfish {
     if (signal?.aborted) {
       return Promise.reject(abortError(signal));
     }
+    if (this.admitted >= this.maxQueue) {
+      return Promise.reject(new Error("stockfish queue full"));
+    }
 
     const quitGeneration = this.quitGeneration;
     let request!: AnalysisRequest;
@@ -332,7 +326,7 @@ export class Stockfish {
         cancelled: false,
         cancellation: null,
         started: false,
-        released: false,
+        admissionReleased: false,
         signal,
         abortListener: null,
         stop: null,
@@ -351,18 +345,18 @@ export class Stockfish {
         if (request.stop) request.stop(error);
         else {
           request.reject(error);
-          this.release(request);
+          this.releaseAdmission(request);
         }
       } else {
         this.removeQueued(request);
         request.reject(error);
-        this.release(request);
+        this.releaseAdmission(request);
         this.scheduleQueue();
       }
     };
     request.abortListener = cancel;
 
-    if (!this.enqueue(request, async () => {
+    this.enqueue(request, async () => {
       if (request.cancelled) return;
       request.started = true;
       try {
@@ -394,9 +388,7 @@ export class Stockfish {
         request.stop = null;
         if (request.cancellation) request.reject(request.cancellation);
       }
-    })) {
-      return Promise.reject(new Error("stockfish queue full"));
-    }
+    });
     signal?.addEventListener("abort", cancel, { once: true });
     if (signal?.aborted) cancel();
     return result;
@@ -423,6 +415,7 @@ export class Stockfish {
       let stopSent = false;
       let stopTimer: NodeJS.Timeout | null = null;
       let failTimer: NodeJS.Timeout | null = null;
+      let unregisterInvalidator: (() => void) | null = null;
 
       const cleanup = () => {
         if (stopTimer) clearTimeout(stopTimer);
@@ -430,7 +423,8 @@ export class Stockfish {
         stopTimer = null;
         failTimer = null;
         setStop(null);
-        session.aborts.delete(abort);
+        unregisterInvalidator?.();
+        unregisterInvalidator = null;
         if (engine.listener === listener) engine.listener = null;
       };
       const succeed = () => {
@@ -465,28 +459,12 @@ export class Stockfish {
         }
       };
       const listener = (line: string) => {
-        if (line.startsWith("info") && line.includes(" multipv ")) {
-          const multipv = line.match(/multipv (?<value>\d+)/)?.groups?.value;
-          if (!multipv) return;
-          const scoreToken = line.match(
-            / score (?<value>cp -?\d+|mate -?\d+)/,
-          )?.groups?.value;
-          const pv = line.match(/ pv (?<value>.+)$/)?.groups?.value;
-          const n = Number(multipv);
-          const previous = byPv.get(n);
-          const score = scoreToken
-            ? parseScore(scoreToken)
-            : {
-                cp: previous?.scoreCp ?? null,
-                mate: previous?.scoreMate ?? null,
-              };
-          byPv.set(n, {
-            multipv: n,
-            scoreCp: score.cp,
-            scoreMate: score.mate,
-            wdl: parseWdl(line) ?? previous?.wdl ?? null,
-            pv: pv ? pv.split(" ") : (previous?.pv ?? []),
-          });
+        const info = parseAnalysisInfo(line);
+        if (info) {
+          byPv.set(
+            info.multipv,
+            mergeAnalysisInfo(byPv.get(info.multipv), info),
+          );
         } else if (line.startsWith("bestmove")) {
           if (cancellation) fail(cancellation, false);
           else if (timeout) fail(timeout, false);
@@ -494,7 +472,7 @@ export class Stockfish {
         }
       };
 
-      session.aborts.add(abort);
+      unregisterInvalidator = this.registerInvalidator(session, abort);
       engine.listener = listener;
       setStop((error) => stop(error, true));
       stopTimer = setTimeout(() => {
@@ -513,8 +491,8 @@ export class Stockfish {
   }
 
   private failSession(session: Session, error: Error): void {
-    if (session.initSettled) return;
-    session.initSettled = true;
+    if (session.readySettled) return;
+    session.readySettled = true;
     if (session.initTimer) clearTimeout(session.initTimer);
     session.initTimer = null;
     this.invalidateSession(session, error);
@@ -526,17 +504,17 @@ export class Stockfish {
     this.session = null;
     if (session.initTimer) clearTimeout(session.initTimer);
     session.initTimer = null;
-    if (!session.initSettled) {
-      session.initSettled = true;
+    if (!session.readySettled) {
+      session.readySettled = true;
       session.reject(error);
     }
-    const aborts = [...session.aborts];
-    session.aborts.clear();
+    const invalidators = [...session.invalidators];
+    session.invalidators.clear();
     if (session.engine) {
       session.engine.listener = null;
       this.terminate(session.engine);
     }
-    for (const abort of aborts) abort(error);
+    for (const invalidate of invalidators) invalidate(error);
   }
 
   private terminate(engine: StockfishEngine): void {
