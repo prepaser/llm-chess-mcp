@@ -16,31 +16,12 @@ judgment; the MCP server handles all the computation.
 | **Maia3 5M** (ONNX) | Human-like move probabilities conditioned on Elo | In-process (`onnxruntime-node`) |
 | **Lichess explorer** | Real human game statistics | HTTP (needs token) |
 
-Everything runs inside the Node process — no external engine process or Python
+Everything runs inside the Node process. No external engine process or Python
 runtime is required at deploy time. The published package bundles the Maia3 5M
 model; other export variants are not runtime options unless their ONNX files are
 provided separately.
 
-## Install
-
-Requires Node.js 20.3 or newer.
-
-No install needed — run it directly with `npx`:
-
-```bash
-npx -y llm-chess-mcp
-```
-
-The Maia3 model is already bundled, so there's no Python, torch, or engine
-binaries to install. `npx` fetches the package on first run and caches it.
-
-To install it permanently instead:
-
-```bash
-npm install -g llm-chess-mcp
-```
-
-### Build from source
+## Build from source
 
 ```bash
 pnpm install
@@ -51,24 +32,6 @@ pnpm test
 `pnpm test:unit` runs the unit suite. `pnpm test:e2e` builds first, then runs
 the MCP transport tests. `pnpm check` runs the full local gate; use
 `pnpm release:check` before publishing.
-
-### Maintainers
-
-[Architecture](docs/architecture.md) describes runtime and service boundaries.
-
-Local quality commands:
-
-```bash
-pnpm typecheck
-pnpm test:coverage
-pnpm contract:check
-pnpm check
-pnpm test:package
-```
-
-`pnpm test:stress` runs the short real-engine concurrency check.
-`pnpm test:live` queries Lichess only when `LICHESS_TOKEN` is set; otherwise it
-skips without making a network request.
 
 ## Transports
 
@@ -111,95 +74,7 @@ does not provide authentication or TLS; use a trusted network or an
 authenticated reverse proxy when exposing it beyond localhost. Origin values
 are validated when present, but the server does not emit browser CORS headers.
 
-### Reverse-proxy deployment
-
-The HTTP server is intended to run behind a reverse proxy for any non-local
-deployment. The proxy owns TLS termination, client authentication, external
-rate/connection limits, and any future CORS policy. Bind this process to
-localhost only; never expose its port directly through a firewall, container
-port mapping, or load balancer.
-
-For example, start the backend with the public hostname that Nginx will pass
-through as `Host`:
-
-```bash
-node dist/index.js --transport http --host 127.0.0.1 --port 3000 \
-  --allowed-host chess-mcp.example.com
-```
-
-This is a minimal Nginx layout. It assumes an identity-aware auth service is
-available only on localhost at `127.0.0.1:4180`; configure that service and
-the certificate paths for the deployment. The limits are examples, not a
-substitute for capacity planning.
-
-```nginx
-limit_req_zone $binary_remote_addr zone=mcp_req:10m rate=5r/s;
-limit_conn_zone $binary_remote_addr zone=mcp_conn:10m;
-
-server {
-    listen 443 ssl;
-    server_name chess-mcp.example.com;
-    ssl_certificate     /etc/ssl/certs/chess-mcp.pem;
-    ssl_certificate_key /etc/ssl/private/chess-mcp.key;
-
-    location = /_mcp_auth {
-        internal;
-        proxy_pass http://127.0.0.1:4180/auth;
-        proxy_pass_request_body off;
-        proxy_set_header Content-Length "";
-        proxy_set_header X-Original-Method $request_method;
-        proxy_set_header X-Original-URI $request_uri;
-    }
-
-    location = /mcp {
-        auth_request /_mcp_auth;
-        limit_req zone=mcp_req burst=20 nodelay;
-        limit_conn mcp_conn 10;
-        client_max_body_size 2m;
-
-        proxy_pass http://127.0.0.1:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-User "";
-        proxy_set_header X-Forwarded-Email "";
-        proxy_buffering off;
-        proxy_read_timeout 90s;
-
-        # Intentionally no Access-Control-Allow-* headers: browser CORS is unsupported.
-    }
-}
-```
-
-The application does not trust forwarded identity headers and does not assign
-games to authenticated users. All games in one process share one `GameStore`;
-the opaque `game_id` is the capability to operate a game within the trusted
-deployment, not an OAuth token or user identity. Do not disclose it across
-trust boundaries.
-
-This server does not implement MCP OAuth discovery, bearer-token validation,
-or browser CORS. A proxy may authenticate access to the endpoint, but that is
-deployment policy rather than an application-level identity or ownership
-model. Browser clients are unsupported unless a proxy deliberately adds and
-maintains the required CORS policy.
-
-### Export Maia3 to ONNX (build-time only)
-
-This step needs Python + PyTorch once. It downloads the Maia3 checkpoint, verifies
-the reimplementation against the original, and exports `models/maia3-5m.onnx`.
-
-```bash
-uv venv .venv-maia3 --python 3.13
-uv pip install --python .venv-maia3/bin/python -r scripts/requirements.txt
-uv pip install --python .venv-maia3/bin/python "maia3 @ git+https://github.com/CSSLab/maia3.git@1e13597c42d4858b7cfd7cfdae01e297263364b2"
-pnpm export:maia3            # -> models/maia3-5m.onnx
-```
-
-The resulting `.onnx` is committed/bundled; end users never need Python or torch.
-
-### Lichess token (optional)
+## Lichess token (optional)
 
 The opening explorer now requires authentication. Generate a personal access token
 at <https://lichess.org/account/oauth/token/create> and set it in `.env`:
@@ -439,6 +314,20 @@ Go deeper only when you need to:
 - `human_move_distribution` — what a human of a given Elo would play
 - `opening_explorer` — real-game statistics
 - `move_evaluate` — score a specific move (or compare several)
+
+## Export Maia3 to ONNX
+
+This step needs Python + PyTorch once. It downloads the Maia3 checkpoint, verifies
+the reimplementation against the original, and exports `models/maia3-5m.onnx`.
+
+```bash
+uv venv .venv-maia3 --python 3.13
+uv pip install --python .venv-maia3/bin/python -r scripts/requirements.txt
+uv pip install --python .venv-maia3/bin/python "maia3 @ git+https://github.com/CSSLab/maia3.git@1e13597c42d4858b7cfd7cfdae01e297263364b2"
+pnpm export:maia3            # -> models/maia3-5m.onnx
+```
+
+The resulting `.onnx` is committed/bundled.
 
 ## Maia3 ONNX verification
 
