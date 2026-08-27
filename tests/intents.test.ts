@@ -121,6 +121,79 @@ test("rethrows caller cancellation from the Lichess fallback", async () => {
   await assert.rejects(pending, (error: unknown) => error === cause);
 });
 
+test("aborts sibling candidate sources after a fatal source failure", async () => {
+  const failure = new Error("Maia failed");
+  let engineAbort: unknown;
+  let explorerCalls = 0;
+  let resolveEngineStopped!: () => void;
+  const engineStopped = new Promise<void>((resolve) => {
+    resolveEngineStopped = resolve;
+  });
+  const computeCandidates = createCandidateComputation({
+    analyze: async (_fen, _depth, _multipv, signal) =>
+      await new Promise((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => {
+            engineAbort = signal.reason;
+            resolveEngineStopped();
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      }),
+    humanMoveDistribution: () => {
+      throw failure;
+    },
+    explorerEnabled: () => true,
+    openingExplorer: async (_chess, _db, _speeds, _ratings, signal) => {
+      explorerCalls += 1;
+      signal?.throwIfAborted();
+      throw new Error("unreachable");
+    },
+    explorerFailureReason: () => "upstream",
+  });
+
+  await assert.rejects(
+    computeCandidates(
+      new Chess(),
+      1500,
+      1,
+      1,
+      1,
+      { db: "lichess", speeds: [], ratings: [] },
+    ),
+    (error: unknown) => error === failure,
+  );
+  await engineStopped;
+  assert.equal(engineAbort, failure);
+  assert.equal(explorerCalls, 0);
+});
+
+test("rejects unsafe derived candidate counts and evaluation spreads", () => {
+  const max = Number.MAX_SAFE_INTEGER;
+  assert.throws(
+    () =>
+      explorerCandidateData({
+        db: "lichess",
+        white: max,
+        draws: max,
+        black: max,
+        moves: [],
+        opening: null,
+      }),
+    RangeError,
+  );
+  assert.throws(
+    () =>
+      computeMoveSensitivity([
+        sfLine("e2e4", max),
+        sfLine("d2d4", -max),
+      ]),
+    RangeError,
+  );
+});
+
 test("terminal positions skip candidate sources and discard supplied candidates", async () => {
   let analyzeCalls = 0;
   let humanCalls = 0;

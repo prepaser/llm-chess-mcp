@@ -119,6 +119,7 @@ async function verifyPackageApi(install) {
   });
 
   await writeFile(join(install, ".env"), "LICHESS_TOKEN=import-side-effect\n");
+  const missingEntry = join(install, ".missing-entry");
 
   await command(
     process.execPath,
@@ -126,6 +127,7 @@ async function verifyPackageApi(install) {
       "--input-type=module",
       "--eval",
       'const token = process.env.LICHESS_TOKEN; const dlopen = process.dlopen; let nativeLoads = 0; process.dlopen = (...args) => { nativeLoads += 1; return dlopen(...args); }; const api = await import("llm-chess-mcp"); if (typeof api.buildServer !== "function" || typeof api.serveHttp !== "function") throw new Error("root API is incomplete"); const custom = api.buildServer({}); await custom.close(); if (process.env.LICHESS_TOKEN !== token) throw new Error("root import loaded .env"); if (nativeLoads !== 0) throw new Error("root API loaded a native addon");',
+      missingEntry,
     ],
     install,
   );
@@ -150,9 +152,9 @@ function serverEnv() {
   const pathKey =
     Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   env[pathKey] = [dirname(process.execPath), env[pathKey]].filter(Boolean).join(delimiter);
-  delete env.LICHESS_TOKEN;
-  delete env.MAIA3_MODEL;
-  delete env.STOCKFISH_FLAVOR;
+  env.LICHESS_TOKEN = "";
+  env.MAIA3_MODEL = "5m";
+  env.STOCKFISH_FLAVOR = "lite-single";
   return env;
 }
 
@@ -214,6 +216,10 @@ async function smoke(bin, cwd) {
     assert.ok(
       candidates.candidates.some((candidate) => candidate.objective.rank !== null),
       "move_candidates did not include Stockfish data",
+    );
+    assert.ok(
+      candidates.candidates.every((candidate) => candidate.opening.status === "disabled"),
+      "move_candidates unexpectedly enabled Lichess",
     );
   } finally {
     try {

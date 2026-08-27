@@ -91,5 +91,11 @@ export function withSessionWorkAdmission(
         ),
       ),
   };
-  return { ...services, ...admitted };
+  return {
+    games: services.games,
+    ...admitted,
+    explorerEnabled: () => services.explorerEnabled(),
+    rankByIntent: (candidates, intent) => services.rankByIntent(candidates, intent),
+    quit: () => services.quit(),
+  };
 }

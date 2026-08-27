@@ -131,9 +131,11 @@ export function createAppServicesLeaseManager(
   services: AppServices,
 ): AppServicesLeaseManager {
   let leaseCount = 0;
+  let quitting = false;
 
   return {
     acquire(): DefaultAppServicesLease {
+      if (quitting) throw new Error("application services are shutting down");
       leaseCount += 1;
       let released = false;
       return {
@@ -142,7 +144,13 @@ export function createAppServicesLeaseManager(
           if (released) return;
           released = true;
           leaseCount -= 1;
-          if (leaseCount === 0) await services.quit();
+          if (leaseCount !== 0) return;
+          quitting = true;
+          try {
+            await services.quit();
+          } finally {
+            quitting = false;
+          }
         },
       };
     },

@@ -1,6 +1,10 @@
 import { Chess } from "chess.js";
 import type { Move, PieceSymbol, Square } from "chess.js";
-export { assertSafeFenCounters, snapshotChess } from "./chess-copy.js";
+export {
+  assertLegalPosition,
+  assertSafeFenCounters,
+  snapshotChess,
+} from "./chess-copy.js";
 export { MAX_PGN_BYTES, MAX_PGN_PLIES, parseImportedPgn, pgnOf } from "./pgn.js";
 import { ChessError } from "./errors.js";
 import type { ChessState, DrawResult } from "./domain.js";
@@ -19,7 +23,7 @@ function moveDescriptor(move: Move): MoveDescriptor {
 }
 
 export function drawResult(chess: Chess): DrawResult | null {
-  if (!chess.isDraw()) return null;
+  if (chess.isCheckmate() || !chess.isDraw()) return null;
   if (chess.isStalemate()) return "stalemate";
   if (chess.isInsufficientMaterial()) return "insufficient_material";
   if (chess.isThreefoldRepetition()) return "threefold_repetition";
@@ -32,18 +36,19 @@ export function stateOf<Revision extends number>(
   revision: Revision,
 ): ChessState & { revision: Revision } {
   const last = chess.history({ verbose: true }).at(-1);
+  const isCheckmate = chess.isCheckmate();
   return {
     fen: chess.fen(),
     turn: chess.turn(),
     revision,
     isCheck: chess.isCheck(),
-    isCheckmate: chess.isCheckmate(),
+    isCheckmate,
     isStalemate: chess.isStalemate(),
-    isDraw: chess.isDraw(),
+    isDraw: !isCheckmate && chess.isDraw(),
     isGameOver: chess.isGameOver(),
-    isInsufficientMaterial: chess.isInsufficientMaterial(),
-    isThreefoldRepetition: chess.isThreefoldRepetition(),
-    isDrawByFiftyMoves: chess.isDrawByFiftyMoves(),
+    isInsufficientMaterial: !isCheckmate && chess.isInsufficientMaterial(),
+    isThreefoldRepetition: !isCheckmate && chess.isThreefoldRepetition(),
+    isDrawByFiftyMoves: !isCheckmate && chess.isDrawByFiftyMoves(),
     moveNumber: chess.moveNumber(),
     history: chess.history(),
     lastMove: last ? { san: last.san, uci: last.lan } : null,

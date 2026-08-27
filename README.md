@@ -265,10 +265,11 @@ rejected:
 - HTTP retains at most 64 MCP sessions; sessions with no active request expire
   after 30 minutes. An open GET/SSE stream keeps its session active.
 - HTTP accepts bodies up to 2 MiB. It permits 16 concurrent POSTs and downstream
-  compute/network jobs process-wide, with two of each per session. Work keeps
-  its slot after a raw disconnect until it settles. HTTP also caps connections
-  at 128 and applies a 15-second body upload deadline plus bounded header,
-  socket, and keep-alive timeouts.
+  compute/network jobs process-wide, with two of each per session. A separately
+  bounded control lane keeps MCP cancellation available when normal POST slots
+  are full. Work keeps its slot after a raw disconnect until it settles. HTTP
+  also caps connections at 128 and applies a 15-second body upload deadline
+  plus bounded header, socket, and keep-alive timeouts.
 
 Programmatic users can override the HTTP limits through `HttpServerOptions`.
 These safeguards do not replace public-edge quotas: a public deployment must
@@ -277,9 +278,11 @@ proxy.
 
 MCP cancellation notifications, session deletion, and server shutdown propagate
 to Stockfish, Maia, and Lichess work. Stockfish stops safely at its UCI queue
-boundary; Lichess fetch and retry waits abort immediately. ONNX Runtime cannot
-interrupt an inference already executing, so Maia discards its result after the
-native call returns. A raw HTTP disconnect alone is not a cancellation signal.
+boundary, drains queued work during shutdown, and rejects new analysis until
+teardown completes. Lichess fetch and retry waits abort immediately. ONNX
+Runtime cannot interrupt an inference already executing, so Maia discards its
+result after the native call returns. A raw HTTP disconnect alone is not a
+cancellation signal.
 
 ## Intents
 

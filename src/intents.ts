@@ -14,6 +14,27 @@ import type {
 
 export { rankByIntent } from "./intent-ranking.js";
 
+function safeDifference(left: number, right: number): number {
+  const result = left - right;
+  if (!Number.isSafeInteger(result)) {
+    throw new RangeError(
+      "derived chess evaluation exceeds the safe integer range",
+    );
+  }
+  return result;
+}
+
+function safeSum(values: readonly number[]): number {
+  if (!values.every(Number.isSafeInteger)) {
+    throw new RangeError("chess count must be a safe integer");
+  }
+  const result = values.reduce((sum, value) => sum + value, 0);
+  if (!Number.isSafeInteger(result)) {
+    throw new RangeError("derived chess count exceeds the safe integer range");
+  }
+  return result;
+}
+
 export interface LichessOpts {
   db: "lichess" | "masters";
   speeds: string[];
@@ -50,7 +71,7 @@ function objectiveFromLine(
     rank: line.multipv,
     moverCp: cp,
     whiteCp,
-    cpLoss: cp !== null && bestCp !== null ? bestCp - cp : null,
+    cpLoss: cp !== null && bestCp !== null ? safeDifference(bestCp, cp) : null,
     moverMate: mate,
     whiteMate,
     wdl: line.wdl,
@@ -114,9 +135,14 @@ export type LichessCandidateData =
 export function explorerCandidateData(
   result: ExplorerResult,
 ): LichessCandidateData {
+  for (const move of result.moves) {
+    if (move.count !== safeSum([move.white, move.draws, move.black])) {
+      throw new RangeError("derived chess move count is inconsistent");
+    }
+  }
   return {
     status: result.moves.length > 0 ? "available" : "no_data",
-    totalGames: result.white + result.draws + result.black,
+    totalGames: safeSum([result.white, result.draws, result.black]),
     moves: result.moves,
   };
 }
@@ -247,33 +273,60 @@ export function createCandidateComputation(
         moveSensitivity: { level: "low", topMoveSpreadCp: null },
       };
     }
+    const controller = new AbortController();
+    const workSignal = signal
+      ? AbortSignal.any([signal, controller.signal])
+      : controller.signal;
+    const fatal = async <T>(work: () => Promise<T>): Promise<T> => {
+      try {
+        workSignal.throwIfAborted();
+        return await work();
+      } catch (error) {
+        controller.abort(error);
+        throw error;
+      }
+    };
+
+    const explorer = async (): Promise<LichessCandidateData> => {
+      workSignal.throwIfAborted();
+      if (!lichess || !dependencies.explorerEnabled()) {
+        return { status: "disabled", totalGames: null, moves: [] };
+      }
+      try {
+        return explorerCandidateData(
+          await dependencies.openingExplorer(
+            chess,
+            lichess.db,
+            lichess.speeds,
+            lichess.ratings,
+            workSignal,
+          ),
+        );
+      } catch (error) {
+        workSignal.throwIfAborted();
+        return {
+          status: "unavailable",
+          reason: dependencies.explorerFailureReason(error),
+          totalGames: null,
+          moves: [],
+        };
+      }
+    };
+
     const [sfLines, maiaMoves, lichessResult] = await Promise.all([
-      dependencies.analyze(chess.fen(), sfDepth, sfMultipv, signal),
-      dependencies.humanMoveDistribution(chess, elo, elo, maiaTopN, signal),
-      lichess && dependencies.explorerEnabled()
-        ? dependencies
-            .openingExplorer(
-              chess,
-              lichess.db,
-              lichess.speeds,
-              lichess.ratings,
-              signal,
-            )
-            .then(explorerCandidateData)
-            .catch((error): LichessCandidateData => {
-              signal?.throwIfAborted();
-              return {
-                status: "unavailable",
-                reason: dependencies.explorerFailureReason(error),
-                totalGames: null,
-                moves: [],
-              };
-            })
-        : Promise.resolve<LichessCandidateData>({
-            status: "disabled",
-            totalGames: null,
-            moves: [],
-          }),
+      fatal(() =>
+        dependencies.analyze(chess.fen(), sfDepth, sfMultipv, workSignal),
+      ),
+      fatal(() =>
+        dependencies.humanMoveDistribution(
+          chess,
+          elo,
+          elo,
+          maiaTopN,
+          workSignal,
+        ),
+      ),
+      explorer(),
     ]);
     return candidateSetFromData(chess, elo, sfLines, maiaMoves, lichessResult);
   };
@@ -287,7 +340,7 @@ export function computeMoveSensitivity(sfLines: SfLine[]): MoveSensitivity {
   if (cps.length < 2) {
     return { level: "low", topMoveSpreadCp: null };
   }
-  const spread = Math.max(...cps) - Math.min(...cps);
+  const spread = safeDifference(Math.max(...cps), Math.min(...cps));
   const level = spread >= 200 ? "high" : spread >= 80 ? "medium" : "low";
   return { level, topMoveSpreadCp: spread };
 }

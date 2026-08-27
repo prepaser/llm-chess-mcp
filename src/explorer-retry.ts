@@ -23,21 +23,30 @@ export interface ExplorerRetryOptions {
   sleep: (ms: number) => Promise<void>;
 }
 
+const HTTP_DATE = /^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT|(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), \d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2} \d{2}:\d{2}:\d{2} GMT|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/;
+
+function parseRetryAfterMs(value: string, wallNow: number): number | undefined {
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    const delay = seconds * 1_000;
+    return Number.isSafeInteger(delay) ? delay : undefined;
+  }
+  if (!HTTP_DATE.test(trimmed)) return;
+  const delay = Date.parse(trimmed) - wallNow;
+  return Number.isFinite(delay) ? Math.max(0, delay) : undefined;
+}
+
 export function retryAfterMs(value: string | null, now: number): number {
   if (!value) return EXPLORER_DEFAULT_RETRY_DELAY_MS;
-
-  const seconds = Number(value);
-  const delay = Number.isFinite(seconds)
-    ? seconds * 1_000
-    : Date.parse(value) - now;
-  if (!Number.isFinite(delay)) return EXPLORER_DEFAULT_RETRY_DELAY_MS;
-  return Math.max(0, delay);
+  return parseRetryAfterMs(value, now) ?? EXPLORER_DEFAULT_RETRY_DELAY_MS;
 }
 
 export function rateLimitCooldownMs(value: string | null, now: number): number {
-  return value === null || value.trim() === ""
-    ? EXPLORER_RATE_LIMIT_COOLDOWN_MS
-    : retryAfterMs(value, now);
+  if (value === null || value.trim() === "") {
+    return EXPLORER_RATE_LIMIT_COOLDOWN_MS;
+  }
+  return parseRetryAfterMs(value, now) ?? EXPLORER_RATE_LIMIT_COOLDOWN_MS;
 }
 
 async function waitForRetry(

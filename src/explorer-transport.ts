@@ -28,14 +28,14 @@ export type ExplorerTransportResult =
 async function discardResponse(
   response: Response,
   signal?: AbortSignal,
-): Promise<boolean> {
+): Promise<void> {
   try {
     const body = response.body;
-    if (body) await awaitWithAbort(signal, () => body.cancel());
-  } catch {
-    return !signal?.aborted;
-  }
-  return true;
+    if (!body) return;
+    const cancellation = body.cancel();
+    void cancellation.catch(() => {});
+    await awaitWithAbort(signal, () => cancellation);
+  } catch {}
 }
 
 function errorKindForStatus(status: number): ExplorerError["kind"] {
@@ -60,12 +60,19 @@ export async function requestExplorerTransport(
   );
 
   let response: Response;
+  let pending: Promise<Response> | undefined;
   try {
-    response = await request(url, {
+    pending = Promise.resolve(request(url, {
       headers: { Authorization: `Bearer ${token}` },
       signal,
-    });
+    }));
+    response = await awaitWithAbort(signal, () => pending!);
   } catch {
+    if (signal.aborted && pending) {
+      void pending
+        .then((lateResponse) => discardResponse(lateResponse, attemptSignal))
+        .catch(() => {});
+    }
     throwIfAborted(callerSignal);
     return {
       type: "failure",
@@ -74,22 +81,18 @@ export async function requestExplorerTransport(
     };
   }
 
-  throwIfAborted(callerSignal);
+  if (callerSignal?.aborted) {
+    await discardResponse(response, attemptSignal);
+    throwIfAborted(callerSignal);
+  }
   if (response.ok) {
     return { type: "success", response, signal, cleanupSignal: attemptSignal };
   }
 
   const kind = errorKindForStatus(response.status);
   const retryAfter = response.headers.get("retry-after");
-  const discarded = await discardResponse(response, attemptSignal);
+  await discardResponse(response, attemptSignal);
   throwIfAborted(callerSignal);
-  if (!discarded) {
-    return {
-      type: "failure",
-      error: explorerError("timeout"),
-      retryAfter: null,
-    };
-  }
   return {
     type: "failure",
     error: explorerError(kind, response.status),

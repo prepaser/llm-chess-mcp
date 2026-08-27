@@ -1,5 +1,9 @@
 import { Chess } from "chess.js";
-import { assertSafeFenCounters, snapshotChess } from "./chess-copy.js";
+import {
+  assertLegalPosition,
+  assertSafeFenCounters,
+  snapshotChess,
+} from "./chess-copy.js";
 import { ChessError } from "./errors.js";
 
 export const MAX_PGN_BYTES = 1024 * 1024;
@@ -83,11 +87,50 @@ function declaredPgnResult(pgn: string): PgnResult | undefined {
   return result;
 }
 
-function validatePgnFenCounters(pgn: string): void {
-  for (const match of withoutPgnComments(pgn).matchAll(
-    /^\s*\[\s*FEN\s+"((?:\\.|[^"\\])*)"\s*\]\s*$/gim,
-  )) {
-    assertSafeFenCounters(match[1] ?? "");
+function headerValues(pgn: string, name: string): string[] {
+  const visiblePgn = withoutPgnComments(pgn);
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return [
+    ...visiblePgn.matchAll(
+      new RegExp(
+        `^\\s*\\[\\s*${escaped}\\s+"((?:\\\\.|[^"\\\\])*)"\\s*\\]\\s*$`,
+        "gim",
+      ),
+    ),
+  ].map((match) => match[1] ?? "");
+}
+
+function validatePgnSetup(pgn: string): void {
+  const setup = headerValues(pgn, "SetUp");
+  const fens = headerValues(pgn, "FEN");
+  if (setup.length > 1 || fens.length > 1) {
+    throw new ChessError(
+      "INVALID_PGN",
+      "PGN must not repeat SetUp or FEN headers",
+    );
+  }
+
+  const setupValue = setup[0];
+  if (setupValue !== undefined && setupValue !== "0" && setupValue !== "1") {
+    throw new ChessError("INVALID_PGN", "PGN SetUp must be 0 or 1");
+  }
+  if ((setupValue === "1") !== (fens.length === 1)) {
+    throw new ChessError(
+      "INVALID_PGN",
+      "PGN SetUp 1 and FEN headers must appear together",
+    );
+  }
+
+  const fen = fens[0];
+  if (fen !== undefined) {
+    assertSafeFenCounters(fen);
+    let chess: Chess;
+    try {
+      chess = new Chess(fen);
+    } catch {
+      throw new ChessError("INVALID_FEN", "invalid FEN");
+    }
+    assertLegalPosition(chess);
   }
 }
 
@@ -100,13 +143,10 @@ function validateResultForPosition(chess: Chess, result: PgnResult | undefined):
     throw new ChessError("INVALID_PGN", `checkmate result must be ${expected}`);
   }
 
-  if (
-    (chess.isStalemate() || chess.isInsufficientMaterial()) &&
-    (result === "1-0" || result === "0-1")
-  ) {
+  if (chess.isDraw() && result !== "1/2-1/2") {
     throw new ChessError(
       "INVALID_PGN",
-      "a drawn position cannot have a decisive result",
+      "a terminal draw must have result 1/2-1/2",
     );
   }
 }
@@ -114,8 +154,7 @@ function validateResultForPosition(chess: Chess, result: PgnResult | undefined):
 export function pgnOf(chess: Chess): string {
   const result = chess.isCheckmate()
     ? (chess.turn() === "w" ? "0-1" : "1-0")
-    : chess.isDraw() &&
-        (!chess.getHeaders().Result || chess.getHeaders().Result === "*")
+    : chess.isDraw()
       ? "1/2-1/2"
       : undefined;
   if (result === undefined) return chess.pgn();
@@ -132,7 +171,7 @@ export function parseImportedPgn(pgn: string): Chess {
       `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
     );
   }
-  validatePgnFenCounters(pgn);
+  validatePgnSetup(pgn);
   const result = declaredPgnResult(pgn);
 
   let chess: Chess;
@@ -143,6 +182,7 @@ export function parseImportedPgn(pgn: string): Chess {
     throw new ChessError("INVALID_PGN", "invalid or illegal PGN");
   }
   assertSafeFenCounters(chess.fen());
+  assertLegalPosition(chess);
   if (chess.history().length > MAX_PGN_PLIES) {
     throw new ChessError(
       "PGN_TOO_MANY_MOVES",

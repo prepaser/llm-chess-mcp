@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ChessError } from "../src/errors.js";
-import { HttpWorkAdmission } from "../src/http-work.js";
+import { GameStore } from "../src/games.js";
+import {
+  HttpWorkAdmission,
+  withSessionWorkAdmission,
+} from "../src/http-work.js";
+import type { AppServices } from "../src/services.js";
 
 function deferred(): { promise: Promise<void>; resolve(): void } {
   let resolve!: () => void;
@@ -71,4 +76,66 @@ test("HTTP work admission keeps its legacy session alias", async () => {
     async () => 42,
   );
   assert.equal(result, 42);
+});
+
+test("HTTP work admission preserves class-based service methods and receivers", async () => {
+  class ClassServices implements AppServices {
+    games = new GameStore();
+    enabled = true;
+    quitCalls = 0;
+
+    async analyze(..._args: Parameters<AppServices["analyze"]>) {
+      return [];
+    }
+
+    async humanMoveDistribution(
+      ..._args: Parameters<AppServices["humanMoveDistribution"]>
+    ) {
+      return [];
+    }
+
+    explorerEnabled(): boolean {
+      return this.enabled;
+    }
+
+    async openingExplorer(
+      ...args: Parameters<AppServices["openingExplorer"]>
+    ) {
+      return {
+        db: args[1],
+        white: 0,
+        draws: 0,
+        black: 0,
+        moves: [],
+        opening: null,
+      };
+    }
+
+    async computeCandidates(
+      ..._args: Parameters<AppServices["computeCandidates"]>
+    ) {
+      return {
+        candidates: [],
+        moveSensitivity: { level: "low" as const, topMoveSpreadCp: null },
+      };
+    }
+
+    rankByIntent(...args: Parameters<AppServices["rankByIntent"]>) {
+      return args[0];
+    }
+
+    async quit(): Promise<void> {
+      this.quitCalls += 1;
+    }
+  }
+
+  const services = new ClassServices();
+  const admitted = withSessionWorkAdmission(
+    services,
+    async (_signal, work) => work(new AbortController().signal),
+  );
+  assert.equal(admitted.explorerEnabled(), true);
+  assert.deepEqual(admitted.rankByIntent([], "best"), []);
+  await admitted.quit();
+  assert.equal(services.quitCalls, 1);
 });

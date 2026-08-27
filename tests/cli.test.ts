@@ -43,6 +43,18 @@ test("parseCli accepts HTTP settings and repeated allowed hosts", () => {
   );
 });
 
+test("parseCli canonicalizes allowed hostnames", () => {
+  assert.deepEqual(
+    parseCli([
+      "--http",
+      "--allowed-host=EXAMPLE.COM",
+      "--allowed-host=127.1",
+      "--allowed-host=0:0:0:0:0:0:0:1",
+    ]).allowedHosts,
+    ["example.com", "127.0.0.1", "[::1]"],
+  );
+});
+
 test("parseCli exposes help", () => {
   assert.match(HELP, /Usage: llm-chess-mcp/);
   assert.equal(parseCli(["--help"]).help, true);
@@ -57,6 +69,17 @@ test("parseCli rejects unknown and valueless options", () => {
     () => parseCli(["--http", "--allowed-host", "evil.com/path"]),
     /HTTP hostnames must be non-empty hostnames/,
   );
+  for (const host of [
+    "example.com:3000",
+    "user@example.com",
+    "[::1]:3000",
+    "evil\\path",
+  ]) {
+    assert.throws(
+      () => parseCli(["--http", "--allowed-host", host]),
+      /HTTP hostnames must be non-empty hostnames/,
+    );
+  }
 });
 
 test("parseCli rejects invalid ports and paths", () => {
@@ -89,7 +112,14 @@ test("parseCli rejects HTTP settings with stdio transport", () => {
 });
 
 test("parseCli requires allowed hosts for wildcard HTTP bindings", () => {
-  for (const host of ["0.0.0.0", "::", "[::]"]) {
+  for (const host of [
+    "0.0.0.0",
+    "::",
+    "[::]",
+    "0:0:0:0:0:0:0:0",
+    "[0:0:0:0:0:0:0:0]",
+    "0x0",
+  ]) {
     assert.throws(
       () => parseCli(["--http", "--host", host]),
       /wildcard HTTP binding requires at least one --allowed-host/,

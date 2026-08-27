@@ -268,3 +268,34 @@ test(
     }
   },
 );
+
+test("stdio CLI reports an invalid transport message and exits unsuccessfully", async () => {
+  const child = spawn(process.execPath, ["dist/index.js"], {
+    cwd: REPO,
+    env: childEnv(),
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  assert.ok(child.stdin);
+  assert.ok(child.stdout);
+  assert.ok(child.stderr);
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  const exited = waitForExit(child, () => stderr, "malformed stdio server");
+
+  try {
+    child.stdin.end("{}\n");
+    const [code, signal] = await exited;
+    assert.equal(code, 1, stderr);
+    assert.equal(signal, null);
+    assert.equal(stdout, "");
+    assert.match(stderr, /stdio transport failed/);
+  } finally {
+    killIfRunning(child);
+  }
+});

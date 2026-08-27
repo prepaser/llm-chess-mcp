@@ -109,6 +109,15 @@ test("GameStore rejects unsafe FEN counters before creating a game", () => {
   assert.equal(store.gameCount(), 0);
 });
 
+test("GameStore rejects positions where the inactive king is capturable", () => {
+  const store = new GameStore({ createId: () => "game" });
+
+  expectChessError("INVALID_FEN", () =>
+    store.createGame("8/8/8/8/8/8/4k3/R3K3 w - - 0 1"),
+  );
+  assert.equal(store.gameCount(), 0);
+});
+
 test("GameStore owns chess state and returns isolated snapshots", () => {
   const store = new GameStore({ createId: () => "game" });
   const source = new Chess("7k/P7/8/8/8/8/8/K7 w - - 0 1");

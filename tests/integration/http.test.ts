@@ -574,13 +574,21 @@ test("Streamable HTTP canonicalizes IPv4 shorthand bind hosts", async (t) => {
 });
 
 test("Streamable HTTP rejects allowed host paths", async () => {
-  await assert.rejects(
-    serveHttp(
-      { port: 0, allowedHosts: ["evil.com/path"] },
-      fakeServices(new GameStore()),
-    ),
-    /at least one allowed HTTP hostname is required/,
-  );
+  for (const host of [
+    "evil.com/path",
+    "example.com:3000",
+    "user@example.com",
+    "[::1]:3000",
+    "evil\\path",
+  ]) {
+    await assert.rejects(
+      serveHttp(
+        { port: 0, allowedHosts: [host] },
+        fakeServices(new GameStore()),
+      ),
+      /at least one allowed HTTP hostname is required/,
+    );
+  }
 });
 
 test("Streamable HTTP closes rejected slow request bodies", async (t) => {
@@ -712,6 +720,17 @@ test("Streamable HTTP shutdown closes partial uploads promptly", async (t) => {
 });
 
 test("Streamable HTTP accepts bracketed IPv6 bind hosts", async (t) => {
+  for (const host of [
+    "[0:0:0:0:0:0:0:0]",
+    "0:0:0:0:0:0:0:0",
+    "0x0",
+  ]) {
+    await assert.rejects(
+      serveHttp({ host, port: 0 }, fakeServices(new GameStore())),
+      /wildcard HTTP binding requires allowed hostnames/,
+    );
+  }
+
   const loopback = await serveHttp({ host: "[::1]", port: 0 }, fakeServices(new GameStore()));
   const mapped = await serveHttp(
     { host: "[::ffff:127.0.0.1]", port: 0 },
@@ -1023,6 +1042,67 @@ test("Streamable HTTP propagates MCP cancellation to active tools", async (t) =>
 
   await analysis.aborted;
   assert.match(String(await call), /cancelled by test/);
+});
+
+test("Streamable HTTP reserves bounded capacity for cancellation", async (t) => {
+  let started = 0;
+  let aborted = 0;
+  let markBothStarted!: () => void;
+  const bothStarted = new Promise<void>((resolve) => {
+    markBothStarted = resolve;
+  });
+  const games = new GameStore();
+  const http = await serveHttp(
+    { port: 0, maxConcurrentPosts: 2, maxConcurrentPostsPerSession: 2 },
+    fakeServices(games, {
+      analyze: async (_fen, _depth, _multipv, signal) => {
+        assert.ok(signal);
+        started += 1;
+        if (started === 2) markBothStarted();
+        return new Promise((_, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted += 1;
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        });
+      },
+    }),
+  );
+  const { client } = await connectClient(http, "http-saturated-cancel-tests");
+  const firstAbort = new AbortController();
+  const secondAbort = new AbortController();
+  t.after(async () => {
+    firstAbort.abort();
+    secondAbort.abort();
+    await client.close();
+    await http.close();
+  });
+
+  const gameId = await createGame(client);
+  const first = client.callTool(
+    {
+      name: "position_analyze",
+      arguments: { game_id: gameId, analysis_level: "fast" },
+    },
+    { signal: firstAbort.signal },
+  ).catch((error: unknown) => error);
+  const second = client.callTool(
+    {
+      name: "position_analyze",
+      arguments: { game_id: gameId, analysis_level: "fast" },
+    },
+    { signal: secondAbort.signal },
+  ).catch((error: unknown) => error);
+  await bothStarted;
+
+  firstAbort.abort(new Error("cancel first saturated request"));
+  secondAbort.abort(new Error("cancel second saturated request"));
+  await waitFor(() => aborted === 2);
+  await Promise.all([first, second]);
 });
 
 test("Streamable HTTP session deletion cancels active tools", async (t) => {

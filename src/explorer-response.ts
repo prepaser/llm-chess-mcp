@@ -35,6 +35,12 @@ export interface ExplorerResponseOptions {
   legalMoves: ReadonlyMap<string, string>;
 }
 
+function sumCounts(...counts: number[]): number {
+  const total = counts.reduce((sum, count) => sum + count, 0);
+  if (!Number.isSafeInteger(total)) throw explorerError("invalid_response");
+  return total;
+}
+
 async function readJson(
   response: Response,
   signal: AbortSignal,
@@ -97,6 +103,7 @@ export async function normalizeExplorerResponse(
   const parsed = responseSchema.safeParse(body);
   if (!parsed.success) throw explorerError("invalid_response");
   const data = parsed.data;
+  sumCounts(data.white, data.draws, data.black);
   const ucis = new Set<string>();
   let white = 0;
   let draws = 0;
@@ -106,9 +113,9 @@ export async function normalizeExplorerResponse(
       throw explorerError("invalid_response");
     }
     ucis.add(move.uci);
-    white += move.white;
-    draws += move.draws;
-    black += move.black;
+    white = sumCounts(white, move.white);
+    draws = sumCounts(draws, move.draws);
+    black = sumCounts(black, move.black);
   }
   if (white > data.white || draws > data.draws || black > data.black) {
     throw explorerError("invalid_response");
@@ -124,7 +131,7 @@ export async function normalizeExplorerResponse(
       white: move.white,
       draws: move.draws,
       black: move.black,
-      count: move.white + move.draws + move.black,
+      count: sumCounts(move.white, move.draws, move.black),
       averageRating: move.averageRating ?? null,
     })),
     opening: data.opening ?? null,

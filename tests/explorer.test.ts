@@ -220,6 +220,119 @@ test("rethrows caller cancellation without retrying or converting it", async () 
   assert.equal(calls, 1);
 });
 
+test("aborts an uncooperative fetch and cancels its late response", async () => {
+  const limiter = createExplorerLimiter();
+  const controller = new AbortController();
+  const cause = new Error("caller cancelled an uncooperative fetch");
+  let calls = 0;
+  let cancelled = 0;
+  let resolveFirst: ((response: Response) => void) | undefined;
+  const fetch: ExplorerFetch = async () => {
+    calls += 1;
+    if (calls > 1) return response();
+    return await new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+  };
+  const first = openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(fetch, { limiter, signal: controller.signal }),
+  );
+  const second = openingExplorer(
+    new Chess(),
+    "masters",
+    [],
+    [],
+    options(fetch, { limiter }),
+  );
+
+  controller.abort(cause);
+  await assert.rejects(first, (error: unknown) => error === cause);
+  await second;
+  resolveFirst?.(
+    new Response(
+      new ReadableStream({
+        cancel() {
+          cancelled += 1;
+        },
+      }),
+    ),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(calls, 2);
+  assert.equal(cancelled, 1);
+  assert.equal(limiter.pending, 0);
+});
+
+test("applies attempt timeouts to an uncooperative fetch", async () => {
+  const attempts = [new AbortController(), new AbortController()];
+  let calls = 0;
+  const pending = openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(
+      async () => {
+        calls += 1;
+        return await new Promise<Response>(() => {});
+      },
+      {
+        sleep: async () => undefined,
+        timeout: () => attempts[calls]?.signal ?? AbortSignal.abort(),
+      },
+    ),
+  );
+
+  attempts[0]?.abort();
+  await new Promise<void>((resolve) => {
+    const check = () => {
+      if (calls === 2) return resolve();
+      queueMicrotask(check);
+    };
+    check();
+  });
+  attempts[1]?.abort();
+
+  await assert.rejects(pending, expectKind("timeout"));
+  assert.equal(calls, 2);
+});
+
+test("cancels a response when caller cancellation wins after fetch resolution", async () => {
+  const controller = new AbortController();
+  const cause = new Error("caller cancelled after fetch resolution");
+  let cancelled = 0;
+  let resolveFetch: ((response: Response) => void) | undefined;
+  const fetch: ExplorerFetch = async () =>
+    await new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+  const pending = openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(fetch, { signal: controller.signal }),
+  );
+  resolveFetch?.(
+    new Response(
+      new ReadableStream({
+        cancel() {
+          cancelled += 1;
+        },
+      }),
+    ),
+  );
+  queueMicrotask(() => controller.abort(cause));
+
+  await assert.rejects(pending, (error: unknown) => error === cause);
+  assert.equal(cancelled, 1);
+});
+
 test("does not fetch when the caller already cancelled", async () => {
   const controller = new AbortController();
   const cause = new Error("already cancelled");
@@ -599,6 +712,49 @@ test("bounds stalled non-OK body cancellation by the attempt timeout", async () 
   await assert.rejects(first, (error: unknown) => error === cause);
   await second;
   assert.equal(calls, 2);
+});
+
+test("preserves a 429 cooldown when response cleanup times out", async () => {
+  const limiter = createExplorerLimiter();
+  const attempt = new AbortController();
+  let calls = 0;
+  let beginCancel: (() => void) | undefined;
+  const cancellationStarted = new Promise<void>((resolve) => {
+    beginCancel = resolve;
+  });
+  const fetch: ExplorerFetch = async () => {
+    calls += 1;
+    return new Response(
+      new ReadableStream({
+        cancel: () => {
+          beginCancel?.();
+          return new Promise<void>(() => {});
+        },
+      }),
+      { status: 429, headers: { "Retry-After": "60" } },
+    );
+  };
+  const requestOptions = options(fetch, {
+    limiter,
+    now: () => 0,
+    timeout: () => attempt.signal,
+  });
+  const first = openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    requestOptions,
+  );
+
+  await cancellationStarted;
+  attempt.abort();
+  await assert.rejects(first, expectKind("rate_limited"));
+  await assert.rejects(
+    openingExplorer(new Chess(), "masters", [], [], requestOptions),
+    expectKind("rate_limited"),
+  );
+  assert.equal(calls, 1);
 });
 
 test("bounds stalled successful body cancellation by the attempt timeout", async () => {
@@ -995,34 +1151,85 @@ test("omits empty filters and maps optional response fields to null", async () =
   assert.equal(result.opening, null);
 });
 
-test("uses HTTP-date Retry-After and falls back for malformed values", async () => {
-  const now = Date.parse("2026-08-21T00:00:00Z");
-  for (const [retryAfter, expected] of [
-    ["Fri, 21 Aug 2026 00:00:01 GMT", 1000],
-    ["not-a-date", 250],
-  ] as const) {
+test("uses a wall clock for HTTP-date Retry-After", async () => {
+  let now = 0;
+  const wallNow = Date.parse("2026-08-21T00:00:00Z");
+  let calls = 0;
+  const delays: number[] = [];
+  await openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(
+      async () => {
+        calls += 1;
+        return calls === 1
+          ? response(429, {}, {
+              "Retry-After": "Fri, 21 Aug 2026 00:00:01 GMT",
+            })
+          : response();
+      },
+      {
+        now: () => now,
+        wallNow: () => wallNow,
+        sleep: async (ms) => {
+          delays.push(ms);
+          now += ms;
+        },
+      },
+    ),
+  );
+  assert.deepEqual(delays, [1_000]);
+});
+
+test("uses conservative cooldowns for malformed Retry-After values", async () => {
+  for (const retryAfter of ["not-a-date", "-1", "1.5", "0x10", "1e2"]) {
     let calls = 0;
     const delays: number[] = [];
-    await openingExplorer(
-      new Chess(),
-      "lichess",
-      [],
-      [],
-      options(
-        async () => {
-          calls += 1;
-          return calls === 1
-            ? response(429, {}, { "Retry-After": retryAfter })
-            : response();
-        },
-        {
-          now: () => now,
-          sleep: async (ms) => void delays.push(ms),
-        },
+    await assert.rejects(
+      openingExplorer(
+        new Chess(),
+        "lichess",
+        [],
+        [],
+        options(
+          async () => {
+            calls += 1;
+            return response(429, {}, { "Retry-After": retryAfter });
+          },
+          {
+            now: () => 0,
+            sleep: async (ms) => void delays.push(ms),
+          },
+        ),
       ),
+      expectKind("rate_limited"),
     );
-    assert.deepEqual(delays, [expected]);
+    assert.equal(calls, 1);
+    assert.deepEqual(delays, []);
   }
+});
+
+test("uses the default retry delay for malformed 5xx Retry-After", async () => {
+  let calls = 0;
+  const delays: number[] = [];
+  await openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(
+      async () => {
+        calls += 1;
+        return calls === 1
+          ? response(503, {}, { "Retry-After": "-1" })
+          : response();
+      },
+      { now: () => 0, sleep: async (ms) => void delays.push(ms) },
+    ),
+  );
+  assert.deepEqual(delays, [EXPLORER_DEFAULT_RETRY_DELAY_MS]);
 });
 
 test("rejects invalid JSON and impossible aggregate counts", async () => {
@@ -1051,4 +1258,36 @@ test("rejects invalid JSON and impossible aggregate counts", async () => {
     ),
     expectKind("invalid_response"),
   );
+});
+
+test("rejects unsafe derived explorer count sums", async () => {
+  const count = Number.MAX_SAFE_INTEGER;
+  for (const body of [
+    { white: count, draws: count, black: 0, moves: [] },
+    {
+      white: count,
+      draws: count,
+      black: count,
+      moves: [
+        {
+          uci: "e2e4",
+          san: "e4",
+          white: count,
+          draws: count,
+          black: count,
+        },
+      ],
+    },
+  ]) {
+    await assert.rejects(
+      openingExplorer(
+        new Chess(),
+        "lichess",
+        [],
+        [],
+        options(async () => response(200, body)),
+      ),
+      expectKind("invalid_response"),
+    );
+  }
 });

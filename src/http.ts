@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { isIP } from "node:net";
 import type { AddressInfo } from "node:net";
 import type { Socket } from "node:net";
 import {
   isInitializeRequest,
+  isJSONRPCNotification,
   SUPPORTED_PROTOCOL_VERSIONS,
   validateHostHeader,
   validateOriginHeader,
@@ -19,6 +19,7 @@ import {
 } from "./http-work.js";
 import {
   bindHttpHost,
+  canonicalHttpHostname,
   canonicalHttpPath,
   DEFAULT_HTTP_HOST,
   DEFAULT_HTTP_PATH,
@@ -69,6 +70,7 @@ type Session = {
   lastUsedAt: number;
   activeRequests: number;
   activePosts: number;
+  controlPosts: { activePosts: number };
 };
 
 type HttpLimits = Required<
@@ -102,26 +104,9 @@ function isLocalHost(host: string): boolean {
   );
 }
 
-function canonicalIpv4Host(host: string): string | undefined {
-  if (!/^\d+(?:\.\d+){0,3}$/.test(host)) return undefined;
-  try {
-    const canonical = new URL(`http://${host}`).hostname;
-    return isIP(canonical) === 4 ? canonical : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function normalizeIpv4BindHost(host: string): string {
-  const unwrapped = bindHttpHost(host);
-  return canonicalIpv4Host(unwrapped) ?? host;
-}
-
-function normalizeAllowedHost(host: string): string {
-  const normalized = host.toLowerCase();
-  const unwrapped = bindHttpHost(normalized);
-  if (isIP(unwrapped) === 6) return new URL(`http://[${unwrapped}]`).hostname;
-  return canonicalIpv4Host(unwrapped) ?? normalized;
+  const canonical = canonicalHttpHostname(host);
+  return canonical && /^\d+(?:\.\d+){3}$/.test(canonical) ? canonical : host;
 }
 
 function jsonError(
@@ -323,6 +308,18 @@ function hasUnsupportedContentEncoding(req: IncomingMessage): boolean {
   );
 }
 
+function isCancellationPostBody(body: unknown): boolean {
+  const messages = Array.isArray(body) ? body : [body];
+  return (
+    messages.length > 0 &&
+    messages.every(
+      (message) =>
+        isJSONRPCNotification(message) &&
+        message.method === "notifications/cancelled",
+    )
+  );
+}
+
 async function parsePostBody(
   req: IncomingMessage,
   limit: number,
@@ -352,9 +349,9 @@ export async function serveHttp(
   if (isWildcardHttpBindHost(host) && options.allowedHosts === undefined) {
     throw new Error("wildcard HTTP binding requires allowed hostnames");
   }
-  const allowedHosts = [
+  const normalizedAllowedHosts = [
     ...(options.allowedHosts ?? (isLocalHost(host) ? LOCAL_HOSTS : [host])),
-  ].map(normalizeAllowedHost);
+  ].map(canonicalHttpHostname);
   if (!host || !Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65_535) {
     throw new Error("invalid HTTP listen address");
   }
@@ -362,11 +359,12 @@ export async function serveHttp(
     throw new Error("invalid HTTP endpoint path");
   }
   if (
-    allowedHosts.length === 0 ||
-    allowedHosts.some((value) => !value || /[/?#]/.test(value))
+    normalizedAllowedHosts.length === 0 ||
+    normalizedAllowedHosts.some((value) => value === null)
   ) {
     throw new Error("at least one allowed HTTP hostname is required");
   }
+  const allowedHosts = normalizedAllowedHosts as string[];
   const limits = resolveLimits(options);
 
   const sessions = new HttpSessionRegistry<Session>(limits.maxSessions);
@@ -376,6 +374,10 @@ export async function serveHttp(
     limits.maxConcurrentPostsPerSession,
   );
   const postAdmission = new HttpPostAdmission<Session>(
+    limits.maxConcurrentPosts,
+    limits.maxConcurrentPostsPerSession,
+  );
+  const controlPostAdmission = new HttpPostAdmission<Session["controlPosts"]>(
     limits.maxConcurrentPosts,
     limits.maxConcurrentPostsPerSession,
   );
@@ -410,14 +412,28 @@ export async function serveHttp(
     req: IncomingMessage,
     res: ServerResponse,
     work: () => Promise<void>,
+    saturatedWork?: (rejection: 429 | 503) => Promise<void>,
   ): Promise<void> => {
     const admission = postAdmission.tryAcquire(session);
-    if (admission === 429) {
-      closeWithError(req, res, 429, "MCP session request limit reached", { "retry-after": "1" });
-      return;
-    }
-    if (admission === 503) {
-      closeWithError(req, res, 503, "server request limit reached", { "retry-after": "1" });
+    if (admission === 429 || admission === 503) {
+      if (saturatedWork) {
+        const controlAdmission = session
+          ? controlPostAdmission.tryAcquire(session.controlPosts)
+          : controlPostAdmission.tryAcquire();
+        if (typeof controlAdmission === "object") {
+          try {
+            await saturatedWork(admission);
+          } finally {
+            controlAdmission.release();
+          }
+          return;
+        }
+      }
+      if (admission === 429) {
+        closeWithError(req, res, 429, "MCP session request limit reached", { "retry-after": "1" });
+      } else {
+        closeWithError(req, res, 503, "server request limit reached", { "retry-after": "1" });
+      }
       return;
     }
     try {
@@ -449,12 +465,30 @@ export async function serveHttp(
       return;
     }
     if (req.method === "POST") {
-      await withAdmittedPost(session, req, res, () =>
-        sessions.withActive(session, () =>
-          withParsedPostBody(req, res, (body) =>
-            session.transport.handleRequest(req, res, body),
+      await withAdmittedPost(
+        session,
+        req,
+        res,
+        () =>
+          sessions.withActive(session, () =>
+            withParsedPostBody(req, res, (body) =>
+              session.transport.handleRequest(req, res, body),
+            ),
           ),
-        ),
+        (rejection) =>
+          sessions.withActive(session, () =>
+            withParsedPostBody(req, res, (body) => {
+              if (isCancellationPostBody(body)) {
+                return session.transport.handleRequest(req, res, body);
+              }
+              if (rejection === 429) {
+                closeWithError(req, res, 429, "MCP session request limit reached", { "retry-after": "1" });
+              } else {
+                closeWithError(req, res, 503, "server request limit reached", { "retry-after": "1" });
+              }
+              return Promise.resolve();
+            }),
+          ),
       );
       return;
     }
@@ -505,6 +539,7 @@ export async function serveHttp(
             lastUsedAt: Date.now(),
             activeRequests: 0,
             activePosts: 0,
+            controlPosts: { activePosts: 0 },
           };
           reservation.attach(session);
           transport.onclose = () => {

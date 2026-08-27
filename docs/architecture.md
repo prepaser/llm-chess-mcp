@@ -123,13 +123,15 @@ that backend work was cancelled.
 
 HTTP admission is bounded before SDK dispatch. POST bodies are parsed once with
 a 2 MiB byte cap, initialization reserves one of 64 session slots atomically,
-and only 16 POSTs process-wide or two per session may run concurrently. The same
-limits independently bound downstream compute and network jobs. A job retains
-its slot after the HTTP response or socket closes and releases it only when the
-service promise settles. Sessions with no active request expire after 30 minutes
-without deleting their process-shared games. Open GET SSE streams keep their
-session active without consuming POST permits. Header, upload, connection,
-socket, and keep-alive limits are enforced by the Node listener.
+and only 16 normal POSTs process-wide or two per session may run concurrently.
+A separately bounded control lane admits cancellation-only notifications when
+those slots are saturated. The same normal limits independently bound downstream
+compute and network jobs. A job retains its slot after the HTTP response or
+socket closes and releases it only when the service promise settles. Sessions
+with no active request expire after 30 minutes without deleting their
+process-shared games. Open GET SSE streams keep their session active without
+consuming POST permits. Header, upload, connection, socket, and keep-alive
+limits are enforced by the Node listener.
 `bodyTimeoutMs` bounds body upload only; engine and network work use their own
 timeouts and MCP cancellation rather than a transport-wide request deadline.
 Session reservations/expiry, POST admission, and downstream work admission are
@@ -158,7 +160,9 @@ sends one UCI `stop` and keeps the queue fenced until `bestmove`; if the engine
 does not stop within the grace period, the worker is terminated before queued
 work reinitializes it. A timed-out request that receives `bestmove` during that
 grace period is rejected, but its now-idle worker is reused. Partial lines from
-a cancelled request are never returned.
+a cancelled request are never returned. Shutdown drains the old queue, sends
+UCI `quit`, retains a sink for late engine output, and fences the next engine
+generation until teardown completes.
 
 Maia runs in-process with the bundled ONNX model (5M by default). The native
 addon and inference session are loaded lazily and the session is shared after
@@ -181,6 +185,8 @@ input, and malformed responses fail without retry. Successful payloads are
 checked against the legal moves of the snapshot before they can affect a candidate result.
 Caller cancellation is combined with each attempt timeout and also interrupts
 retry backoff; it is never converted into an Explorer availability failure.
+Duration budgets use a monotonic clock, while HTTP-date `Retry-After` parsing
+uses wall time.
 Its limiter, HTTP transport, response normalization, and retry policy are
 separate internal modules, but response consumption remains inside the limiter
 slot. Cancellation closes and awaits an in-flight response body before the next

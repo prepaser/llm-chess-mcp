@@ -106,7 +106,13 @@ export class Stockfish {
   private queueScheduled = false;
   private admitted = 0;
   private quitGeneration = 0;
-  private readonly terminated = new WeakSet<StockfishEngine>();
+  private activeRequest: AnalysisRequest | null = null;
+  private quitting: Promise<void> | null = null;
+  private teardownBarrier: Promise<void> = Promise.resolve();
+  private teardownPending = 0;
+  private readonly drainWaiters = new Set<() => void>();
+  private readonly terminations = new WeakMap<StockfishEngine, Promise<void>>();
+  private readonly quitSent = new WeakSet<StockfishEngine>();
   private readonly initEngine: StockfishInit | undefined;
   private readonly configuredFlavor: string | undefined;
   private readonly maxQueue: number;
@@ -271,10 +277,33 @@ export class Stockfish {
       request.signal.removeEventListener("abort", request.abortListener);
     }
     request.abortListener = null;
+    this.notifyDrained();
+  }
+
+  private notifyDrained(): void {
+    if (this.admitted !== 0 || this.runInProgress || this.queue.length !== 0) return;
+    const waiters = [...this.drainWaiters];
+    this.drainWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
+  private waitForDrain(): Promise<void> {
+    if (this.admitted === 0 && !this.runInProgress && this.queue.length === 0) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => this.drainWaiters.add(resolve));
   }
 
   private scheduleQueue(): void {
     if (this.runInProgress || this.queueScheduled) return;
+    if (this.teardownPending !== 0) {
+      this.queueScheduled = true;
+      void this.teardownBarrier.finally(() => {
+        this.queueScheduled = false;
+        this.scheduleQueue();
+      });
+      return;
+    }
     this.queueScheduled = true;
     queueMicrotask(() => {
       this.queueScheduled = false;
@@ -288,9 +317,12 @@ export class Stockfish {
       }
 
       this.runInProgress = true;
+      this.activeRequest = next.request;
       void next.run().finally(() => {
         this.releaseAdmission(next.request);
+        if (this.activeRequest === next.request) this.activeRequest = null;
         this.runInProgress = false;
+        this.notifyDrained();
         this.scheduleQueue();
       });
     });
@@ -316,6 +348,9 @@ export class Stockfish {
   ): Promise<SfLine[]> {
     if (signal?.aborted) {
       return Promise.reject(abortError(signal));
+    }
+    if (this.quitting) {
+      return Promise.reject(new Error("stockfish shutting down"));
     }
     if (this.admitted >= this.maxQueue) {
       return Promise.reject(new Error("stockfish queue full"));
@@ -513,25 +548,84 @@ export class Stockfish {
     const invalidators = [...session.invalidators];
     session.invalidators.clear();
     if (session.engine) {
-      session.engine.listener = null;
       this.terminate(session.engine);
     }
     for (const invalidate of invalidators) invalidate(error);
   }
 
-  private terminate(engine: StockfishEngine): void {
-    if (this.terminated.has(engine)) return;
-    this.terminated.add(engine);
-    engine.listener = null;
-    try {
-      engine.terminate();
-    } catch {}
+  private terminate(engine: StockfishEngine): Promise<void> {
+    engine.listener = () => {};
+    if (!this.quitSent.has(engine)) {
+      try {
+        engine.sendCommand("quit");
+        this.quitSent.add(engine);
+      } catch {}
+    }
+    const existing = this.terminations.get(engine);
+    if (existing) return existing;
+
+    this.teardownPending++;
+    const termination = new Promise<void>((resolve) => {
+      setImmediate(() => {
+        engine.listener = () => {};
+        try {
+          engine.terminate();
+        } catch {}
+        resolve();
+      });
+    }).finally(() => {
+      this.teardownPending--;
+    });
+    this.terminations.set(engine, termination);
+    this.teardownBarrier = Promise.all([
+      this.teardownBarrier,
+      termination,
+    ]).then(() => undefined);
+    return termination;
   }
 
-  async quit(): Promise<void> {
+  private cancelQueued(error: Error): void {
+    const queued = this.queue.splice(0);
+    for (const { request } of queued) {
+      if (request.cancelled) continue;
+      request.cancelled = true;
+      request.cancellation = error;
+      request.reject(error);
+      this.releaseAdmission(request);
+    }
+    this.notifyDrained();
+  }
+
+  private async performQuit(): Promise<void> {
     this.quitGeneration++;
+    const quitError = new Error("stockfish quit");
+    this.cancelQueued(new Error("stockfish request cancelled"));
+
     const session = this.session;
-    if (session) this.invalidateSession(session, new Error("stockfish quit"));
+    const active = this.activeRequest;
+    if (active) {
+      active.cancelled = true;
+      active.cancellation ??= quitError;
+      if (active.stop) active.stop(active.cancellation);
+      else {
+        active.reject(active.cancellation);
+        if (session) this.invalidateSession(session, quitError);
+      }
+    }
+
+    await this.waitForDrain();
+    if (this.session) this.invalidateSession(this.session, quitError);
+    await this.teardownBarrier;
+  }
+
+  quit(): Promise<void> {
+    if (this.quitting) return this.quitting;
+    let operation!: Promise<void>;
+    operation = this.performQuit().finally(() => {
+      if (this.quitting === operation) this.quitting = null;
+    });
+    this.quitting = operation;
+    return operation;
   }
 }
 

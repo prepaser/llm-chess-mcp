@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import test from "node:test";
+import { promisify } from "node:util";
 import {
   resolveStockfishFlavor,
   Stockfish,
@@ -10,6 +12,12 @@ import {
   mergeAnalysisInfo,
   parseAnalysisInfo,
 } from "../src/engines/stockfish-info.js";
+
+const execFileAsync = promisify(execFile);
+
+function nextImmediate(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 function engine(
   onCommand: (engine: StockfishEngine, command: string) => void = () => {},
@@ -106,6 +114,19 @@ test("analysis info parser merges partial updates and resets scores", () => {
     parseAnalysisInfo(`info depth 1 multipv ${"9".repeat(400)} score cp 42`),
     null,
   );
+  assert.ok(parseAnalysisInfo("info depth 1 multipv 256 score cp 100000"));
+  assert.equal(parseAnalysisInfo("info depth 1 multipv 257 score cp 42"), null);
+
+  const boundedNumbers = parseAnalysisInfo(
+    "info depth 4 multipv 1 score cp 100001 wdl 1001 0 0 pv d2d4",
+  );
+  assert.ok(boundedNumbers);
+  assert.deepEqual(boundedNumbers, { multipv: 1, pv: ["d2d4"] });
+  const invalidWdlTotal = parseAnalysisInfo(
+    "info depth 4 multipv 1 score mate -100001 wdl 1 2 3 pv d2d4",
+  );
+  assert.ok(invalidWdlTotal);
+  assert.deepEqual(invalidWdlTotal, { multipv: 1, pv: ["d2d4"] });
 
   const malformedNumbers = parseAnalysisInfo(
     `info depth 4 multipv 1 score cp ${"9".repeat(400)} wdl ${"9".repeat(400)} 0 0 pv d2d4`,
@@ -134,6 +155,7 @@ test("initialization times out when its callback never arrives", async () => {
   });
 
   await assert.rejects(stockfish.analyze("fen", 1, 1), /init timeout/);
+  await nextImmediate();
   assert.equal(current.terminations, 1);
 });
 
@@ -162,6 +184,7 @@ test("synchronous initialization callback terminates a distinct returned engine"
   });
 
   assert.equal((await stockfish.analyze("fen", 1, 1))[0]?.scoreCp, 42);
+  await nextImmediate();
   assert.equal(returned.terminations, 1);
   assert.equal(initialized.terminations, 0);
   await stockfish.quit();
@@ -205,9 +228,11 @@ test("late initialization callbacks terminate their delivered engine", async () 
   });
 
   await assert.rejects(stockfish.analyze("fen", 1, 1), /init timeout/);
+  await nextImmediate();
   assert.equal(returned.terminations, 1);
 
   callback(null, late);
+  await nextImmediate();
   assert.equal(late.terminations, 1);
 });
 
@@ -223,6 +248,7 @@ test("initialization callback replaces the returned engine", async () => {
   });
 
   assert.equal((await stockfish.analyze("fen", 1, 1))[0]?.scoreCp, 42);
+  await nextImmediate();
   assert.equal(returned.terminations, 1);
   assert.equal(initialized.terminations, 0);
 });
@@ -356,8 +382,9 @@ test("queue capacity fails fast", async () => {
 
   const pending = stockfish.analyze("first", 1, 1);
   await assert.rejects(stockfish.analyze("second", 1, 1), /queue full/);
+  const pendingOutcome = pending.catch((error: unknown) => error);
   await stockfish.quit();
-  await assert.rejects(pending, /stockfish quit/);
+  assert.match(String(await pendingOutcome), /stockfish quit/);
 });
 
 test("pre-aborted analysis does not enter the queue or initialize Stockfish", async () => {
@@ -461,7 +488,7 @@ test("cancelled queued requests are removed instead of accumulating behind activ
   const stockfish = new Stockfish({
     init: initializer([current]),
     maxQueue: 2,
-    timeouts: { init: 50, handshake: 50, analyze: 100 },
+    timeouts: { init: 50, handshake: 50, analyze: 100, stopGrace: 5 },
   });
   const active = stockfish.analyze("active", 1, 1);
   await started;
@@ -489,9 +516,11 @@ test("cancelled queued requests are removed instead of accumulating behind activ
     false,
   );
 
+  const activeOutcome = active.catch((error: unknown) => error);
+  const queuedOutcome = queued.catch((error: unknown) => error);
   await stockfish.quit();
-  await assert.rejects(active, /stockfish quit/);
-  await assert.rejects(queued, /request cancelled/);
+  assert.match(String(await activeOutcome), /stockfish quit/);
+  assert.match(String(await queuedOutcome), /request cancelled/);
 });
 
 test("abort during cold initialization releases capacity without resetting the session", async () => {
@@ -598,7 +627,7 @@ test("active abort invalidates after stop grace and queued work reinitializes", 
   assert.equal(second.terminations, 0);
 });
 
-test("quit cancels old queued work without blocking a new generation", async () => {
+test("quit drains old work before starting a new generation", async () => {
   let analysisStarted!: () => void;
   const started = new Promise<void>((resolve) => {
     analysisStarted = resolve;
@@ -608,6 +637,9 @@ test("quit cancels old queued work without blocking a new generation", async () 
   first.sendCommand = (command) => {
     originalSend(command);
     if (command.startsWith("go depth ")) analysisStarted();
+    else if (command === "stop") {
+      queueMicrotask(() => first.listener?.("bestmove e2e4"));
+    }
   };
   const second = respondingEngine(true);
   let initCalls = 0;
@@ -624,13 +656,57 @@ test("quit cancels old queued work without blocking a new generation", async () 
   const active = stockfish.analyze("active", 1, 1);
   const oldQueued = stockfish.analyze("queued", 1, 1);
   await started;
-  await stockfish.quit();
-
-  await assert.rejects(active, /stockfish quit/);
-  await assert.rejects(oldQueued, /request cancelled/);
+  const activeOutcome = active.catch((error: unknown) => error);
+  const queuedOutcome = oldQueued.catch((error: unknown) => error);
+  const quitting = stockfish.quit();
+  assert.equal(stockfish.quit(), quitting);
+  await assert.rejects(stockfish.analyze("new", 1, 1), /shutting down/);
   assert.equal(initCalls, 1);
+  await quitting;
+
+  assert.match(String(await activeOutcome), /stockfish quit/);
+  assert.match(String(await queuedOutcome), /request cancelled/);
   assert.equal(first.terminations, 1);
+  assert.equal(first.commands.filter((command) => command === "stop").length, 1);
+  assert.equal(first.commands.filter((command) => command === "quit").length, 1);
+  assert.notEqual(first.listener, null);
 
   assert.equal((await stockfish.analyze("new", 1, 1))[0]?.scoreCp, 42);
   assert.equal(initCalls, 2);
 });
+
+test(
+  "real lite-single quit stops active search without leaking stdout",
+  { timeout: 15_000 },
+  async () => {
+    const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+    const source = `
+      import { Stockfish } from ${JSON.stringify(moduleUrl)};
+      const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+      const stockfish = new Stockfish({
+        flavor: "lite-single",
+        timeouts: { init: 5000, handshake: 5000, analyze: 5000, stopGrace: 500 },
+      });
+      await stockfish.analyze(fen, 1, 1);
+      const active = stockfish.analyze(fen, 22, 1);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const started = performance.now();
+      const outcome = active.then(
+        () => "resolved",
+        (error) => String(error),
+      );
+      await stockfish.quit();
+      const elapsed = performance.now() - started;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      process.stdout.write(JSON.stringify({ outcome: await outcome, elapsed }));
+    `;
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", source],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
+    );
+    const result = JSON.parse(stdout) as { outcome: string; elapsed: number };
+    assert.match(result.outcome, /stockfish quit/);
+    assert.ok(result.elapsed < 2_000, `quit took ${result.elapsed}ms`);
+  },
+);

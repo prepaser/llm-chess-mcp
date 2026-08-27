@@ -1,4 +1,5 @@
 import {
+  canonicalHttpHostname,
   DEFAULT_HTTP_HOST,
   DEFAULT_HTTP_PATH,
   DEFAULT_HTTP_PORT,
@@ -112,7 +113,8 @@ export function parseCli(args: string[]): CliOptions {
   if (!isCanonicalHttpPath(path)) {
     throw new Error("--path must be an absolute URL path without query or fragment");
   }
-  if (!host || allowedHosts.some((value) => !value || /[/?#]/.test(value))) {
+  const canonicalAllowedHosts = allowedHosts.map(canonicalHttpHostname);
+  if (!host || canonicalAllowedHosts.some((value) => value === null)) {
     throw new Error("HTTP hostnames must be non-empty hostnames");
   }
   if (transport === "stdio" && hasHttpOption) {
@@ -121,10 +123,17 @@ export function parseCli(args: string[]): CliOptions {
   if (
     transport === "http" &&
     isWildcardHttpBindHost(host) &&
-    allowedHosts.length === 0
+    canonicalAllowedHosts.length === 0
   ) {
     throw new Error("wildcard HTTP binding requires at least one --allowed-host");
   }
 
-  return { transport, host, port, path, allowedHosts, help };
+  return {
+    transport,
+    host,
+    port,
+    path,
+    allowedHosts: canonicalAllowedHosts as string[],
+    help,
+  };
 }

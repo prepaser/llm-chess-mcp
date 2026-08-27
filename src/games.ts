@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Chess } from "chess.js";
 import type { Move } from "chess.js";
 import {
+  assertLegalPosition,
   assertSafeFenCounters,
   playParsedMove,
   snapshotChess,
@@ -58,10 +59,12 @@ export class GameStore {
 
   createGame(fen?: string): string {
     if (fen !== undefined) assertSafeFenCounters(fen);
-    return this.createGameFromChess(fen === undefined ? new Chess() : new Chess(fen));
+    const chess = fen === undefined ? new Chess() : new Chess(fen);
+    return this.createGameFromChess(chess);
   }
 
   createGameFromChess(chess: Chess): string {
+    assertLegalPosition(chess);
     const now = this.clock();
     this.cleanupGames(now);
     if (this.games.size >= this.maxGames) {

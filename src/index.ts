@@ -33,7 +33,7 @@ function installShutdown(closeTransport: () => Promise<void>): () => Promise<voi
     (shutdown ??= closeTransport());
   const onSignal = (): void => {
     void close()
-      .then(() => process.exit(0))
+      .then(() => process.exit(process.exitCode ?? 0))
       .catch((error: unknown) => {
         console.error("shutdown failed", error);
         process.exit(1);
@@ -53,10 +53,18 @@ async function main(): Promise<void> {
   }
 
   if (options.transport === "stdio") {
-    const handle = serveStdio(() => buildServer());
+    const handle = serveStdio(() => buildServer(), {
+      onerror: (error) => {
+        console.error("stdio transport failed", error);
+        process.exitCode = 1;
+      },
+    });
     const close = installShutdown(() => handle.close());
     const onClose = (): void => {
-      void close().catch((error: unknown) => console.error("shutdown failed", error));
+      void close().catch((error: unknown) => {
+        console.error("shutdown failed", error);
+        process.exitCode = 1;
+      });
     };
     process.stdin.once("end", onClose);
     process.stdin.once("close", onClose);
@@ -73,8 +81,16 @@ async function main(): Promise<void> {
   installShutdown(() => handle.close());
 }
 
-const entry = process.argv[1];
-if (entry && import.meta.url === pathToFileURL(realpathSync(entry)).href) {
+function isDirectEntry(entry: string | undefined): boolean {
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isDirectEntry(process.argv[1])) {
   void main().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;

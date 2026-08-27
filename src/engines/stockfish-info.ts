@@ -12,13 +12,27 @@ export type AnalysisInfo = {
   pv?: string[];
 };
 
-function parseInteger(value: string): number | undefined {
+const MAX_MULTIPV = 256;
+const MAX_SCORE = 100_000;
+const MAX_WDL = 1_000;
+
+function parseInteger(
+  value: string,
+  minimum: number,
+  maximum: number,
+): number | undefined {
   const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : undefined;
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : undefined;
 }
 
 function parseScore(token: string): Score | undefined {
-  const value = parseInteger(token.slice(token.startsWith("cp") ? 2 : 4));
+  const value = parseInteger(
+    token.slice(token.startsWith("cp") ? 2 : 4),
+    -MAX_SCORE,
+    MAX_SCORE,
+  );
   if (value === undefined) return;
   return token.startsWith("cp")
     ? { cp: value, mate: null }
@@ -32,10 +46,11 @@ function parseWdl(line: string): Wdl | undefined {
   if (!groups) return;
   const { wins: winToken, draws: drawToken, losses: lossToken } = groups;
   if (!winToken || !drawToken || !lossToken) return;
-  const wins = parseInteger(winToken);
-  const draws = parseInteger(drawToken);
-  const losses = parseInteger(lossToken);
+  const wins = parseInteger(winToken, 0, MAX_WDL);
+  const draws = parseInteger(drawToken, 0, MAX_WDL);
+  const losses = parseInteger(lossToken, 0, MAX_WDL);
   if (wins === undefined || draws === undefined || losses === undefined) return;
+  if (wins + draws + losses !== MAX_WDL) return;
   return [wins, draws, losses];
 }
 
@@ -46,8 +61,8 @@ export function parseAnalysisInfo(line: string): AnalysisInfo | null {
     /multipv (?<value>\d+)(?=\s|$)/,
   )?.groups?.value;
   if (!multipvToken) return null;
-  const multipv = parseInteger(multipvToken);
-  if (multipv === undefined || multipv < 1) return null;
+  const multipv = parseInteger(multipvToken, 1, MAX_MULTIPV);
+  if (multipv === undefined) return null;
 
   const scoreToken = line.match(
     / score (?<value>cp -?\d+|mate -?\d+)(?=\s|$)/,

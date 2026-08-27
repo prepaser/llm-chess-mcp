@@ -86,6 +86,7 @@ export interface ExplorerRequestOptions {
   timeout?: (ms: number) => AbortSignal;
   signal?: AbortSignal;
   now?: () => number;
+  wallNow?: () => number;
   token?: string;
 }
 
@@ -106,6 +107,7 @@ interface ExplorerSetup extends ExplorerLimiterOptions {
   timeout: (ms: number) => AbortSignal;
   token: string;
   url: string;
+  wallNow: () => number;
 }
 
 function setupExplorerRequest(
@@ -140,7 +142,7 @@ function setupExplorerRequest(
   if (speeds.length) params.set("speeds", speeds.join(","));
   if (ratings.length) params.set("ratings", ratings.join(","));
 
-  const now = options.now ?? Date.now;
+  const now = options.now ?? (() => performance.now());
   return {
     callerSignal,
     db,
@@ -157,6 +159,7 @@ function setupExplorerRequest(
     timeout: options.timeout ?? ((ms: number) => AbortSignal.timeout(ms)),
     token,
     url: `${BASE}/${db}?${params}`,
+    wallNow: options.wallNow ?? options.now ?? Date.now,
   };
 }
 
@@ -170,7 +173,7 @@ function failureFor(
       type: "failure",
       error,
       retry: "limiter",
-      delay: rateLimitCooldownMs(retryAfter, setup.now()),
+      delay: rateLimitCooldownMs(retryAfter, setup.wallNow()),
     };
   }
   if (error.kind === "timeout" || error.kind === "network") {
@@ -186,7 +189,7 @@ function failureFor(
       type: "failure",
       error,
       retry: "backoff",
-      delay: retryAfterMs(retryAfter, setup.now()),
+      delay: retryAfterMs(retryAfter, setup.wallNow()),
     };
   }
   return { type: "failure", error, retry: "stop" };
@@ -202,7 +205,7 @@ async function attemptRequest(
         if (transport.error.kind === "rate_limited") {
           const rateLimitedAt = setup.now();
           setup.limiter.cooldown(
-            rateLimitCooldownMs(transport.retryAfter, rateLimitedAt),
+            rateLimitCooldownMs(transport.retryAfter, setup.wallNow()),
             rateLimitedAt,
           );
         }

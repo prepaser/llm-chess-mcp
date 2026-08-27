@@ -1,5 +1,5 @@
 import { Chess } from "chess.js";
-import type { Move, PieceSymbol, Square } from "chess.js";
+import type { Color, Move, PieceSymbol, Square } from "chess.js";
 import { ChessError } from "./errors.js";
 
 type MoveDescriptor = {
@@ -33,6 +33,37 @@ export function assertSafeFenCounters(fen: string): void {
     throw new ChessError(
       "INVALID_FEN",
       "FEN fullmove number must be a positive safe decimal integer",
+    );
+  }
+}
+
+export function assertLegalPosition(chess: Chess): void {
+  for (const color of ["w", "b"] as const) {
+    if (chess.findPiece({ type: "k", color }).length !== 1) {
+      throw new ChessError(
+        "INVALID_FEN",
+        "FEN must contain exactly one king per side",
+      );
+    }
+    if (
+      chess
+        .findPiece({ type: "p", color })
+        .some((square) => square[1] === "1" || square[1] === "8")
+    ) {
+      throw new ChessError(
+        "INVALID_FEN",
+        "FEN pawns cannot occupy the first or eighth rank",
+      );
+    }
+  }
+
+  const turn = chess.turn();
+  const previous: Color = turn === "w" ? "b" : "w";
+  const previousKing = chess.findPiece({ type: "k", color: previous })[0];
+  if (previousKing && chess.isAttacked(previousKing, turn)) {
+    throw new ChessError(
+      "INVALID_FEN",
+      "FEN cannot leave the side that just moved in check",
     );
   }
 }
