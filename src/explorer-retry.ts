@@ -23,7 +23,122 @@ export interface ExplorerRetryOptions {
   sleep: (ms: number) => Promise<void>;
 }
 
-const HTTP_DATE = /^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT|(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), \d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2} \d{2}:\d{2}:\d{2} GMT|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/;
+const SHORT_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const LONG_WEEKDAYS = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+];
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+const IMF_DATE = /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat), (\d{2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/;
+const RFC850_DATE = /^(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday), (\d{2})-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-(\d{2}) (\d{2}):(\d{2}):(\d{2}) GMT$/;
+const ASCTIME_DATE = /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ ]?(\d{1,2}) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/;
+
+function httpDate(
+  weekday: number,
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+): number | undefined {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month, day);
+  date.setUTCHours(hour, minute, second, 0);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month ||
+    date.getUTCDate() !== day ||
+    date.getUTCHours() !== hour ||
+    date.getUTCMinutes() !== minute ||
+    date.getUTCSeconds() !== second ||
+    date.getUTCDay() !== weekday
+  ) {
+    return;
+  }
+  return date.getTime();
+}
+
+function parseHttpDate(value: string, wallNow: number): number | undefined {
+  const imf = IMF_DATE.exec(value);
+  if (imf) {
+    return httpDate(
+      SHORT_WEEKDAYS.indexOf(imf[1]!),
+      Number(imf[4]),
+      MONTHS.indexOf(imf[3]!),
+      Number(imf[2]),
+      Number(imf[5]),
+      Number(imf[6]),
+      Number(imf[7]),
+    );
+  }
+  const rfc850 = RFC850_DATE.exec(value);
+  if (rfc850) {
+    const current = new Date(wallNow);
+    const currentYear = current.getUTCFullYear();
+    let year = 2000 + Number(rfc850[4]);
+    const parts = [
+      MONTHS.indexOf(rfc850[3]!),
+      Number(rfc850[2]),
+      Number(rfc850[5]),
+      Number(rfc850[6]),
+      Number(rfc850[7]),
+    ];
+    const currentParts = [
+      current.getUTCMonth(),
+      current.getUTCDate(),
+      current.getUTCHours(),
+      current.getUTCMinutes(),
+      current.getUTCSeconds(),
+    ];
+    const laterInYear = parts.some(
+      (part, index) =>
+        part > currentParts[index]! &&
+        parts.slice(0, index).every((value, prior) => value === currentParts[prior]),
+    );
+    if (year - currentYear > 50 || (year - currentYear === 50 && laterInYear)) {
+      year -= 100;
+    }
+    return httpDate(
+      LONG_WEEKDAYS.indexOf(rfc850[1]!),
+      year,
+      parts[0]!,
+      parts[1]!,
+      parts[2]!,
+      parts[3]!,
+      parts[4]!,
+    );
+  }
+  const asctime = ASCTIME_DATE.exec(value);
+  if (!asctime) return;
+  return httpDate(
+    SHORT_WEEKDAYS.indexOf(asctime[1]!),
+    Number(asctime[7]),
+    MONTHS.indexOf(asctime[2]!),
+    Number(asctime[3]),
+    Number(asctime[4]),
+    Number(asctime[5]),
+    Number(asctime[6]),
+  );
+}
 
 function parseRetryAfterMs(value: string, wallNow: number): number | undefined {
   const trimmed = value.trim();
@@ -32,8 +147,9 @@ function parseRetryAfterMs(value: string, wallNow: number): number | undefined {
     const delay = seconds * 1_000;
     return Number.isSafeInteger(delay) ? delay : undefined;
   }
-  if (!HTTP_DATE.test(trimmed)) return;
-  const delay = Date.parse(trimmed) - wallNow;
+  const timestamp = parseHttpDate(trimmed, wallNow);
+  if (timestamp === undefined) return;
+  const delay = timestamp - wallNow;
   return Number.isFinite(delay) ? Math.max(0, delay) : undefined;
 }
 

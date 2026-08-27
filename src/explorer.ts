@@ -5,6 +5,9 @@ import {
   EXPLORER_DEFAULT_RETRY_DELAY_MS,
   EXPLORER_ERROR_KINDS,
   EXPLORER_MAX_ATTEMPTS,
+  EXPLORER_MAX_MOVES,
+  EXPLORER_MAX_RESPONSE_BYTES,
+  EXPLORER_MAX_STRING_LENGTH,
   EXPLORER_RATE_LIMIT_COOLDOWN_MS,
   EXPLORER_TOTAL_TIMEOUT_MS,
   ExplorerError,
@@ -37,6 +40,9 @@ export {
   EXPLORER_DEFAULT_RETRY_DELAY_MS,
   EXPLORER_ERROR_KINDS,
   EXPLORER_MAX_ATTEMPTS,
+  EXPLORER_MAX_MOVES,
+  EXPLORER_MAX_RESPONSE_BYTES,
+  EXPLORER_MAX_STRING_LENGTH,
   EXPLORER_RATE_LIMIT_COOLDOWN_MS,
   EXPLORER_TOTAL_TIMEOUT_MS,
   ExplorerError,
@@ -92,6 +98,7 @@ export interface ExplorerRequestOptions {
 
 const speedSet = new Set<string>(LICHESS_SPEEDS);
 const ratingSet = new Set<number>(LICHESS_RATINGS);
+const dbSet = new Set<string>(["lichess", "masters"]);
 
 export function explorerEnabled(): boolean {
   return (process.env.LICHESS_TOKEN || "").length > 0;
@@ -121,6 +128,7 @@ function setupExplorerRequest(
   throwIfAborted(callerSignal);
   const token = options.token ?? process.env.LICHESS_TOKEN ?? "";
   if (!token) throw explorerError("disabled");
+  if (!dbSet.has(db)) throw explorerError("invalid_input");
   if (
     !speeds.every((speed) => speedSet.has(speed)) ||
     new Set(speeds).size !== speeds.length

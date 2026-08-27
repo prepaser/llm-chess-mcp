@@ -82,6 +82,12 @@ fetch, timeout, and sleep are injected at the explorer boundary.
 4. Deleting a game removes the game. Closing an MCP HTTP session does not
    delete its games; expired and deleted IDs are no longer valid.
 
+Custom positions are validated before snapshotting. King and pawn placement,
+promotion material, castling rights, and en-passant metadata must describe a
+consistent position, so cloning cannot synthesize pieces or expose impossible
+moves. PGN setup headers are treated case-insensitively and canonicalized on
+import so exported games remain re-importable.
+
 Games are process-shared. There is no per-user, per-client, or per-MCP-session
 ownership record: possession of an opaque `game_id` is the capability required
 to read, analyze, mutate, export, or delete that game. It is not an identity
@@ -132,6 +138,8 @@ with no active request expire after 30 minutes without deleting their
 process-shared games. Open GET SSE streams keep their session active without
 consuming POST permits. Header, upload, connection, socket, and keep-alive
 limits are enforced by the Node listener.
+Deleting a session also aborts any body reader that has not reached SDK
+dispatch, releasing its POST permit immediately.
 `bodyTimeoutMs` bounds body upload only; engine and network work use their own
 timeouts and MCP cancellation rather than a transport-wide request deadline.
 Session reservations/expiry, POST admission, and downstream work admission are
@@ -163,6 +171,10 @@ grace period is rejected, but its now-idle worker is reused. Partial lines from
 a cancelled request are never returned. Shutdown drains the old queue, sends
 UCI `quit`, retains a sink for late engine output, and fences the next engine
 generation until teardown completes.
+If shutdown begins while a worker-backed flavor is still loading, teardown
+waits for the dependency callback before sending UCI `quit` and terminating the
+worker. Terminal depth-zero score records without an explicit MultiPV rank are
+reported as rank one rather than discarded.
 
 Maia runs in-process with the bundled ONNX model (5M by default). The native
 addon and inference session are loaded lazily and the session is shared after
@@ -186,7 +198,9 @@ checked against the legal moves of the snapshot before they can affect a candida
 Caller cancellation is combined with each attempt timeout and also interrupts
 retry backoff; it is never converted into an Explorer availability failure.
 Duration budgets use a monotonic clock, while HTTP-date `Retry-After` parsing
-uses wall time.
+uses wall time and rejects calendar rollover. Response bodies must be valid
+UTF-8 JSON and are capped at 1 MiB, 256 moves, and 256 characters per move or
+opening string.
 Its limiter, HTTP transport, response normalization, and retry policy are
 separate internal modules, but response consumption remains inside the limiter
 slot. Cancellation closes and awaits an in-flight response body before the next

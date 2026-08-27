@@ -23,6 +23,9 @@ provided separately.
 
 ## Build from source
 
+The published runtime supports Node.js 20.3 and newer. Repository maintenance
+uses Node.js 22.13 or newer because pnpm 11 and the coverage gate require it.
+
 ```bash
 pnpm install
 pnpm build
@@ -91,7 +94,9 @@ Explorer filters are strict. Speeds are `ultraBullet`, `bullet`, `blitz`,
 `1200`, `1400`, `1600`, `1800`, `2000`, `2200`, and `2500`. `masters` accepts
 neither filter. Invalid filters fail locally. Transient failures (network,
 timeout, 429, and 5xx) are retried once within a 12-second total budget;
-invalid requests and other 4xx responses are not retried.
+invalid requests and other 4xx responses are not retried. Responses must be
+valid UTF-8 JSON and are limited to 1 MiB, 256 moves, and 256 characters per
+move or opening string.
 
 ## Configure in your MCP client
 
@@ -260,6 +265,8 @@ rejected:
 - Up to 1,000 games are retained per process; idle games expire after one hour.
 - `move_evaluate` accepts at most 10 moves per call.
 - Imported PGNs are limited to 1 MiB and 4,096 plies.
+- Custom FENs reject inconsistent castling/en-passant metadata and impossible
+  pawn or promotion material.
 - Stockfish accepts up to 32 active or queued analyses.
 - Lichess Explorer requests run one at a time and share 429 cooldowns.
 - HTTP retains at most 64 MCP sessions; sessions with no active request expire
@@ -277,9 +284,9 @@ still enforce request, connection, and authentication limits at the reverse
 proxy.
 
 MCP cancellation notifications, session deletion, and server shutdown propagate
-to Stockfish, Maia, and Lichess work. Stockfish stops safely at its UCI queue
-boundary, drains queued work during shutdown, and rejects new analysis until
-teardown completes. Lichess fetch and retry waits abort immediately. ONNX
+to body uploads and Stockfish, Maia, and Lichess work. Stockfish stops safely at
+its UCI queue boundary, drains queued work during shutdown, and rejects new
+analysis until teardown completes. Lichess fetch and retry waits abort immediately. ONNX
 Runtime cannot interrupt an inference already executing, so Maia discards its
 result after the native call returns. A raw HTTP disconnect alone is not a
 cancellation signal.

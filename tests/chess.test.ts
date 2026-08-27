@@ -99,6 +99,50 @@ test("custom positions reject capturable kings without rejecting a checked mover
   );
 });
 
+test("custom positions validate castling and en passant metadata", () => {
+  for (const fen of [
+    "4k3/8/8/8/8/8/P7/4K3 w KQkq - 0 1",
+    "4k3/8/8/8/8/8/P7/R3K3 w K - 0 1",
+    "4k3/8/8/8/8/8/P7/4K2R w Q - 0 1",
+    "4k3/8/8/3P4/8/8/P7/4K3 w - e6 0 1",
+    "4k3/4p3/8/3Pp3/8/8/P7/4K3 w - e6 0 1",
+    "4k3/8/8/3Pp3/8/8/P7/4K3 w - e6 1 1",
+  ]) {
+    assert.throws(
+      () => assertLegalPosition(new Chess(fen)),
+      (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+    );
+  }
+
+  assert.doesNotThrow(() =>
+    assertLegalPosition(
+      new Chess("r3k2r/8/8/8/8/8/P7/R3K2R w KQkq - 0 1"),
+    ),
+  );
+  assert.doesNotThrow(() =>
+    assertLegalPosition(
+      new Chess("4k3/8/8/3Pp3/8/8/P7/4K3 w - e6 0 1"),
+    ),
+  );
+});
+
+test("custom positions reject impossible pawn and promotion material", () => {
+  for (const fen of [
+    "4k3/pppppppp/p7/8/8/8/PPPPPPPP/4K3 w - - 0 1",
+    "4k3/8/8/8/8/8/PPPPPPPP/3QKQ2 w - - 0 1",
+  ]) {
+    assert.throws(
+      () => assertLegalPosition(new Chess(fen)),
+      (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+    );
+  }
+  assert.doesNotThrow(() =>
+    assertLegalPosition(
+      new Chess("4k3/8/8/8/8/8/PPPPPPP1/3QKQ2 w - - 0 1"),
+    ),
+  );
+});
+
 test("stateOf reports the typed public state", () => {
   const chess = new Chess();
   chess.move("e4");
@@ -324,6 +368,18 @@ test("parseImportedPgn enforces SetUp and FEN pairing", () => {
     );
   }
   assert.doesNotThrow(() => parseImportedPgn('[SetUp "0"]\n\n*'));
+});
+
+test("parseImportedPgn canonicalizes SetUp and FEN header casing", () => {
+  const imported = parseImportedPgn(
+    '[setup "1"]\n[fen "4k3/8/8/8/8/8/P7/4K3 w - - 0 1"]\n\n*',
+  );
+  const exported = pgnOf(imported);
+
+  assert.match(exported, /\[SetUp "1"\]/);
+  assert.match(exported, /\[FEN "/);
+  assert.doesNotMatch(exported, /\[(?:setup|fen) "/);
+  assert.doesNotThrow(() => parseImportedPgn(exported));
 });
 
 test("parseImportedPgn rejects illegal setup positions", () => {

@@ -134,6 +134,21 @@ function validatePgnSetup(pgn: string): void {
   }
 }
 
+function canonicalizeSetupHeaders(chess: Chess): void {
+  const headers = chess.getHeaders();
+  for (const canonical of ["SetUp", "FEN"] as const) {
+    const entry = Object.entries(headers).find(
+      ([key]) => key.toLowerCase() === canonical.toLowerCase(),
+    );
+    for (const key of Object.keys(headers)) {
+      if (key !== canonical && key.toLowerCase() === canonical.toLowerCase()) {
+        chess.removeHeader(key);
+      }
+    }
+    if (entry) chess.setHeader(canonical, entry[1]);
+  }
+}
+
 function validateResultForPosition(chess: Chess, result: PgnResult | undefined): void {
   if (result === undefined) return;
 
@@ -181,6 +196,7 @@ export function parseImportedPgn(pgn: string): Chess {
   } catch {
     throw new ChessError("INVALID_PGN", "invalid or illegal PGN");
   }
+  canonicalizeSetupHeaders(chess);
   assertSafeFenCounters(chess.fen());
   assertLegalPosition(chess);
   if (chess.history().length > MAX_PGN_PLIES) {

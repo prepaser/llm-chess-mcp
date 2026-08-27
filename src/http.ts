@@ -78,6 +78,7 @@ type HttpLimits = Required<
 >;
 
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"] as const;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const DEFAULT_LIMITS: HttpLimits = {
   maxSessions: 64,
   sessionIdleTtlMs: 30 * 60 * 1_000,
@@ -166,12 +167,21 @@ function positiveInteger(name: string, value: number): void {
   }
 }
 
+function timerDelay(name: string, value: number): void {
+  positiveInteger(name, value);
+  if (!Number.isSafeInteger(value) || value > MAX_TIMER_DELAY_MS) {
+    throw new RangeError(
+      `${name} must be a safe integer between 1 and ${MAX_TIMER_DELAY_MS}`,
+    );
+  }
+}
+
 function resolveLimits(options: HttpServerOptions): HttpLimits {
   if (options.bodyTimeoutMs !== undefined) {
-    positiveInteger("bodyTimeoutMs", options.bodyTimeoutMs);
+    timerDelay("bodyTimeoutMs", options.bodyTimeoutMs);
   }
   if (options.requestTimeoutMs !== undefined) {
-    positiveInteger("requestTimeoutMs", options.requestTimeoutMs);
+    timerDelay("requestTimeoutMs", options.requestTimeoutMs);
   }
   const limits: HttpLimits = {
     maxSessions: options.maxSessions ?? DEFAULT_LIMITS.maxSessions,
@@ -195,6 +205,15 @@ function resolveLimits(options: HttpServerOptions): HttpLimits {
       options.keepAliveTimeoutMs ?? DEFAULT_LIMITS.keepAliveTimeoutMs,
   };
   for (const [name, value] of Object.entries(limits)) positiveInteger(name, value);
+  for (const name of [
+    "sessionSweepIntervalMs",
+    "headersTimeoutMs",
+    "bodyTimeoutMs",
+    "socketTimeoutMs",
+    "keepAliveTimeoutMs",
+  ] as const) {
+    timerDelay(name, limits[name]);
+  }
   if (limits.maxConcurrentPostsPerSession > limits.maxConcurrentPosts) {
     throw new RangeError(
       "maxConcurrentPostsPerSession must not exceed maxConcurrentPosts",
@@ -237,6 +256,7 @@ function readPostBody(
   req: IncomingMessage,
   limit: number,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<ParsedBody> {
   const declaredLength = declaredBodyLength(req);
   if (Number.isNaN(declaredLength)) {
@@ -262,6 +282,7 @@ function readPostBody(
       req.off("end", onEnd);
       req.off("aborted", onAborted);
       req.off("error", onError);
+      signal?.removeEventListener("abort", onCancelled);
       resolve(result);
     };
     const onData = (chunk: Buffer): void => {
@@ -282,10 +303,16 @@ function readPostBody(
     };
     const onAborted = (): void => finish({ ok: false, status: 400, message: "request aborted" });
     const onError = (): void => finish({ ok: false, status: 400, message: "request body read failed" });
+    const onCancelled = (): void => {
+      finish({ ok: false, status: 400, message: "MCP session closed" });
+      req.destroy(signal?.reason instanceof Error ? signal.reason : undefined);
+    };
     req.on("data", onData);
     req.once("end", onEnd);
     req.once("aborted", onAborted);
     req.once("error", onError);
+    if (signal?.aborted) onCancelled();
+    else signal?.addEventListener("abort", onCancelled, { once: true });
   });
 }
 
@@ -324,16 +351,22 @@ async function parsePostBody(
   req: IncomingMessage,
   limit: number,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<ParsedBody> {
-  const body = await readPostBody(req, limit, timeoutMs);
-  if (!body.ok) return body;
+  const declaredLength = declaredBodyLength(req);
+  if (Number.isNaN(declaredLength)) {
+    return { ok: false, status: 400, message: "invalid Content-Length" };
+  }
+  if (declaredLength !== null && declaredLength > limit) {
+    return { ok: false, status: 413, message: "request body too large" };
+  }
   if (!isJsonContentType(req)) {
     return { ok: false, status: 415, message: "Content-Type must be application/json" };
   }
   if (hasUnsupportedContentEncoding(req)) {
     return { ok: false, status: 415, message: "Content-Encoding must be identity" };
   }
-  return body;
+  return readPostBody(req, limit, timeoutMs, signal);
 }
 
 export async function serveHttp(
@@ -398,8 +431,14 @@ export async function serveHttp(
     req: IncomingMessage,
     res: ServerResponse,
     work: (body: unknown) => Promise<void>,
+    signal?: AbortSignal,
   ): Promise<void> => {
-    const body = await parsePostBody(req, limits.maxRequestBodyBytes, limits.bodyTimeoutMs);
+    const body = await parsePostBody(
+      req,
+      limits.maxRequestBodyBytes,
+      limits.bodyTimeoutMs,
+      signal,
+    );
     if (!body.ok) {
       closeWithError(req, res, body.status, body.message);
       return;
@@ -471,23 +510,31 @@ export async function serveHttp(
         res,
         () =>
           sessions.withActive(session, () =>
-            withParsedPostBody(req, res, (body) =>
-              session.transport.handleRequest(req, res, body),
+            withParsedPostBody(
+              req,
+              res,
+              (body) => session.transport.handleRequest(req, res, body),
+              session.abort.signal,
             ),
           ),
         (rejection) =>
           sessions.withActive(session, () =>
-            withParsedPostBody(req, res, (body) => {
-              if (isCancellationPostBody(body)) {
-                return session.transport.handleRequest(req, res, body);
-              }
-              if (rejection === 429) {
-                closeWithError(req, res, 429, "MCP session request limit reached", { "retry-after": "1" });
-              } else {
-                closeWithError(req, res, 503, "server request limit reached", { "retry-after": "1" });
-              }
-              return Promise.resolve();
-            }),
+            withParsedPostBody(
+              req,
+              res,
+              (body) => {
+                if (isCancellationPostBody(body)) {
+                  return session.transport.handleRequest(req, res, body);
+                }
+                if (rejection === 429) {
+                  closeWithError(req, res, 429, "MCP session request limit reached", { "retry-after": "1" });
+                } else {
+                  closeWithError(req, res, 503, "server request limit reached", { "retry-after": "1" });
+                }
+                return Promise.resolve();
+              },
+              session.abort.signal,
+            ),
           ),
       );
       return;

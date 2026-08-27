@@ -18,6 +18,9 @@ test("HTTP configuration defaults and shared address rules stay stable", () => {
   assert.equal(isWildcardHttpBindHost("[::]"), true);
   assert.equal(isWildcardHttpBindHost("[0:0:0:0:0:0:0:0]"), true);
   assert.equal(isWildcardHttpBindHost("0:0:0:0:0:0:0:0"), true);
+  assert.equal(isWildcardHttpBindHost("[::ffff:0.0.0.0]"), true);
+  assert.equal(isWildcardHttpBindHost("0:0:0:0:0:ffff:0:0"), true);
+  assert.equal(isWildcardHttpBindHost("[::ffff:127.0.0.1]"), false);
   assert.equal(isWildcardHttpBindHost("127.0.0.1"), false);
 
   assert.equal(canonicalHttpHostname("EXAMPLE.COM"), "example.com");

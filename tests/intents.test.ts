@@ -170,6 +170,61 @@ test("aborts sibling candidate sources after a fatal source failure", async () =
   assert.equal(explorerCalls, 0);
 });
 
+test("aborts candidate sources after fatal Explorer dependency failures", async () => {
+  for (const stage of ["enabled", "reason"] as const) {
+    const failure = new Error(`Explorer ${stage} failed`);
+    const aborts: unknown[] = [];
+    let resolveStopped!: () => void;
+    let stopped = 0;
+    const allStopped = new Promise<void>((resolve) => {
+      resolveStopped = resolve;
+    });
+    const waitForAbort = async (signal?: AbortSignal): Promise<never> =>
+      await new Promise((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => {
+            aborts.push(signal.reason);
+            stopped += 1;
+            if (stopped === 2) resolveStopped();
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      });
+    const computeCandidates = createCandidateComputation({
+      analyze: async (_fen, _depth, _multipv, signal) =>
+        await waitForAbort(signal),
+      humanMoveDistribution: async (_chess, _elo, _opponent, _topN, signal) =>
+        await waitForAbort(signal),
+      explorerEnabled: () => {
+        if (stage === "enabled") throw failure;
+        return true;
+      },
+      openingExplorer: async () => {
+        throw new Error("optional failure");
+      },
+      explorerFailureReason: () => {
+        throw failure;
+      },
+    });
+
+    await assert.rejects(
+      computeCandidates(
+        new Chess(),
+        1500,
+        1,
+        1,
+        1,
+        { db: "lichess", speeds: [], ratings: [] },
+      ),
+      (error: unknown) => error === failure,
+    );
+    await allStopped;
+    assert.deepEqual(aborts, [failure, failure]);
+  }
+});
+
 test("rejects unsafe derived candidate counts and evaluation spreads", () => {
   const max = Number.MAX_SAFE_INTEGER;
   assert.throws(

@@ -1,29 +1,34 @@
 import { z } from "zod/v4";
 import {
   awaitWithAbort,
+  ExplorerError,
   explorerError,
   EXPLORER_ATTEMPT_TIMEOUT_MS,
+  EXPLORER_MAX_MOVES,
+  EXPLORER_MAX_RESPONSE_BYTES,
+  EXPLORER_MAX_STRING_LENGTH,
   throwIfAborted,
 } from "./explorer-core.js";
 import type { ExplorerResult } from "./explorer-core.js";
 
 const countSchema = z.number().int().nonnegative();
+const stringSchema = z.string().min(1).max(EXPLORER_MAX_STRING_LENGTH);
 const responseSchema = z.object({
   white: countSchema,
   draws: countSchema,
   black: countSchema,
   moves: z.array(
     z.object({
-      uci: z.string().min(1),
-      san: z.string().min(1),
+      uci: stringSchema,
+      san: stringSchema,
       white: countSchema,
       draws: countSchema,
       black: countSchema,
       averageRating: z.number().int().nonnegative().optional(),
     }),
-  ),
+  ).max(EXPLORER_MAX_MOVES),
   opening: z
-    .object({ eco: z.string().min(1), name: z.string().min(1) })
+    .object({ eco: stringSchema, name: stringSchema })
     .nullable()
     .optional(),
 });
@@ -41,6 +46,21 @@ function sumCounts(...counts: number[]): number {
   return total;
 }
 
+async function cancelInvalidResponse(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  cleanupSignal?: AbortSignal,
+): Promise<never> {
+  const error = explorerError("invalid_response");
+  try {
+    const cancellation = reader.cancel(error);
+    void cancellation.catch(() => {});
+    const deadline =
+      cleanupSignal ?? AbortSignal.timeout(EXPLORER_ATTEMPT_TIMEOUT_MS);
+    await awaitWithAbort(deadline, () => cancellation).catch(() => {});
+  } catch {}
+  throw error;
+}
+
 async function readJson(
   response: Response,
   signal: AbortSignal,
@@ -50,17 +70,34 @@ async function readJson(
   const reader = response.body?.getReader();
   if (!reader) return JSON.parse("");
 
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let bytes = 0;
   let text = "";
   try {
     for (;;) {
       const { done, value } = await awaitWithAbort(signal, () => reader.read());
       if (done) break;
-      text += decoder.decode(value, { stream: true });
+      bytes += value.byteLength;
+      if (bytes > EXPLORER_MAX_RESPONSE_BYTES) {
+        await cancelInvalidResponse(reader, cleanupSignal);
+      }
+      try {
+        text += decoder.decode(value, { stream: true });
+      } catch {
+        await cancelInvalidResponse(reader, cleanupSignal);
+      }
     }
-    text += decoder.decode();
+    try {
+      text += decoder.decode();
+    } catch {
+      throw explorerError("invalid_response");
+    }
     return JSON.parse(text);
   } catch (cause) {
+    if (cause instanceof ExplorerError) {
+      throwIfAborted(callerSignal);
+      throw cause;
+    }
     if (signal.aborted) {
       const cancellation = reader.cancel(signal.reason);
       if (callerSignal?.aborted) {
@@ -93,6 +130,7 @@ export async function normalizeExplorerResponse(
     );
   } catch (cause) {
     throwIfAborted(options.callerSignal);
+    if (cause instanceof ExplorerError) throw cause;
     if (signal.aborted || cause instanceof TypeError) {
       throw explorerError(signal.aborted ? "timeout" : "network");
     }

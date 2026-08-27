@@ -118,6 +118,17 @@ test("GameStore rejects positions where the inactive king is capturable", () => 
   assert.equal(store.gameCount(), 0);
 });
 
+test("GameStore rejects invalid castling and en passant state before snapshotting", () => {
+  const store = new GameStore({ createId: () => "game" });
+  for (const fen of [
+    "4k3/8/8/8/8/8/P7/4K3 w KQkq - 0 1",
+    "4k3/8/8/3P4/8/8/P7/4K3 w - e6 0 1",
+  ]) {
+    expectChessError("INVALID_FEN", () => store.createGame(fen));
+  }
+  assert.equal(store.gameCount(), 0);
+});
+
 test("GameStore owns chess state and returns isolated snapshots", () => {
   const store = new GameStore({ createId: () => "game" });
   const source = new Chess("7k/P7/8/8/8/8/8/K7 w - - 0 1");

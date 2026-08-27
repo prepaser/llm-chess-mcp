@@ -39,12 +39,28 @@ function asObject(value) {
 }
 
 async function command(command, args, cwd) {
-  return execFile(command, args, {
+  const invocation =
+    process.platform === "win32" && command.toLowerCase().endsWith(".cmd")
+      ? {
+          command: process.env.ComSpec ?? "cmd.exe",
+          args: ["/d", "/s", "/c", command, ...args],
+        }
+      : { command, args };
+  return execFile(invocation.command, invocation.args, {
     cwd,
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
     timeout: 300_000,
   });
+}
+
+function serverInvocation(bin, packageRoot, args = []) {
+  return process.platform === "win32"
+    ? {
+        command: process.execPath,
+        args: [join(packageRoot, "dist", "index.js"), ...args],
+      }
+    : { command: bin, args };
 }
 
 async function call(client, name, args) {
@@ -158,9 +174,11 @@ function serverEnv() {
   return env;
 }
 
-async function smoke(bin, cwd) {
+async function smoke(bin, packageRoot, cwd) {
+  const invocation = serverInvocation(bin, packageRoot);
   const transport = new StdioClientTransport({
-    command: bin,
+    command: invocation.command,
+    args: invocation.args,
     cwd,
     env: serverEnv(),
   });
@@ -243,13 +261,18 @@ function freePort() {
   });
 }
 
-async function smokeHttp(bin, cwd) {
+async function smokeHttp(bin, packageRoot, cwd) {
   const port = await freePort();
   const endpoint = `http://127.0.0.1:${port}/mcp`;
-  const child = spawn(bin, ["--transport", "http", "--port", String(port)], {
+  const invocation = serverInvocation(bin, packageRoot, [
+    "--transport",
+    "http",
+    "--port",
+    String(port),
+  ]);
+  const child = spawn(invocation.command, invocation.args, {
     cwd,
     env: serverEnv(),
-    shell: process.platform === "win32",
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stderr = "";
@@ -286,8 +309,11 @@ async function smokeHttp(bin, cwd) {
     await client.close();
     child.kill("SIGTERM");
     const [code, signal] = await exited;
-    assert.equal(code, 0, stderr);
-    assert.equal(signal, null);
+    assert.ok(
+      (code === 0 && signal === null) ||
+        (process.platform === "win32" && code === null && signal === "SIGTERM"),
+      stderr,
+    );
   } finally {
     await client.close().catch(() => {});
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
@@ -326,6 +352,7 @@ try {
   );
   await verifyPackageApi(install);
 
+  const packageRoot = join(install, "node_modules", "llm-chess-mcp");
   const bin = join(
     install,
     "node_modules",
@@ -336,8 +363,8 @@ try {
     bin,
     process.platform === "win32" ? constants.F_OK : constants.X_OK,
   );
-  await smoke(bin, workspace);
-  await smokeHttp(bin, workspace);
+  await smoke(bin, packageRoot, workspace);
+  await smokeHttp(bin, packageRoot, workspace);
   console.log("package smoke passed");
 } finally {
   await rm(workspace, { recursive: true, force: true });

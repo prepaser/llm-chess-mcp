@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { dirname, sep } from "node:path";
 import type { SfLine } from "../domain.js";
 import { mergeAnalysisInfo, parseAnalysisInfo } from "./stockfish-info.js";
 
@@ -67,6 +68,11 @@ type QueuedAnalysis = {
   run: () => Promise<void>;
 };
 
+type EngineTermination = {
+  promise: Promise<void>;
+  start: () => void;
+};
+
 const DEFAULT_FLAVOR: StockfishFlavor = "lite-single";
 const FLAVORS = new Set<string>(STOCKFISH_FLAVORS);
 const DEFAULT_TIMEOUTS: Timeouts = {
@@ -88,7 +94,29 @@ export function resolveStockfishFlavor(value?: string): StockfishFlavor {
 }
 
 function loadStockfish(): StockfishInit {
-  return require("stockfish") as StockfishInit;
+  const entry = require.resolve("stockfish");
+  const packageRoot = dirname(entry) + sep;
+  const packageEntry = (id: string) => id === entry || id.startsWith(packageRoot);
+  return (flavor, callback) => {
+    const cached = new Map(
+      Object.entries(require.cache).filter(
+        (entry): entry is [string, NodeModule] =>
+          packageEntry(entry[0]) && entry[1] !== undefined,
+      ),
+    );
+    for (const id of Object.keys(require.cache)) {
+      if (packageEntry(id)) delete require.cache[id];
+    }
+    try {
+      const init = require(entry) as StockfishInit;
+      return init(flavor, callback);
+    } finally {
+      for (const id of Object.keys(require.cache)) {
+        if (packageEntry(id)) delete require.cache[id];
+      }
+      for (const [id, module] of cached) require.cache[id] = module;
+    }
+  };
 }
 
 function asError(error: unknown): Error {
@@ -111,8 +139,7 @@ export class Stockfish {
   private teardownBarrier: Promise<void> = Promise.resolve();
   private teardownPending = 0;
   private readonly drainWaiters = new Set<() => void>();
-  private readonly terminations = new WeakMap<StockfishEngine, Promise<void>>();
-  private readonly quitSent = new WeakSet<StockfishEngine>();
+  private readonly terminations = new WeakMap<StockfishEngine, EngineTermination>();
   private readonly initEngine: StockfishInit | undefined;
   private readonly configuredFlavor: string | undefined;
   private readonly maxQueue: number;
@@ -555,33 +582,62 @@ export class Stockfish {
 
   private terminate(engine: StockfishEngine): Promise<void> {
     engine.listener = () => {};
-    if (!this.quitSent.has(engine)) {
-      try {
-        engine.sendCommand("quit");
-        this.quitSent.add(engine);
-      } catch {}
-    }
     const existing = this.terminations.get(engine);
-    if (existing) return existing;
+    if (existing) {
+      existing.start();
+      return existing.promise;
+    }
 
     this.teardownPending++;
-    const termination = new Promise<void>((resolve) => {
+    let resolve!: () => void;
+    const completion = new Promise<void>((res) => {
+      resolve = res;
+    });
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      resolve();
+    };
+    const promise = completion.finally(() => {
+      this.teardownPending--;
+    });
+    let quitSent = false;
+    let fallback: NodeJS.Timeout | null = null;
+    const stopEngine = () => {
       setImmediate(() => {
         engine.listener = () => {};
         try {
           engine.terminate();
         } catch {}
-        resolve();
+        finish();
       });
-    }).finally(() => {
-      this.teardownPending--;
-    });
+    };
+    const termination: EngineTermination = {
+      promise,
+      start: () => {
+        if (quitSent || typeof engine.sendCommand !== "function") return;
+        quitSent = true;
+        if (fallback) clearTimeout(fallback);
+        fallback = null;
+        engine.listener = () => {};
+        try {
+          engine.sendCommand("quit");
+        } catch {}
+        stopEngine();
+      },
+    };
+    fallback = setTimeout(() => {
+      fallback = null;
+      stopEngine();
+    }, this.timeouts.stopGrace);
     this.terminations.set(engine, termination);
     this.teardownBarrier = Promise.all([
       this.teardownBarrier,
-      termination,
+      promise,
     ]).then(() => undefined);
-    return termination;
+    termination.start();
+    return promise;
   }
 
   private cancelQueued(error: Error): void {

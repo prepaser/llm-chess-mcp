@@ -101,6 +101,20 @@ test("analysis info parser merges partial updates and resets scores", () => {
     scoreCp: 42,
     scoreMate: null,
   });
+  assert.deepEqual(parseAnalysisInfo("info depth 0 score mate 0"), {
+    multipv: 1,
+    score: { cp: null, mate: 0 },
+  });
+  assert.deepEqual(parseAnalysisInfo("info depth 0 score cp 0"), {
+    multipv: 1,
+    score: { cp: 0, mate: null },
+  });
+  assert.equal(parseAnalysisInfo("info depth 1 score cp 0"), null);
+  assert.equal(parseAnalysisInfo("information depth 0 score cp 0"), null);
+  assert.equal(
+    parseAnalysisInfo("info depth 0 multipv invalid score mate 0"),
+    null,
+  );
   assert.equal(
     parseAnalysisInfo("info depth 1 multipv invalid score cp 42 pv e2e4"),
     null,
@@ -157,6 +171,73 @@ test("initialization times out when its callback never arrives", async () => {
   await assert.rejects(stockfish.analyze("fen", 1, 1), /init timeout/);
   await nextImmediate();
   assert.equal(current.terminations, 1);
+});
+
+test("quit waits for a cold dependency before terminating it", async () => {
+  let initialized!: () => void;
+  let initializationStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    initializationStarted = resolve;
+  });
+  const commands: string[] = [];
+  let terminations = 0;
+  const current = {
+    listener: null,
+    terminate() {
+      terminations++;
+    },
+  } as unknown as StockfishEngine;
+  const stockfish = new Stockfish({
+    init: (_flavor, callback) => {
+      initialized = () => {
+        current.sendCommand = (command) => commands.push(command);
+        callback(null, current);
+      };
+      initializationStarted();
+      return current;
+    },
+    timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 10 },
+  });
+
+  const active = stockfish.analyze("fen", 1, 1);
+  const outcome = active.catch((error: unknown) => error);
+  await started;
+  const quitting = stockfish.quit();
+  let quitSettled = false;
+  void quitting.then(() => {
+    quitSettled = true;
+  });
+  await nextImmediate();
+  assert.equal(quitSettled, false);
+  assert.equal(terminations, 0);
+
+  initialized();
+  await quitting;
+  assert.match(String(await outcome), /stockfish quit/);
+  assert.deepEqual(commands, ["quit"]);
+  assert.equal(terminations, 1);
+  assert.notEqual(current.listener, null);
+});
+
+test("cold dependency teardown is bounded when readiness never arrives", async () => {
+  let terminations = 0;
+  const current = {
+    listener: null,
+    terminate() {
+      terminations++;
+    },
+  } as unknown as StockfishEngine;
+  const stockfish = new Stockfish({
+    init: () => current,
+    timeouts: { init: 5, handshake: 50, analyze: 50, stopGrace: 5 },
+  });
+
+  await assert.rejects(stockfish.analyze("fen", 1, 1), /init timeout/);
+  const started = performance.now();
+  await stockfish.quit();
+  assert.ok(performance.now() - started < 100);
+  assert.equal(terminations, 1);
+  assert.notEqual(current.listener, null);
 });
 
 test("synchronous initialization callback completes the handshake", async () => {
@@ -681,13 +762,26 @@ test(
   async () => {
     const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
     const source = `
+      import { createRequire } from "node:module";
       import { Stockfish } from ${JSON.stringify(moduleUrl)};
+      const consumerRequire = createRequire(import.meta.url);
+      const cachedStockfish = consumerRequire("stockfish");
       const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
       const stockfish = new Stockfish({
         flavor: "lite-single",
         timeouts: { init: 5000, handshake: 5000, analyze: 5000, stopGrace: 500 },
       });
       await stockfish.analyze(fen, 1, 1);
+      const checkmate = await stockfish.analyze(
+        "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1",
+        1,
+        1,
+      );
+      const stalemate = await stockfish.analyze(
+        "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1",
+        1,
+        1,
+      );
       const active = stockfish.analyze(fen, 22, 1);
       await new Promise((resolve) => setTimeout(resolve, 20));
       const started = performance.now();
@@ -698,15 +792,104 @@ test(
       await stockfish.quit();
       const elapsed = performance.now() - started;
       await new Promise((resolve) => setTimeout(resolve, 100));
-      process.stdout.write(JSON.stringify({ outcome: await outcome, elapsed }));
+      process.stdout.write(JSON.stringify({
+        outcome: await outcome,
+        elapsed,
+        checkmate,
+        stalemate,
+        cacheIdentity: cachedStockfish === consumerRequire("stockfish"),
+      }));
     `;
     const { stdout } = await execFileAsync(
       process.execPath,
       ["--import", "tsx", "--input-type=module", "--eval", source],
       { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
     );
-    const result = JSON.parse(stdout) as { outcome: string; elapsed: number };
+    const result = JSON.parse(stdout) as {
+      outcome: string;
+      elapsed: number;
+      checkmate: unknown;
+      stalemate: unknown;
+      cacheIdentity: boolean;
+    };
     assert.match(result.outcome, /stockfish quit/);
     assert.ok(result.elapsed < 2_000, `quit took ${result.elapsed}ms`);
+    assert.equal(result.cacheIdentity, true);
+    assert.deepEqual(result.checkmate, [
+      {
+        multipv: 1,
+        scoreCp: null,
+        scoreMate: 0,
+        wdl: null,
+        pv: [],
+      },
+    ]);
+    assert.deepEqual(result.stalemate, [
+      {
+        multipv: 1,
+        scoreCp: 0,
+        scoreMate: null,
+        wdl: null,
+        pv: [],
+      },
+    ]);
+  },
+);
+
+test(
+  "real worker-backed init timeout releases its MessagePort",
+  { timeout: 15_000 },
+  async () => {
+    const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+    const source = `
+      void (async () => {
+        const { Stockfish } = await import(${JSON.stringify(moduleUrl)});
+        const stockfish = new Stockfish({
+          flavor: "lite",
+          timeouts: { init: 1, handshake: 5000, analyze: 5000, stopGrace: 5000 },
+        });
+        const outcome = await stockfish
+          .analyze(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            1,
+            1,
+          )
+          .then(() => "resolved", (error) => String(error));
+        await stockfish.quit();
+
+        const cold = new Stockfish({
+          flavor: "lite",
+          timeouts: { init: 5000, handshake: 5000, analyze: 5000, stopGrace: 5000 },
+        });
+        const active = cold
+          .analyze(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            1,
+            1,
+          )
+          .then(() => "resolved", (error) => String(error));
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        await cold.quit();
+        const quitOutcome = await active;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const handles = process
+          ._getActiveHandles()
+          .map((handle) => handle.constructor?.name);
+        process.stdout.write(JSON.stringify({ outcome, quitOutcome, handles }));
+      })();
+    `;
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ["--import", "tsx", "--eval", source],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
+    );
+    const result = JSON.parse(stdout) as {
+      outcome: string;
+      quitOutcome: string;
+      handles: string[];
+    };
+    assert.match(result.outcome, /stockfish init timeout/);
+    assert.match(result.quitOutcome, /stockfish quit/);
+    assert.equal(result.handles.includes("MessagePort"), false);
   },
 );

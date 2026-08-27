@@ -326,7 +326,7 @@ export function createCandidateComputation(
           workSignal,
         ),
       ),
-      explorer(),
+      fatal(explorer),
     ]);
     return candidateSetFromData(chess, elo, sfLines, maiaMoves, lichessResult);
   };

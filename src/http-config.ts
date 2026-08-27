@@ -14,7 +14,8 @@ export function isWildcardHttpBindHost(host: string): boolean {
   const bindHost = bindHttpHost(host);
   const ipVersion = isIP(bindHost);
   if (ipVersion === 6) {
-    return new URL(`http://[${bindHost}]`).hostname === "[::]";
+    const canonical = new URL(`http://[${bindHost}]`).hostname;
+    return canonical === "[::]" || canonical === "[::ffff:0:0]";
   }
   if (ipVersion === 4) return bindHost === "0.0.0.0";
   try {

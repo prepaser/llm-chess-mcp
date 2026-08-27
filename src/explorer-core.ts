@@ -9,6 +9,9 @@ export const EXPLORER_MAX_ATTEMPTS = 2;
 export const EXPLORER_DEFAULT_RETRY_DELAY_MS = 250;
 export const EXPLORER_TOTAL_TIMEOUT_MS = 12_000;
 export const EXPLORER_RATE_LIMIT_COOLDOWN_MS = 60_000;
+export const EXPLORER_MAX_RESPONSE_BYTES = 1024 * 1024;
+export const EXPLORER_MAX_MOVES = 256;
+export const EXPLORER_MAX_STRING_LENGTH = 256;
 
 export class ExplorerError extends Error {
   readonly reason: ExplorerErrorKind;

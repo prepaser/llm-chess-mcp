@@ -4,6 +4,9 @@ import { Chess } from "chess.js";
 import {
   EXPLORER_ATTEMPT_TIMEOUT_MS,
   EXPLORER_DEFAULT_RETRY_DELAY_MS,
+  EXPLORER_MAX_MOVES,
+  EXPLORER_MAX_RESPONSE_BYTES,
+  EXPLORER_MAX_STRING_LENGTH,
   EXPLORER_RATE_LIMIT_COOLDOWN_MS,
   EXPLORER_TOTAL_TIMEOUT_MS,
   ExplorerError,
@@ -67,6 +70,9 @@ test("exports the exact supported speed and rating filters", () => {
   assert.deepEqual(LICHESS_RATINGS, [
     0, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2500,
   ]);
+  assert.equal(EXPLORER_MAX_RESPONSE_BYTES, 1024 * 1024);
+  assert.equal(EXPLORER_MAX_MOVES, 256);
+  assert.equal(EXPLORER_MAX_STRING_LENGTH, 256);
 });
 
 test("builds the request and maps a validated response", async () => {
@@ -136,6 +142,16 @@ test("rejects unsupported filters before fetching", async () => {
   );
   await assert.rejects(
     openingExplorer(new Chess(), "masters", ["rapid"], [], options(fetch)),
+    expectKind("invalid_input"),
+  );
+  await assert.rejects(
+    openingExplorer(
+      new Chess(),
+      "../player" as never,
+      [],
+      [],
+      options(fetch),
+    ),
     expectKind("invalid_input"),
   );
   assert.equal(calls, 0);
@@ -1183,6 +1199,97 @@ test("uses a wall clock for HTTP-date Retry-After", async () => {
   assert.deepEqual(delays, [1_000]);
 });
 
+test("accepts obsolete valid HTTP-date Retry-After forms", async () => {
+  const target = Date.parse("1994-11-06T08:49:37Z");
+  for (const retryAfter of [
+    "Sunday, 06-Nov-94 08:49:37 GMT",
+    "Sun Nov  6 08:49:37 1994",
+  ]) {
+    let now = 0;
+    let calls = 0;
+    const delays: number[] = [];
+    await openingExplorer(
+      new Chess(),
+      "lichess",
+      [],
+      [],
+      options(
+        async () => {
+          calls += 1;
+          return calls === 1
+            ? response(429, {}, { "Retry-After": retryAfter })
+            : response();
+        },
+        {
+          now: () => now,
+          wallNow: () => target - 1_000,
+          sleep: async (ms) => {
+            delays.push(ms);
+            now += ms;
+          },
+        },
+      ),
+    );
+    assert.deepEqual(delays, [1_000]);
+  }
+});
+
+test("interprets RFC 850 dates more than fifty years ahead as past", async () => {
+  const delays: number[] = [];
+  let calls = 0;
+  await openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(
+      async () => {
+        calls += 1;
+        return calls === 1
+          ? response(503, {}, {
+              "Retry-After": "Saturday, 31-Dec-77 00:00:00 GMT",
+            })
+          : response();
+      },
+      {
+        now: () => 0,
+        wallNow: () => Date.parse("2027-01-01T00:00:00Z"),
+        sleep: async (ms) => void delays.push(ms),
+      },
+    ),
+  );
+  assert.deepEqual(delays, [0]);
+});
+
+test("rejects HTTP dates with rollover or inconsistent weekdays", async () => {
+  const wallNow = Date.parse("2026-09-30T23:59:59Z");
+  for (const retryAfter of [
+    "Thu, 31 Sep 2026 00:00:00 GMT",
+    "Fri, 01 Oct 2026 00:00:00 GMT",
+  ]) {
+    let calls = 0;
+    await assert.rejects(
+      openingExplorer(
+        new Chess(),
+        "lichess",
+        [],
+        [],
+        options(
+          async () => {
+            calls += 1;
+            return calls === 1
+              ? response(429, {}, { "Retry-After": retryAfter })
+              : response();
+          },
+          { now: () => 0, wallNow: () => wallNow },
+        ),
+      ),
+      expectKind("rate_limited"),
+    );
+    assert.equal(calls, 1);
+  }
+});
+
 test("uses conservative cooldowns for malformed Retry-After values", async () => {
   for (const retryAfter of ["not-a-date", "-1", "1.5", "0x10", "1e2"]) {
     let calls = 0;
@@ -1290,4 +1397,137 @@ test("rejects unsafe derived explorer count sums", async () => {
       expectKind("invalid_response"),
     );
   }
+});
+
+test("cancels explorer bodies as soon as they exceed the byte limit", async () => {
+  let cancelled = false;
+  await assert.rejects(
+    openingExplorer(
+      new Chess(),
+      "lichess",
+      [],
+      [],
+      options(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  new Uint8Array(EXPLORER_MAX_RESPONSE_BYTES + 1),
+                );
+              },
+              cancel() {
+                cancelled = true;
+              },
+            }),
+          ),
+      ),
+    ),
+    expectKind("invalid_response"),
+  );
+  assert.equal(cancelled, true);
+});
+
+test("holds the explorer slot while oversized body cleanup is pending", async () => {
+  const limiter = createExplorerLimiter();
+  const attempt = new AbortController();
+  let calls = 0;
+  let beginCancel: (() => void) | undefined;
+  const cancellationStarted = new Promise<void>((resolve) => {
+    beginCancel = resolve;
+  });
+  const fetch: ExplorerFetch = async () => {
+    calls += 1;
+    if (calls > 1) return response();
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(EXPLORER_MAX_RESPONSE_BYTES + 1));
+        },
+        cancel() {
+          beginCancel?.();
+          return new Promise<void>(() => {});
+        },
+      }),
+    );
+  };
+  const requestOptions = options(fetch, {
+    limiter,
+    timeout: () =>
+      calls === 0 ? attempt.signal : AbortSignal.timeout(1_000),
+  });
+  const first = openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    requestOptions,
+  );
+  const second = openingExplorer(
+    new Chess(),
+    "masters",
+    [],
+    [],
+    requestOptions,
+  );
+
+  await cancellationStarted;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  assert.equal(limiter.pending, 1);
+
+  attempt.abort();
+  await assert.rejects(first, expectKind("invalid_response"));
+  await second;
+  assert.equal(calls, 2);
+});
+
+test("rejects oversized explorer move arrays and strings", async () => {
+  const move = validBody.moves[0];
+  for (const body of [
+    {
+      ...validBody,
+      moves: Array.from({ length: EXPLORER_MAX_MOVES + 1 }, () => move),
+    },
+    {
+      ...validBody,
+      opening: {
+        eco: "A00",
+        name: "x".repeat(EXPLORER_MAX_STRING_LENGTH + 1),
+      },
+    },
+  ]) {
+    await assert.rejects(
+      openingExplorer(
+        new Chess(),
+        "lichess",
+        [],
+        [],
+        options(async () => response(200, body)),
+      ),
+      expectKind("invalid_response"),
+    );
+  }
+});
+
+test("rejects malformed UTF-8 explorer JSON", async () => {
+  const prefix = new TextEncoder().encode(
+    '{"white":0,"draws":0,"black":0,"moves":[],"opening":{"eco":"A00","name":"',
+  );
+  const suffix = new TextEncoder().encode('"}}');
+  const bytes = new Uint8Array(prefix.length + suffix.length + 1);
+  bytes.set(prefix);
+  bytes[prefix.length] = 0xff;
+  bytes.set(suffix, prefix.length + 1);
+
+  await assert.rejects(
+    openingExplorer(
+      new Chess(),
+      "lichess",
+      [],
+      [],
+      options(async () => new Response(bytes)),
+    ),
+    expectKind("invalid_response"),
+  );
 });

@@ -55,13 +55,19 @@ function parseWdl(line: string): Wdl | undefined {
 }
 
 export function parseAnalysisInfo(line: string): AnalysisInfo | null {
-  if (!line.startsWith("info") || !line.includes(" multipv ")) return null;
+  if (line !== "info" && !line.startsWith("info ")) return null;
 
   const multipvToken = line.match(
     /multipv (?<value>\d+)(?=\s|$)/,
   )?.groups?.value;
-  if (!multipvToken) return null;
-  const multipv = parseInteger(multipvToken, 1, MAX_MULTIPV);
+  if (!multipvToken && line.includes(" multipv ")) return null;
+  const terminal =
+    line.includes(" depth 0 ") &&
+    / score (?:cp|mate) -?0(?=\s|$)/.test(line);
+  if (!multipvToken && !terminal) return null;
+  const multipv = multipvToken
+    ? parseInteger(multipvToken, 1, MAX_MULTIPV)
+    : 1;
   if (multipv === undefined) return null;
 
   const scoreToken = line.match(

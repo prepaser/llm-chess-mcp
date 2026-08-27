@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { connect } from "node:net";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 import {
   Client,
   StreamableHTTPClientTransport,
@@ -57,7 +58,7 @@ function httpRequest(
   options: {
     method?: string;
     headers?: Record<string, string>;
-    body?: string;
+    body?: string | Buffer;
   } = {},
 ): Promise<HttpResult> {
   return new Promise((resolve, reject) => {
@@ -157,6 +158,41 @@ function partialPost(url: string): Promise<{ destroy(): void }> {
       );
     });
     socket.once("error", reject);
+  });
+}
+
+function partialSessionPost(
+  url: string,
+  id: string,
+): Promise<{ closed: Promise<void>; destroy(): void }> {
+  return new Promise((resolve, reject) => {
+    const endpoint = new URL(url);
+    let ready = false;
+    const socket = connect(Number(endpoint.port), endpoint.hostname, () => {
+      socket.write(
+        [
+          "POST /mcp HTTP/1.1",
+          "Host: 127.0.0.1",
+          "Accept: application/json, text/event-stream",
+          "Content-Type: application/json",
+          `Mcp-Session-Id: ${id}`,
+          "Mcp-Protocol-Version: 2025-11-25",
+          "Content-Length: 100",
+          "",
+          "{",
+        ].join("\r\n"),
+        () => {
+          ready = true;
+          resolve({
+            closed: new Promise((done) => socket.once("close", done)),
+            destroy: () => socket.destroy(),
+          });
+        },
+      );
+    });
+    socket.on("error", (error) => {
+      if (!ready) reject(error);
+    });
   });
 }
 
@@ -469,6 +505,19 @@ test("Streamable HTTP validates resource limits before listening", async () => {
     ),
     /requestTimeoutMs must be a positive integer/,
   );
+  for (const options of [
+    { sessionSweepIntervalMs: 2_147_483_648 },
+    { headersTimeoutMs: 2_147_483_648 },
+    { bodyTimeoutMs: 2_147_483_648 },
+    { requestTimeoutMs: 2_147_483_648 },
+    { socketTimeoutMs: 2_147_483_648 },
+    { keepAliveTimeoutMs: 2_147_483_648 },
+  ]) {
+    await assert.rejects(
+      serveHttp({ port: 0, ...options }, fakeServices(new GameStore())),
+      /must be a safe integer between 1 and 2147483647/,
+    );
+  }
 
   const independentTimeouts = await serveHttp(
     { port: 0, headersTimeoutMs: 2, bodyTimeoutMs: 1 },
@@ -640,7 +689,7 @@ test("Streamable HTTP bounds declared and chunked request bodies", async (t) => 
   const wrongContentType = await httpRequest(http.url, {
     method: "POST",
     headers: { "content-type": "text/plain" },
-    body: "{}",
+    body: "{",
   });
   assert.equal(wrongContentType.status, 415);
   assert.match(wrongContentType.body, /Content-Type must be application\/json/);
@@ -648,7 +697,7 @@ test("Streamable HTTP bounds declared and chunked request bodies", async (t) => 
   const encoded = await httpRequest(http.url, {
     method: "POST",
     headers: { ...INIT_HEADERS, "content-encoding": "gzip" },
-    body: "{}",
+    body: gzipSync(initializeBody()),
   });
   assert.equal(encoded.status, 415);
   assert.match(encoded.body, /Content-Encoding must be identity/);
@@ -724,6 +773,9 @@ test("Streamable HTTP accepts bracketed IPv6 bind hosts", async (t) => {
     "[0:0:0:0:0:0:0:0]",
     "0:0:0:0:0:0:0:0",
     "0x0",
+    "[::ffff:0.0.0.0]",
+    "::ffff:0.0.0.0",
+    "[0:0:0:0:0:ffff:0:0]",
   ]) {
     await assert.rejects(
       serveHttp({ host, port: 0 }, fakeServices(new GameStore())),
@@ -1154,6 +1206,62 @@ test("Streamable HTTP session deletion cancels active tools", async (t) => {
     assert.ok(outcome);
   }
   await waitFor(() => http.sessionCount() === 0);
+});
+
+test("Streamable HTTP session deletion aborts partial session uploads", async (t) => {
+  const http = await serveHttp(
+    {
+      port: 0,
+      maxConcurrentPosts: 1,
+      maxConcurrentPostsPerSession: 1,
+      bodyTimeoutMs: 10_000,
+    },
+    fakeServices(new GameStore()),
+  );
+  let upload: Awaited<ReturnType<typeof partialSessionPost>> | undefined;
+  t.after(async () => {
+    upload?.destroy();
+    await http.close();
+  });
+
+  const initialized = await httpRequest(http.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: initializeBody(),
+  });
+  assert.equal(initialized.status, 200);
+  assert.ok(initialized.sessionId);
+  upload = await partialSessionPost(http.url, initialized.sessionId);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const saturated = await httpRequest(http.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: initializeBody(2),
+  });
+  assert.equal(saturated.status, 503);
+
+  const terminated = await httpRequest(http.url, {
+    method: "DELETE",
+    headers: {
+      "mcp-session-id": initialized.sessionId,
+      "mcp-protocol-version": "2025-11-25",
+    },
+  });
+  assert.equal(terminated.status, 200);
+  await Promise.race([
+    upload.closed,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("partial session upload stayed open")), 1_000),
+    ),
+  ]);
+
+  const admitted = await httpRequest(http.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: initializeBody(3),
+  });
+  assert.equal(admitted.status, 200);
 });
 
 test("Streamable HTTP does not reap a session during an active POST", async (t) => {
