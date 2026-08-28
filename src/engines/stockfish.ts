@@ -603,8 +603,11 @@ export class Stockfish {
       this.teardownPending--;
     });
     let quitSent = false;
+    let terminateScheduled = false;
     let fallback: NodeJS.Timeout | null = null;
     const stopEngine = () => {
+      if (terminateScheduled) return;
+      terminateScheduled = true;
       setImmediate(() => {
         engine.listener = () => {};
         try {

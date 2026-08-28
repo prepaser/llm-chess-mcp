@@ -672,6 +672,17 @@ export async function serveHttp(
       });
     },
   );
+  const keepAliveTimeoutBuffer =
+    "keepAliveTimeoutBuffer" in server &&
+    typeof server.keepAliveTimeoutBuffer === "number"
+      ? server.keepAliveTimeoutBuffer
+      : 0;
+  const maxKeepAliveTimeoutMs = MAX_TIMER_DELAY_MS - keepAliveTimeoutBuffer;
+  if (limits.keepAliveTimeoutMs > maxKeepAliveTimeoutMs) {
+    throw new RangeError(
+      `keepAliveTimeoutMs must not exceed ${maxKeepAliveTimeoutMs} on this Node.js runtime`,
+    );
+  }
   server.on("connection", (socket) => {
     connections.add(socket);
     socket.setTimeout(limits.headersTimeoutMs, () => socket.destroy());

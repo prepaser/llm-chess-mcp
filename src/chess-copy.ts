@@ -11,9 +11,12 @@ type MoveDescriptor = {
 const ORIGINAL_PIECES = {
   q: 1,
   r: 2,
-  b: 2,
   n: 2,
 } as const;
+
+function squareColor(square: Square): 0 | 1 {
+  return ((square.charCodeAt(0) - 97 + Number(square[1])) % 2) as 0 | 1;
+}
 
 function hasPiece(
   chess: Chess,
@@ -70,7 +73,8 @@ function assertEnPassantPosition(chess: Chess): void {
     chess.get(targetSquare) !== undefined ||
     !hasPiece(chess, pawnSquare, "p", pawnColor) ||
     chess.get(originSquare) !== undefined ||
-    fields[4] !== "0"
+    fields[4] !== "0" ||
+    (turn === "w" && fields[5] === "1")
   ) {
     throw new ChessError(
       "INVALID_FEN",
@@ -129,7 +133,7 @@ export function assertLegalPosition(chess: Chess): void {
         "FEN cannot contain more than eight pawns per side",
       );
     }
-    const promoted = Object.entries(ORIGINAL_PIECES).reduce(
+    const promotedPieces = Object.entries(ORIGINAL_PIECES).reduce(
       (total, [type, original]) =>
         total +
         Math.max(
@@ -139,6 +143,19 @@ export function assertLegalPosition(chess: Chess): void {
         ),
       0,
     );
+    const promotedBishops = [0, 1].reduce(
+      (total, squareColorValue) =>
+        total +
+        Math.max(
+          0,
+          chess
+            .findPiece({ type: "b", color })
+            .filter((square) => squareColor(square) === squareColorValue)
+            .length - 1,
+        ),
+      0,
+    );
+    const promoted = promotedPieces + promotedBishops;
     if (promoted > 8 - pawns.length) {
       throw new ChessError(
         "INVALID_FEN",
@@ -162,6 +179,7 @@ export function assertLegalPosition(chess: Chess): void {
 }
 
 export function snapshotChess(chess: Chess): Chess {
+  assertLegalPosition(chess);
   const history = chess.history({ verbose: true });
   const initialFen = history[0]?.before ?? chess.fen();
   assertSafeFenCounters(initialFen);

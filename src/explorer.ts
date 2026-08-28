@@ -130,13 +130,15 @@ function setupExplorerRequest(
   if (!token) throw explorerError("disabled");
   if (!dbSet.has(db)) throw explorerError("invalid_input");
   if (
-    !speeds.every((speed) => speedSet.has(speed)) ||
+    !Array.isArray(speeds) ||
+    ![...speeds].every((speed) => speedSet.has(speed)) ||
     new Set(speeds).size !== speeds.length
   ) {
     throw explorerError("invalid_input");
   }
   if (
-    !ratings.every((rating) => ratingSet.has(rating)) ||
+    !Array.isArray(ratings) ||
+    ![...ratings].every((rating) => ratingSet.has(rating)) ||
     new Set(ratings).size !== ratings.length
   ) {
     throw explorerError("invalid_input");
@@ -211,10 +213,9 @@ async function attemptRequest(
       const transport = await requestExplorerTransport(setup);
       if (transport.type === "failure") {
         if (transport.error.kind === "rate_limited") {
-          const rateLimitedAt = setup.now();
           setup.limiter.cooldown(
             rateLimitCooldownMs(transport.retryAfter, setup.wallNow()),
-            rateLimitedAt,
+            setup.now(),
           );
         }
         return failureFor(setup, transport.error, transport.retryAfter);

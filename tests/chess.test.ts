@@ -49,6 +49,23 @@ test("snapshotChess preserves safe FEN counters exactly", () => {
   assert.equal(snapshot.fen(), fen);
 });
 
+test("snapshotChess rejects malformed en passant without mutating its source", () => {
+  const chess = new Chess(
+    "4k3/8/8/3P4/8/8/P7/4K3 w - e6 0 1",
+  );
+  assert.equal(chess.get("e5"), undefined);
+
+  assert.throws(
+    () => snapshotChess(chess),
+    (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+  );
+  assert.equal(chess.get("e5"), undefined);
+  assert.equal(
+    chess.fen({ forceEnpassantSquare: true }),
+    "4k3/8/8/3P4/8/8/P7/4K3 w - e6 0 1",
+  );
+});
+
 test("FEN counters must be safe decimal integers", () => {
   const base = "8/8/8/8/8/8/K7/7k w - -";
   for (const fen of [
@@ -107,6 +124,7 @@ test("custom positions validate castling and en passant metadata", () => {
     "4k3/8/8/3P4/8/8/P7/4K3 w - e6 0 1",
     "4k3/4p3/8/3Pp3/8/8/P7/4K3 w - e6 0 1",
     "4k3/8/8/3Pp3/8/8/P7/4K3 w - e6 1 1",
+    "4k3/8/8/3Pp3/8/8/P7/4K3 w - e6 0 1",
   ]) {
     assert.throws(
       () => assertLegalPosition(new Chess(fen)),
@@ -121,7 +139,7 @@ test("custom positions validate castling and en passant metadata", () => {
   );
   assert.doesNotThrow(() =>
     assertLegalPosition(
-      new Chess("4k3/8/8/3Pp3/8/8/P7/4K3 w - e6 0 1"),
+      new Chess("4k3/8/8/3Pp3/8/8/P7/4K3 w - e6 0 2"),
     ),
   );
 });
@@ -130,6 +148,7 @@ test("custom positions reject impossible pawn and promotion material", () => {
   for (const fen of [
     "4k3/pppppppp/p7/8/8/8/PPPPPPPP/4K3 w - - 0 1",
     "4k3/8/8/8/8/8/PPPPPPPP/3QKQ2 w - - 0 1",
+    "4k3/8/8/8/8/4B3/PPPPPPPP/2B1K3 w - - 0 1",
   ]) {
     assert.throws(
       () => assertLegalPosition(new Chess(fen)),
@@ -305,6 +324,32 @@ test("parseImportedPgn validates results outside comments for every game", () =>
       (error) => error instanceof ChessError && error.code === "INVALID_PGN",
     );
   }
+});
+
+test("parseImportedPgn ignores standard column-one escape lines", () => {
+  const chess = parseImportedPgn(
+    '[Result "1-0"]\n% ignored 0-1 and [FEN "bad"]\n\n1. e4 1-0',
+  );
+
+  assert.deepEqual(chess.history(), ["e4"]);
+  assert.equal(chess.getHeaders().Result, "1-0");
+  assert.doesNotThrow(() => parseImportedPgn(pgnOf(chess)));
+});
+
+test("parseImportedPgn rejects case-insensitive duplicate Result headers", () => {
+  assert.throws(
+    () =>
+      parseImportedPgn(
+        '[Result "1-0"]\n[result "1-0"]\n\n1. e4 1-0',
+      ),
+    (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+  );
+
+  const lowercase = parseImportedPgn('[result "1-0"]\n\n1. e4 1-0');
+  const exported = pgnOf(lowercase);
+  assert.match(exported, /\[Result "1-0"\]/);
+  assert.doesNotMatch(exported, /\[result /);
+  assert.doesNotThrow(() => parseImportedPgn(exported));
 });
 
 test("parseImportedPgn rejects decisive results for drawn terminal positions", () => {

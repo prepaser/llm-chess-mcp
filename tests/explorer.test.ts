@@ -47,7 +47,12 @@ function response(
 }
 
 function options(fetch: ExplorerFetch, extra: ExplorerRequestOptions = {}) {
-  return { token: "secret-token", fetch, limiter: createExplorerLimiter(), ...extra };
+  return {
+    token: "secret-token",
+    fetch,
+    ...extra,
+    limiter: extra.limiter ?? createExplorerLimiter(extra.now),
+  };
 }
 
 function expectKind(kind: string) {
@@ -154,6 +159,22 @@ test("rejects unsupported filters before fetching", async () => {
     ),
     expectKind("invalid_input"),
   );
+  for (const [speeds, ratings] of [
+    [Array(1), []],
+    [["blitz", ,], []],
+    [[], Array(1)],
+  ] as const) {
+    await assert.rejects(
+      openingExplorer(
+        new Chess(),
+        "lichess",
+        speeds as readonly string[],
+        ratings as readonly number[],
+        options(fetch),
+      ),
+      expectKind("invalid_input"),
+    );
+  }
   assert.equal(calls, 0);
 });
 
@@ -347,6 +368,53 @@ test("cancels a response when caller cancellation wins after fetch resolution", 
 
   await assert.rejects(pending, (error: unknown) => error === cause);
   assert.equal(cancelled, 1);
+});
+
+test("handles body cancellation rejection after both abort signals fire", async () => {
+  const caller = new AbortController();
+  const attempt = new AbortController();
+  const cause = new Error("caller won the response race");
+  let unhandled: unknown;
+  const onUnhandled = (error: unknown) => {
+    unhandled = error;
+  };
+  process.once("unhandledRejection", onUnhandled);
+  try {
+    await assert.rejects(
+      openingExplorer(
+        new Chess(),
+        "lichess",
+        [],
+        [],
+        options(
+          async () => {
+            const response = new Response(
+              new ReadableStream({
+                cancel: () => Promise.reject(new Error("cancel failed")),
+              }),
+            );
+            return new Proxy(response, {
+              get(target, property) {
+                if (property === "ok") {
+                  queueMicrotask(() => {
+                    attempt.abort();
+                    caller.abort(cause);
+                  });
+                }
+                return Reflect.get(target, property, target) as unknown;
+              },
+            });
+          },
+          { signal: caller.signal, timeout: () => attempt.signal },
+        ),
+      ),
+      (error: unknown) => error === cause,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(unhandled, undefined);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
 });
 
 test("does not fetch when the caller already cancelled", async () => {
@@ -874,8 +942,8 @@ test("bounds stalled successful cleanup after caller cancellation", async () => 
 });
 
 test("coordinates a shared 429 cooldown across queued explorer calls", async () => {
-  const limiter = createExplorerLimiter();
   let now = 0;
+  const limiter = createExplorerLimiter(() => now);
   let calls = 0;
   const delays: number[] = [];
   const fetch: ExplorerFetch = async () => {
@@ -904,9 +972,50 @@ test("coordinates a shared 429 cooldown across queued explorer calls", async () 
   assert.deepEqual(delays, [1_000]);
 });
 
+test("keeps shared cooldowns on the limiter clock domain", async () => {
+  let limiterNow = 0;
+  const limiter = createExplorerLimiter(() => limiterNow);
+  let calls = 0;
+  const fetch: ExplorerFetch = async () => {
+    calls += 1;
+    return calls === 1
+      ? response(429, {}, { "Retry-After": "60" })
+      : response();
+  };
+
+  await assert.rejects(
+    openingExplorer(new Chess(), "lichess", [], [], {
+      token: "shared-token",
+      fetch,
+      limiter,
+      now: Date.now,
+    }),
+    expectKind("rate_limited"),
+  );
+  await assert.rejects(
+    openingExplorer(new Chess(), "masters", [], [], {
+      token: "shared-token",
+      fetch,
+      limiter,
+      now: () => 0,
+    }),
+    expectKind("rate_limited"),
+  );
+  assert.equal(calls, 1);
+
+  limiterNow = EXPLORER_RATE_LIMIT_COOLDOWN_MS;
+  await openingExplorer(new Chess(), "masters", [], [], {
+    token: "shared-token",
+    fetch,
+    limiter,
+    now: () => 0,
+  });
+  assert.equal(calls, 2);
+});
+
 test("uses a one-minute shared cooldown when a 429 lacks Retry-After", async () => {
-  const limiter = createExplorerLimiter();
   let now = 0;
+  const limiter = createExplorerLimiter(() => now);
   let calls = 0;
   const fetch: ExplorerFetch = async () => {
     calls += 1;
@@ -936,7 +1045,7 @@ test("uses a one-minute shared cooldown when a 429 lacks Retry-After", async () 
 });
 
 test("fails fast when a shared cooldown exceeds the request budget", async () => {
-  const limiter = createExplorerLimiter();
+  const limiter = createExplorerLimiter(() => 0);
   const delays: number[] = [];
   limiter.cooldown(EXPLORER_RATE_LIMIT_COOLDOWN_MS, 0);
 
@@ -958,7 +1067,7 @@ test("fails fast when a shared cooldown exceeds the request budget", async () =>
 });
 
 test("cancels while waiting for a shared cooldown", async () => {
-  const limiter = createExplorerLimiter();
+  const limiter = createExplorerLimiter(() => 0);
   const controller = new AbortController();
   const cause = new Error("caller cancelled during cooldown");
   let calls = 0;
@@ -1261,6 +1370,33 @@ test("interprets RFC 850 dates more than fifty years ahead as past", async () =>
   assert.deepEqual(delays, [0]);
 });
 
+test("applies the RFC 850 fifty-year rule in arbitrary centuries", async () => {
+  const delays: number[] = [];
+  let calls = 0;
+  await openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(
+      async () => {
+        calls += 1;
+        return calls === 1
+          ? response(503, {}, {
+              "Retry-After": "Sunday, 31-Dec-99 00:00:00 GMT",
+            })
+          : response();
+      },
+      {
+        now: () => 0,
+        wallNow: () => Date.parse("1900-01-01T00:00:00Z"),
+        sleep: async (ms) => void delays.push(ms),
+      },
+    ),
+  );
+  assert.deepEqual(delays, [0]);
+});
+
 test("rejects HTTP dates with rollover or inconsistent weekdays", async () => {
   const wallNow = Date.parse("2026-09-30T23:59:59Z");
   for (const retryAfter of [
@@ -1279,6 +1415,63 @@ test("rejects HTTP dates with rollover or inconsistent weekdays", async () => {
             calls += 1;
             return calls === 1
               ? response(429, {}, { "Retry-After": retryAfter })
+              : response();
+          },
+          { now: () => 0, wallNow: () => wallNow },
+        ),
+      ),
+      expectKind("rate_limited"),
+    );
+    assert.equal(calls, 1);
+  }
+});
+
+test("rejects malformed asctime spacing", async () => {
+  const wallNow = Date.parse("1994-11-06T08:49:36Z");
+  for (const retryAfter of [
+    "Sun Nov 6 08:49:37 1994",
+    "Sun Nov 06 08:49:37 1994",
+    "Sun Nov  06 08:49:37 1994",
+  ]) {
+    let calls = 0;
+    await assert.rejects(
+      openingExplorer(
+        new Chess(),
+        "lichess",
+        [],
+        [],
+        options(
+          async () => {
+            calls += 1;
+            return calls === 1
+              ? response(429, {}, { "Retry-After": retryAfter })
+              : response();
+          },
+          { now: () => 0, wallNow: () => wallNow },
+        ),
+      ),
+      expectKind("rate_limited"),
+    );
+    assert.equal(calls, 1);
+  }
+});
+
+test("uses fallback delays for invalid wall clocks and unsafe date delays", async () => {
+  for (const wallNow of [9e15, -9e15]) {
+    let calls = 0;
+    await assert.rejects(
+      openingExplorer(
+        new Chess(),
+        "lichess",
+        [],
+        [],
+        options(
+          async () => {
+            calls += 1;
+            return calls === 1
+              ? response(429, {}, {
+                  "Retry-After": "Fri, 01 Jan 2027 00:00:00 GMT",
+                })
               : response();
           },
           { now: () => 0, wallNow: () => wallNow },

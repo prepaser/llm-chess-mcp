@@ -197,8 +197,9 @@ input, and malformed responses fail without retry. Successful payloads are
 checked against the legal moves of the snapshot before they can affect a candidate result.
 Caller cancellation is combined with each attempt timeout and also interrupts
 retry backoff; it is never converted into an Explorer availability failure.
-Duration budgets use a monotonic clock, while HTTP-date `Retry-After` parsing
-uses wall time and rejects calendar rollover. Response bodies must be valid
+Request budgets and the shared limiter each use a stable monotonic clock, while
+HTTP-date `Retry-After` parsing uses wall time and rejects calendar rollover.
+Response bodies must be valid
 UTF-8 JSON and are capped at 1 MiB, 256 moves, and 256 characters per move or
 opening string.
 Its limiter, HTTP transport, response normalization, and retry policy are

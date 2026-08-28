@@ -99,14 +99,15 @@ async function readJson(
       throw cause;
     }
     if (signal.aborted) {
-      const cancellation = reader.cancel(signal.reason);
-      if (callerSignal?.aborted) {
-        const deadline =
-          cleanupSignal ?? AbortSignal.timeout(EXPLORER_ATTEMPT_TIMEOUT_MS);
-        await awaitWithAbort(deadline, () => cancellation).catch(() => {});
-      } else {
+      try {
+        const cancellation = reader.cancel(signal.reason);
         void cancellation.catch(() => {});
-      }
+        if (callerSignal?.aborted) {
+          const deadline =
+            cleanupSignal ?? AbortSignal.timeout(EXPLORER_ATTEMPT_TIMEOUT_MS);
+          await awaitWithAbort(deadline, () => cancellation).catch(() => {});
+        }
+      } catch {}
       signal.throwIfAborted();
     }
     throw cause;

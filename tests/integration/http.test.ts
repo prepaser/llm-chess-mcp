@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { request } from "node:http";
+import { Agent, createServer, request } from "node:http";
 import { connect } from "node:net";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
@@ -26,6 +26,14 @@ type ConnectedClient = {
   client: Client;
   transport: StreamableHTTPClientTransport;
 };
+
+function nodeKeepAliveTimeoutBuffer(): number {
+  const server = createServer();
+  return "keepAliveTimeoutBuffer" in server &&
+    typeof server.keepAliveTimeoutBuffer === "number"
+    ? server.keepAliveTimeoutBuffer
+    : 0;
+}
 
 function fakeServices(
   games: GameStore,
@@ -518,12 +526,96 @@ test("Streamable HTTP validates resource limits before listening", async () => {
       /must be a safe integer between 1 and 2147483647/,
     );
   }
+  const keepAliveTimeoutBuffer = nodeKeepAliveTimeoutBuffer();
+  if (keepAliveTimeoutBuffer > 0) {
+    await assert.rejects(
+      serveHttp(
+        { port: 0, keepAliveTimeoutMs: 2_147_483_647 },
+        fakeServices(new GameStore()),
+      ),
+      new RegExp(
+        `keepAliveTimeoutMs must not exceed ${2_147_483_647 - keepAliveTimeoutBuffer}`,
+      ),
+    );
+  }
 
   const independentTimeouts = await serveHttp(
     { port: 0, headersTimeoutMs: 2, bodyTimeoutMs: 1 },
     fakeServices(new GameStore()),
   );
   await independentTimeouts.close();
+});
+
+test("Streamable HTTP keeps the largest safe keep-alive timer reusable", async (t) => {
+  const keepAliveTimeoutMs =
+    2_147_483_647 - nodeKeepAliveTimeoutBuffer();
+  const warnings: Error[] = [];
+  const onWarning = (warning: Error): void => {
+    warnings.push(warning);
+  };
+  process.on("warning", onWarning);
+  const http = await serveHttp(
+    { port: 0, keepAliveTimeoutMs },
+    fakeServices(new GameStore()),
+  );
+  const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+  t.after(async () => {
+    process.off("warning", onWarning);
+    agent.destroy();
+    await http.close();
+  });
+
+  const send = (
+    body: string,
+    id?: string,
+  ): Promise<{ reused: boolean; sessionId?: string; status: number }> =>
+    new Promise((resolve, reject) => {
+      const req = request(
+        http.url,
+        {
+          agent,
+          method: "POST",
+          headers: {
+            ...INIT_HEADERS,
+            ...(id
+              ? {
+                  "mcp-protocol-version": "2025-11-25",
+                  "mcp-session-id": id,
+                }
+              : {}),
+          },
+        },
+        (res) => {
+          res.resume();
+          res.once("end", () => {
+            const sessionId = res.headers["mcp-session-id"];
+            resolve({
+              reused: req.reusedSocket,
+              status: res.statusCode ?? 0,
+              ...(typeof sessionId === "string" ? { sessionId } : {}),
+            });
+          });
+        },
+      );
+      req.once("error", reject);
+      req.end(body);
+    });
+
+  const initialized = await send(initializeBody());
+  assert.equal(initialized.status, 200);
+  assert.ok(initialized.sessionId);
+  assert.equal(initialized.reused, false);
+  const notification = await send(
+    JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+    initialized.sessionId,
+  );
+  assert.equal(notification.status, 202);
+  assert.equal(notification.reused, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    warnings.some((warning) => warning.name === "TimeoutOverflowWarning"),
+    false,
+  );
 });
 
 test("Streamable HTTP closes shared default services after the last server", async (t) => {

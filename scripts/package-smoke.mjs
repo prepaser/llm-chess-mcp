@@ -4,7 +4,7 @@ import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -39,19 +39,44 @@ function asObject(value) {
 }
 
 async function command(command, args, cwd) {
-  const invocation =
-    process.platform === "win32" && command.toLowerCase().endsWith(".cmd")
-      ? {
-          command: process.env.ComSpec ?? "cmd.exe",
-          args: ["/d", "/s", "/c", command, ...args],
-        }
-      : { command, args };
-  return execFile(invocation.command, invocation.args, {
+  return execFile(command, args, {
     cwd,
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
     timeout: 300_000,
   });
+}
+
+function envValue(name) {
+  return Object.entries(process.env).find(
+    ([key, value]) => key.toLowerCase() === name.toLowerCase() && value,
+  )?.[1];
+}
+
+async function npmInvocation(args) {
+  if (process.platform !== "win32") return { command: "npm", args };
+
+  const npmExecPath = envValue("npm_execpath");
+  const roots = new Set([
+    dirname(process.execPath),
+    ...(envValue("PATH") ?? "").split(delimiter).filter(Boolean),
+  ]);
+  const candidates = [
+    ...(npmExecPath && /npm-cli\.(?:c?js)$/i.test(npmExecPath)
+      ? [npmExecPath]
+      : []),
+    ...[...roots].flatMap((root) => [
+      join(root, "node_modules", "npm", "bin", "npm-cli.js"),
+      join(root, "node_modules", "npm", "bin", "npm-cli.cjs"),
+    ]),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.F_OK);
+      return { command: process.execPath, args: [candidate, ...args] };
+    } catch {}
+  }
+  throw new Error("npm CLI JavaScript entry was not found");
 }
 
 function serverInvocation(bin, packageRoot, args = []) {
@@ -74,10 +99,18 @@ async function call(client, name, args) {
 }
 
 async function pack(workspace, cache) {
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  const npm = await npmInvocation([
+    "--cache",
+    cache,
+    "pack",
+    "--json",
+    "--ignore-scripts",
+    "--pack-destination",
+    workspace,
+  ]);
   const { stdout } = await command(
-    npm,
-    ["--cache", cache, "pack", "--json", "--ignore-scripts", "--pack-destination", workspace],
+    npm.command,
+    npm.args,
     REPO,
   );
   const packed = JSON.parse(stdout);
@@ -115,6 +148,19 @@ async function pack(workspace, cache) {
   }
 
   return join(workspace, result.filename);
+}
+
+async function verifyInstalledBin(bin, packageRoot) {
+  await access(
+    bin,
+    process.platform === "win32" ? constants.F_OK : constants.X_OK,
+  );
+  if (process.platform !== "win32") return;
+
+  const entry = join(packageRoot, "dist", "index.js");
+  const target = relative(dirname(bin), entry).replaceAll("/", "\\").toLowerCase();
+  const shim = (await readFile(bin, "utf8")).replaceAll("/", "\\").toLowerCase();
+  assert.ok(shim.includes(target), "installed Windows bin does not target dist/index.js");
 }
 
 async function verifyPackageApi(install) {
@@ -324,32 +370,28 @@ const workspaceRoot = resolve(process.env.PACKAGE_SMOKE_TMPDIR ?? tmpdir());
 await mkdir(workspaceRoot, { recursive: true });
 const workspace = await mkdtemp(join(workspaceRoot, "llm-chess-mcp-package-smoke-"));
 try {
-  const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-  await command(pnpm, ["build"], REPO);
+  const build = await npmInvocation(["run", "build"]);
+  await command(build.command, build.args, REPO);
   const cache = join(workspace, "npm-cache");
   const tarball = await pack(workspace, cache);
   const install = join(workspace, "install");
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
   await mkdir(install);
   await writeFile(
     join(install, "package.json"),
     JSON.stringify({ private: true, type: "module" }),
   );
-  await command(
-    npm,
-    [
-      "--cache",
-      cache,
-      "install",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--omit=dev",
-      "--package-lock=false",
-      tarball,
-    ],
-    install,
-  );
+  const npm = await npmInvocation([
+    "--cache",
+    cache,
+    "install",
+    "--ignore-scripts",
+    "--no-audit",
+    "--no-fund",
+    "--omit=dev",
+    "--package-lock=false",
+    tarball,
+  ]);
+  await command(npm.command, npm.args, install);
   await verifyPackageApi(install);
 
   const packageRoot = join(install, "node_modules", "llm-chess-mcp");
@@ -359,10 +401,7 @@ try {
     ".bin",
     process.platform === "win32" ? "llm-chess-mcp.cmd" : "llm-chess-mcp",
   );
-  await access(
-    bin,
-    process.platform === "win32" ? constants.F_OK : constants.X_OK,
-  );
+  await verifyInstalledBin(bin, packageRoot);
   await smoke(bin, packageRoot, workspace);
   await smokeHttp(bin, packageRoot, workspace);
   console.log("package smoke passed");

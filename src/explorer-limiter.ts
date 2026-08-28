@@ -31,12 +31,14 @@ class RequestLimiter implements ExplorerLimiter {
   #cooldownUntil = 0;
   #queue: QueuedRequest[] = [];
 
+  constructor(private readonly now: () => number) {}
+
   get pending(): number {
     return this.#queue.length;
   }
 
-  cooldown(ms: number, now: number): void {
-    this.#cooldownUntil = Math.max(this.#cooldownUntil, now + ms);
+  cooldown(ms: number, _now: number): void {
+    this.#cooldownUntil = Math.max(this.#cooldownUntil, this.now() + ms);
   }
 
   run<T>(
@@ -100,7 +102,7 @@ class RequestLimiter implements ExplorerLimiter {
 
   #waitForCooldown(options: ExplorerLimiterOptions): Promise<void> | undefined {
     const cooldownUntil = this.#cooldownUntil;
-    const delay = cooldownUntil - options.now();
+    const delay = cooldownUntil - this.now();
     if (delay <= 0) return;
     if (delay >= options.deadline - options.now()) {
       throw explorerError("rate_limited");
@@ -113,6 +115,8 @@ class RequestLimiter implements ExplorerLimiter {
   }
 }
 
-export function createExplorerLimiter(): ExplorerLimiter {
-  return new RequestLimiter();
+export function createExplorerLimiter(
+  now: () => number = () => performance.now(),
+): ExplorerLimiter {
+  return new RequestLimiter(now);
 }

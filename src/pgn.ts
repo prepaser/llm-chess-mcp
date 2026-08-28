@@ -13,6 +13,10 @@ const PGN_RESULTS = ["1-0", "0-1", "1/2-1/2", "*"] as const;
 
 type PgnResult = (typeof PGN_RESULTS)[number];
 
+function withoutPgnEscapeLines(pgn: string): string {
+  return pgn.replace(/^%[^\r\n]*(?=\r?$)/gm, "");
+}
+
 function withoutPgnComments(pgn: string): string {
   let result = "";
   let braceComment = false;
@@ -68,9 +72,12 @@ function declaredPgnResult(pgn: string): PgnResult | undefined {
   const visiblePgn = withoutPgnComments(pgn);
   const headerResults = [
     ...visiblePgn.matchAll(
-      /^\s*\[\s*Result\s+"((?:\\.|[^"\\])*)"\s*\]\s*$/gm,
+      /^\s*\[\s*Result\s+"((?:\\.|[^"\\])*)"\s*\]\s*$/gim,
     ),
   ].map((match) => match[1] ?? "");
+  if (headerResults.length > 1) {
+    throw new ChessError("INVALID_PGN", "PGN must not repeat Result headers");
+  }
   const movetext = visiblePgn.replace(/^\s*\[[^\r\n]*\]\s*$/gm, "");
   const markers = [
     ...movetext.matchAll(/(?:^|\s)(1-0|0-1|1\/2-1\/2|\*)(?=\s|$)/g),
@@ -134,9 +141,9 @@ function validatePgnSetup(pgn: string): void {
   }
 }
 
-function canonicalizeSetupHeaders(chess: Chess): void {
+function canonicalizeHeaders(chess: Chess, result: PgnResult | undefined): void {
   const headers = chess.getHeaders();
-  for (const canonical of ["SetUp", "FEN"] as const) {
+  for (const canonical of ["SetUp", "FEN", "Result"] as const) {
     const entry = Object.entries(headers).find(
       ([key]) => key.toLowerCase() === canonical.toLowerCase(),
     );
@@ -145,7 +152,11 @@ function canonicalizeSetupHeaders(chess: Chess): void {
         chess.removeHeader(key);
       }
     }
-    if (entry) chess.setHeader(canonical, entry[1]);
+    if (canonical === "Result" && result !== undefined) {
+      chess.setHeader(canonical, result);
+    } else if (entry) {
+      chess.setHeader(canonical, entry[1]);
+    }
   }
 }
 
@@ -186,17 +197,18 @@ export function parseImportedPgn(pgn: string): Chess {
       `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
     );
   }
-  validatePgnSetup(pgn);
-  const result = declaredPgnResult(pgn);
+  const normalizedPgn = withoutPgnEscapeLines(pgn);
+  validatePgnSetup(normalizedPgn);
+  const result = declaredPgnResult(normalizedPgn);
 
   let chess: Chess;
   try {
     chess = new Chess();
-    chess.loadPgn(pgn);
+    chess.loadPgn(normalizedPgn);
   } catch {
     throw new ChessError("INVALID_PGN", "invalid or illegal PGN");
   }
-  canonicalizeSetupHeaders(chess);
+  canonicalizeHeaders(chess, result);
   assertSafeFenCounters(chess.fen());
   assertLegalPosition(chess);
   if (chess.history().length > MAX_PGN_PLIES) {

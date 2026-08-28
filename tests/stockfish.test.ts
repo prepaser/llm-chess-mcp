@@ -240,6 +240,41 @@ test("cold dependency teardown is bounded when readiness never arrives", async (
   assert.notEqual(current.listener, null);
 });
 
+test("late cold readiness sends quit without terminating twice", async () => {
+  let callback!: (error: Error | null, engine: StockfishEngine) => void;
+  const commands: string[] = [];
+  let terminations = 0;
+  const current = {
+    listener: null,
+    terminate() {
+      terminations++;
+    },
+  } as unknown as StockfishEngine;
+  const stockfish = new Stockfish({
+    init: (_flavor, next) => {
+      callback = next;
+      return current;
+    },
+    timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+  });
+
+  const active = stockfish.analyze("fen", 1, 1);
+  const outcome = active.catch((error: unknown) => error);
+  await nextImmediate();
+  const quitting = stockfish.quit();
+  setTimeout(() => {
+    current.sendCommand = (command) => commands.push(command);
+    callback(null, current);
+  }, 5);
+
+  await quitting;
+  await nextImmediate();
+  assert.match(String(await outcome), /stockfish quit/);
+  assert.deepEqual(commands, ["quit"]);
+  assert.equal(terminations, 1);
+  assert.notEqual(current.listener, null);
+});
+
 test("synchronous initialization callback completes the handshake", async () => {
   const current = respondingEngine(true);
   const stockfish = new Stockfish({
