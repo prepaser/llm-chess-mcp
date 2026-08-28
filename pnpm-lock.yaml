@@ -21,7 +21,7 @@ importers:
         specifier: ^1.4.0
         version: 1.4.0
       onnxruntime-node:
-        specifier: ^1.27.0
+        specifier: 1.27.0
         version: 1.27.0
       stockfish:
         specifier: ^18.0.8

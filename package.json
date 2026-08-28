@@ -60,7 +60,7 @@
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "chess.js": "^1.4.0",
-    "onnxruntime-node": "^1.27.0",
+    "onnxruntime-node": "1.27.0",
     "stockfish": "^18.0.8",
     "zod": "4.4.3"
   },

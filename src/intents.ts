@@ -25,14 +25,28 @@ function safeDifference(left: number, right: number): number {
 }
 
 function safeSum(values: readonly number[]): number {
-  if (!values.every(Number.isSafeInteger)) {
-    throw new RangeError("chess count must be a safe integer");
+  if (!values.every((value) => Number.isSafeInteger(value) && value >= 0)) {
+    throw new RangeError("chess count must be a non-negative safe integer");
   }
   const result = values.reduce((sum, value) => sum + value, 0);
   if (!Number.isSafeInteger(result)) {
     throw new RangeError("derived chess count exceeds the safe integer range");
   }
   return result;
+}
+
+function assertLichessMove(move: LichessMove): void {
+  if (move.count !== safeSum([move.white, move.draws, move.black])) {
+    throw new RangeError("derived chess move count is inconsistent");
+  }
+  if (
+    move.averageRating !== null &&
+    (!Number.isSafeInteger(move.averageRating) || move.averageRating < 0)
+  ) {
+    throw new RangeError(
+      "chess average rating must be a non-negative safe integer",
+    );
+  }
 }
 
 export interface LichessOpts {
@@ -135,14 +149,27 @@ export type LichessCandidateData =
 export function explorerCandidateData(
   result: ExplorerResult,
 ): LichessCandidateData {
+  const totals = [result.white, result.draws, result.black] as const;
+  let white = 0;
+  let draws = 0;
+  let black = 0;
+  const ucis = new Set<string>();
   for (const move of result.moves) {
-    if (move.count !== safeSum([move.white, move.draws, move.black])) {
-      throw new RangeError("derived chess move count is inconsistent");
+    if (ucis.has(move.uci)) {
+      throw new RangeError("duplicate chess move");
     }
+    ucis.add(move.uci);
+    assertLichessMove(move);
+    white = safeSum([white, move.white]);
+    draws = safeSum([draws, move.draws]);
+    black = safeSum([black, move.black]);
+  }
+  if (white > result.white || draws > result.draws || black > result.black) {
+    throw new RangeError("chess move totals exceed explorer totals");
   }
   return {
     status: result.moves.length > 0 ? "available" : "no_data",
-    totalGames: safeSum([result.white, result.draws, result.black]),
+    totalGames: safeSum(totals),
     moves: result.moves,
   };
 }
@@ -160,11 +187,21 @@ export function candidateSetFromData(
       moveSensitivity: { level: "low", topMoveSpreadCp: null },
     };
   }
-  const turn = chess.turn();
-  const maiaByUci = new Map(maiaMoves.map((move) => [move.uci, move.prob]));
   const legalUcis = new Set(
     chess.moves({ verbose: true }).map((move) => move.lan),
   );
+  const turn = chess.turn();
+  const maiaByUci = new Map<string, number>();
+  const maiaUcis = new Set<string>();
+  for (const move of maiaMoves) {
+    if (maiaUcis.has(move.uci)) throw new RangeError("duplicate Maia move");
+    maiaUcis.add(move.uci);
+    if (!Number.isFinite(move.prob) || move.prob < 0 || move.prob > 1) {
+      throw new RangeError("Maia move probability must be between 0 and 1");
+    }
+    if (!legalUcis.has(move.uci)) continue;
+    maiaByUci.set(move.uci, move.prob);
+  }
   const sfByUci = new Map<
     string,
     { line: SfLine; evaluation: NonNullable<ReturnType<typeof toEval>> }
@@ -176,17 +213,28 @@ export function candidateSetFromData(
       sfByUci.set(uci, { line, evaluation });
     }
   }
-  const lichessByUci = new Map(
-    lichessResult.moves.map((move) => [move.uci, move]),
-  );
+  const totalGames = lichessResult.totalGames ?? 0;
+  safeSum([totalGames]);
+  const lichessByUci = new Map<string, LichessMove>();
+  const lichessUcis = new Set<string>();
+  for (const move of lichessResult.moves) {
+    if (lichessUcis.has(move.uci)) {
+      throw new RangeError("duplicate explorer move");
+    }
+    lichessUcis.add(move.uci);
+    assertLichessMove(move);
+    if (move.count > totalGames) {
+      throw new RangeError("chess move count exceeds explorer total");
+    }
+    if (!legalUcis.has(move.uci)) continue;
+    lichessByUci.set(move.uci, move);
+  }
 
   const normalizedSfLines = [...sfByUci.values()];
   const evals = normalizedSfLines.map(({ evaluation }) => evaluation);
   const bestCp = evals.length
     ? Math.max(...evals.map((value) => evalToCp(value)))
     : null;
-  const totalGames = lichessResult.totalGames ?? 0;
-
   const ucis = new Set([
     ...sfByUci.keys(),
     ...maiaByUci.keys(),
@@ -328,6 +376,7 @@ export function createCandidateComputation(
       ),
       fatal(explorer),
     ]);
+    workSignal.throwIfAborted();
     return candidateSetFromData(chess, elo, sfLines, maiaMoves, lichessResult);
   };
 }

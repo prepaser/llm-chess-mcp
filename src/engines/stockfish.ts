@@ -231,6 +231,13 @@ export class Stockfish {
             if (initializedEngine !== session.engine) this.terminate(initializedEngine);
             return;
           }
+          if (this.terminations.has(initializedEngine)) {
+            this.failSession(
+              session,
+              new Error("stockfish initializer reused a terminated engine"),
+            );
+            return;
+          }
 
           if (session.engine && session.engine !== initializedEngine) {
             this.terminate(session.engine);
@@ -260,8 +267,15 @@ export class Stockfish {
           this.terminate(engine);
         }
       } else if (this.session === session && !session.readySettled) {
-        session.engine = engine;
-        engine.listener = () => {};
+        if (this.terminations.has(engine)) {
+          this.failSession(
+            session,
+            new Error("stockfish initializer reused a terminated engine"),
+          );
+        } else {
+          session.engine = engine;
+          engine.listener = () => {};
+        }
       } else if (engine !== this.session?.engine) {
         this.terminate(engine);
       }

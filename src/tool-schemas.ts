@@ -16,11 +16,51 @@ import {
   type SfLine,
   type Wdl,
 } from "./domain.js";
+import {
+  EXPLORER_MAX_MOVES,
+  EXPLORER_MAX_STRING_LENGTH,
+} from "./explorer-core.js";
 import type { ToolName } from "./tool-names.js";
 
 const revision = z.number().int().min(0);
 const color = z.enum(COLORS);
-const wdl = z.tuple([z.number(), z.number(), z.number()]) satisfies z.ZodType<Wdl>;
+const safeCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const probability = z.number().min(0).max(1);
+const moveText = z.string().min(1).max(EXPLORER_MAX_STRING_LENGTH);
+const uci = moveText
+  .regex(/^[a-h][1-8][a-h][1-8][qrbn]?$/)
+  .refine((move) => move.slice(0, 2) !== move.slice(2, 4), {
+    message: "UCI move must change squares",
+  })
+  .refine(
+    (move) =>
+      move.length === 4 ||
+      (move[1] === "7" && move[3] === "8") ||
+      (move[1] === "2" && move[3] === "1"),
+    { message: "UCI promotion must end on the back rank" },
+  );
+const wdl = z
+  .tuple([
+    z.number().int().min(0).max(1_000),
+    z.number().int().min(0).max(1_000),
+    z.number().int().min(0).max(1_000),
+  ])
+  .refine(([wins, draws, losses]) => wins + draws + losses === 1_000, {
+    message: "WDL counts must sum to 1000",
+  }) satisfies z.ZodType<Wdl>;
+
+function addCountIssue(
+  ctx: z.RefinementCtx,
+  path: PropertyKey[],
+  message: string,
+): void {
+  ctx.addIssue({ code: "custom", message, path });
+}
+
+function safeSum(values: readonly number[]): number | null {
+  const sum = values.reduce((total, value) => total + value, 0);
+  return Number.isSafeInteger(sum) ? sum : null;
+}
 
 export const StateSchema = z.strictObject({
   fen: z.string(),
@@ -64,30 +104,44 @@ export const AnalysisLineSchema = z.strictObject({
 });
 
 const openingStatsValues = {
-  games: z.number().nullable(),
-  frequency: z.number().nullable(),
-  white: z.number().nullable(),
-  draws: z.number().nullable(),
-  black: z.number().nullable(),
-  averageRating: z.number().nullable(),
+  games: safeCount.nullable(),
+  frequency: probability.nullable(),
+  white: safeCount.nullable(),
+  draws: safeCount.nullable(),
+  black: safeCount.nullable(),
+  averageRating: safeCount.nullable(),
 };
 
-export const OpeningStatsSchema = z.discriminatedUnion("status", [
-  z.strictObject({ status: z.literal("available"), ...openingStatsValues }),
-  z.strictObject({ status: z.literal("no_data"), ...openingStatsValues }),
-  z.strictObject({
-    status: z.literal("unavailable"),
-    reason: z.enum(EXPLORER_ERROR_KINDS),
-    ...openingStatsValues,
-  }),
-  z.strictObject({ status: z.literal("disabled"), ...openingStatsValues }),
-]);
+export const OpeningStatsSchema = z
+  .discriminatedUnion("status", [
+    z.strictObject({ status: z.literal("available"), ...openingStatsValues }),
+    z.strictObject({ status: z.literal("no_data"), ...openingStatsValues }),
+    z.strictObject({
+      status: z.literal("unavailable"),
+      reason: z.enum(EXPLORER_ERROR_KINDS),
+      ...openingStatsValues,
+    }),
+    z.strictObject({ status: z.literal("disabled"), ...openingStatsValues }),
+  ])
+  .superRefine(({ games, white, draws, black }, ctx) => {
+    const counts = [games, white, draws, black];
+    const present = counts.filter((value) => value !== null);
+    if (present.length === 0) return;
+    if (present.length !== counts.length) {
+      addCountIssue(ctx, ["games"], "opening counts must be all null or all present");
+      return;
+    }
+    const total = safeSum([white!, draws!, black!]);
+    if (total === null || games !== total) {
+      addCountIssue(ctx, ["games"], "games must equal white + draws + black");
+    }
+  });
 
 export const CandidateSchema = z.strictObject({
-  uci: z.string(),
-  san: z.string(),
+  uci,
+  san: moveText,
   objective: z.strictObject({
-    rank: z.number().nullable(),
+    rank: safeCount.min(1).nullable(),
     moverCp: z.number().nullable(),
     whiteCp: z.number().nullable(),
     cpLoss: z.number().nullable(),
@@ -96,7 +150,7 @@ export const CandidateSchema = z.strictObject({
     wdl: wdl.nullable(),
   }),
   human: z.strictObject({
-    maia3Prob: z.number().nullable(),
+    maia3Prob: probability.nullable(),
     selfElo: z.number(),
     opponentElo: z.number(),
   }),
@@ -105,8 +159,8 @@ export const CandidateSchema = z.strictObject({
 
 export const OpeningSchema = z
   .strictObject({
-    eco: z.string(),
-    name: z.string(),
+    eco: moveText,
+    name: moveText,
   })
   .nullable();
 
@@ -161,9 +215,9 @@ export const PositionAnalyzeOutputSchema = z.strictObject({
 });
 
 export const Maia3MoveSchema = z.strictObject({
-  uci: z.string(),
-  san: z.string(),
-  prob: z.number(),
+  uci,
+  san: moveText,
+  prob: probability,
 }) satisfies z.ZodType<Maia3Move>;
 
 export const HumanMoveDistributionOutputSchema = z.strictObject({
@@ -218,26 +272,53 @@ export const MoveCandidatesByIntentOutputSchema = z.strictObject({
   intent: z.enum(INTENTS),
 });
 
-export const LichessMoveSchema = z.strictObject({
-  uci: z.string(),
-  san: z.string(),
-  white: z.number(),
-  draws: z.number(),
-  black: z.number(),
-  count: z.number(),
-  averageRating: z.number().nullable(),
-}) satisfies z.ZodType<LichessMove>;
+export const LichessMoveSchema = z
+  .strictObject({
+    uci,
+    san: moveText,
+    white: safeCount,
+    draws: safeCount,
+    black: safeCount,
+    count: safeCount,
+    averageRating: safeCount.nullable(),
+  })
+  .superRefine(({ white, draws, black, count }, ctx) => {
+    const total = safeSum([white, draws, black]);
+    if (total === null || count !== total) {
+      addCountIssue(ctx, ["count"], "count must equal white + draws + black");
+    }
+  }) satisfies z.ZodType<LichessMove>;
 
-export const OpeningExplorerOutputSchema = z.strictObject({
-  game_id: z.string(),
-  revision,
-  db: z.enum(["lichess", "masters"]),
-  white: z.number(),
-  draws: z.number(),
-  black: z.number(),
-  moves: z.array(LichessMoveSchema),
-  opening: OpeningSchema,
-});
+export const OpeningExplorerOutputSchema = z
+  .strictObject({
+    game_id: z.string(),
+    revision,
+    db: z.enum(["lichess", "masters"]),
+    white: safeCount,
+    draws: safeCount,
+    black: safeCount,
+    moves: z.array(LichessMoveSchema).max(EXPLORER_MAX_MOVES),
+    opening: OpeningSchema,
+  })
+  .superRefine((result, ctx) => {
+    if (safeSum([result.white, result.draws, result.black]) === null) {
+      addCountIssue(ctx, ["white"], "total game count must be a safe integer");
+    }
+    for (const [field, total] of [
+      ["white", result.white],
+      ["draws", result.draws],
+      ["black", result.black],
+    ] as const) {
+      const sum = safeSum(result.moves.map((move) => move[field]));
+      if (sum === null || sum > total) {
+        addCountIssue(
+          ctx,
+          ["moves"],
+          `move ${field} counts must not exceed the top-level count`,
+        );
+      }
+    }
+  });
 
 export const GamePgnOutputSchema = z.strictObject({
   game_id: z.string(),

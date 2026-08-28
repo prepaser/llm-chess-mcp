@@ -404,6 +404,9 @@ try {
   await verifyInstalledBin(bin, packageRoot);
   await smoke(bin, packageRoot, workspace);
   await smokeHttp(bin, packageRoot, workspace);
+  await assert.rejects(access(join(workspace, ":memory:.ses")), {
+    code: "ENOENT",
+  });
   console.log("package smoke passed");
 } finally {
   await rm(workspace, { recursive: true, force: true });

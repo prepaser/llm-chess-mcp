@@ -7,6 +7,7 @@ import {
   createCandidateComputation,
   explorerCandidateData,
   rankByIntent,
+  type LichessCandidateData,
 } from "../src/intents.js";
 import type { Candidate, SfLine } from "../src/types.js";
 
@@ -91,6 +92,40 @@ test("marks an empty explorer result as no data", () => {
   );
 });
 
+test("rejects explorer moves that exceed aggregate result counts", () => {
+  assert.throws(
+    () =>
+      explorerCandidateData({
+        db: "lichess",
+        white: 1,
+        draws: 0,
+        black: 0,
+        moves: [
+          {
+            uci: "e2e4",
+            san: "e4",
+            white: 1,
+            draws: 0,
+            black: 0,
+            count: 1,
+            averageRating: null,
+          },
+          {
+            uci: "d2d4",
+            san: "d4",
+            white: 1,
+            draws: 0,
+            black: 0,
+            count: 1,
+            averageRating: null,
+          },
+        ],
+        opening: null,
+      }),
+    /move totals exceed explorer totals/,
+  );
+});
+
 test("rethrows caller cancellation from the Lichess fallback", async () => {
   const controller = new AbortController();
   const cause = new Error("caller cancelled");
@@ -119,6 +154,28 @@ test("rethrows caller cancellation from the Lichess fallback", async () => {
   controller.abort(cause);
 
   await assert.rejects(pending, (error: unknown) => error === cause);
+});
+
+test("rechecks caller cancellation after candidate sources finish", async () => {
+  const controller = new AbortController();
+  const cause = new Error("caller cancelled after fulfillment");
+  const computeCandidates = createCandidateComputation({
+    analyze: async () => {
+      queueMicrotask(() => controller.abort(cause));
+      return [];
+    },
+    humanMoveDistribution: async () => [],
+    explorerEnabled: () => false,
+    openingExplorer: async () => {
+      throw new Error("unreachable");
+    },
+    explorerFailureReason: () => "upstream",
+  });
+
+  await assert.rejects(
+    computeCandidates(new Chess(), 1500, 1, 1, 1, null, controller.signal),
+    (error: unknown) => error === cause,
+  );
 });
 
 test("aborts sibling candidate sources after a fatal source failure", async () => {
@@ -416,7 +473,7 @@ test("uses only legal scored root lines for engine candidate metrics", () => {
   assert.deepEqual(moveSensitivity, { level: "medium", topMoveSpreadCp: 80 });
 });
 
-test("handles missing scores, empty PVs, SAN fallbacks, and explorer failures", () => {
+test("filters illegal dependency moves and handles explorer failures", () => {
   const { candidates, moveSensitivity } = candidateSetFromData(
     new Chess(),
     1500,
@@ -433,19 +490,97 @@ test("handles missing scores, empty PVs, SAN fallbacks, and explorer failures", 
     },
   );
 
-  assert.equal(candidates.length, 1);
-  assert.equal(candidates[0]?.san, "not-uci");
-  assert.deepEqual(candidates[0]?.opening, {
-    status: "unavailable",
-    reason: "rate_limited",
-    games: null,
-    frequency: null,
-    white: null,
-    draws: null,
-    black: null,
-    averageRating: null,
-  });
+  assert.deepEqual(candidates, []);
   assert.deepEqual(moveSensitivity, { level: "low", topMoveSpreadCp: null });
+
+  assert.deepEqual(
+    candidateSetFromData(new Chess(), 1500, [], [], {
+      status: "available",
+      totalGames: 1,
+      moves: [
+        {
+          uci: "e2e5",
+          san: "e5",
+          white: 1,
+          draws: 0,
+          black: 0,
+          count: 1,
+          averageRating: null,
+        },
+      ],
+    }).candidates,
+    [],
+  );
+});
+
+test("rejects malformed and duplicate candidate dependency data", () => {
+  const disabled: LichessCandidateData = {
+    status: "disabled",
+    totalGames: null,
+    moves: [],
+  };
+  assert.throws(
+    () =>
+      candidateSetFromData(
+        new Chess(),
+        1500,
+        [],
+        [{ uci: "e2e4", san: "e4", prob: 2 }],
+        disabled,
+      ),
+    /probability/,
+  );
+  assert.throws(
+    () =>
+      candidateSetFromData(
+        new Chess(),
+        1500,
+        [],
+        [
+          { uci: "e2e4", san: "e4", prob: 0.5 },
+          { uci: "e2e4", san: "e4", prob: 0.4 },
+        ],
+        disabled,
+      ),
+    /duplicate Maia move/,
+  );
+  assert.throws(
+    () =>
+      candidateSetFromData(new Chess(), 1500, [], [], {
+        status: "available",
+        totalGames: 1,
+        moves: [
+          {
+            uci: "e2e4",
+            san: "e4",
+            white: 2,
+            draws: 0,
+            black: 0,
+            count: 2,
+            averageRating: null,
+          },
+        ],
+      }),
+    /move count exceeds explorer total/,
+  );
+  const move = {
+    uci: "e2e4",
+    san: "e4",
+    white: 1,
+    draws: 0,
+    black: 0,
+    count: 1,
+    averageRating: null,
+  };
+  assert.throws(
+    () =>
+      candidateSetFromData(new Chess(), 1500, [], [], {
+        status: "available",
+        totalGames: 2,
+        moves: [move, { ...move }],
+      }),
+    /duplicate explorer move/,
+  );
 });
 
 test("classifies move sensitivity at exact spread boundaries", () => {

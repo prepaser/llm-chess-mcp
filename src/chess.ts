@@ -9,6 +9,7 @@ export {
   MAX_PGN_BYTES,
   MAX_PGN_HEADERS,
   MAX_PGN_PLIES,
+  MAX_PGN_TOKEN_BYTES,
   parseImportedPgn,
   pgnOf,
 } from "./pgn.js";

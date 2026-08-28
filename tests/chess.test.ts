@@ -16,6 +16,7 @@ import {
   stateOf,
 } from "../src/chess.js";
 import { ChessError } from "../src/errors.js";
+import { MAX_PGN_TOKEN_BYTES } from "../src/pgn.js";
 
 test("snapshotChess preserves history without sharing mutations", () => {
   const chess = new Chess();
@@ -470,6 +471,10 @@ test("parseImportedPgn validates legal moves in recursive variations", () => {
     "1. e4 (1. --+) *",
     "1. e4 (1. --#) *",
     "1. e4 (1. --+!) *",
+    "1. e4 (1. --=) *",
+    "1. e4 (1. --=+) *",
+    "1. e4 (1. --=#) *",
+    "1. e4 (1. --=?!) *",
   ]) {
     assert.throws(
       () => parseImportedPgn(pgn),
@@ -520,6 +525,26 @@ test("parseImportedPgn rejects empty and structurally excessive variations", () 
     `1.${".".repeat(MAX_PGN_PLIES * 8)}e4*`,
     `1.e4$${"1".repeat(MAX_PGN_PLIES * 8 + 1)}*`,
     `${"1".repeat(MAX_PGN_PLIES * 8 + 1)}.e4*`,
+  ]) {
+    assert.throws(
+      () => parseImportedPgn(pgn),
+      (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
+    );
+  }
+});
+
+test("parseImportedPgn bounds individual lexical tokens", () => {
+  const maximum = "a".repeat(MAX_PGN_TOKEN_BYTES);
+  assert.doesNotThrow(() =>
+    parseImportedPgn(`[Note "${maximum}"]\n\n1.e4 {${maximum}} *`),
+  );
+
+  const excessive = `${maximum}a`;
+  for (const pgn of [
+    `[Note "${excessive}"]\n\n1.e4 *`,
+    `1.e4 {${excessive}} *`,
+    `1.e4 ;${excessive}\n*`,
+    `1.e4 ${excessive} *`,
   ]) {
     assert.throws(
       () => parseImportedPgn(pgn),
@@ -605,6 +630,58 @@ test("pgnOf preserves replacement patterns in unsafe comments", () => {
     roundTrip.getComments().map(({ comment }) => comment),
     comments,
   );
+});
+
+test("pgnOf rejects line breaks in programmatic headers", () => {
+  for (const lineBreak of ["\n", "\r", "\r\n"]) {
+    const chess = new Chess();
+    chess.setHeader("Event", `first${lineBreak}second`);
+    chess.move("e4");
+    assert.throws(
+      () => pgnOf(chess),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+});
+
+test("pgnOf bounds programmatic headers and comments", () => {
+  const maximum = "a".repeat(MAX_PGN_TOKEN_BYTES);
+
+  const valueAtLimit = new Chess();
+  valueAtLimit.setHeader("Event", maximum);
+  valueAtLimit.move("e4");
+  assert.equal(
+    parseImportedPgn(pgnOf(valueAtLimit)).getHeaders().Event,
+    maximum,
+  );
+
+  const nameAtLimit = new Chess();
+  const name = `H${"a".repeat(MAX_PGN_TOKEN_BYTES - 1)}`;
+  nameAtLimit.setHeader(name, "value");
+  nameAtLimit.move("e4");
+  assert.equal(parseImportedPgn(pgnOf(nameAtLimit)).getHeaders()[name], "value");
+
+  const commentAtLimit = new Chess();
+  commentAtLimit.setComment(maximum);
+  commentAtLimit.move("e4");
+  assert.equal(
+    parseImportedPgn(pgnOf(commentAtLimit)).getComments()[0]?.comment,
+    maximum,
+  );
+
+  const excessive = `${maximum}a`;
+  const oversizedValue = new Chess();
+  oversizedValue.setHeader("Event", excessive);
+  const oversizedName = new Chess();
+  oversizedName.setHeader(excessive, "value");
+  const oversizedComment = new Chess();
+  oversizedComment.setComment(excessive);
+  for (const chess of [oversizedValue, oversizedName, oversizedComment]) {
+    assert.throws(
+      () => pgnOf(chess),
+      (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
+    );
+  }
 });
 
 test("parseImportedPgn canonicalizes comments around move syntax", () => {

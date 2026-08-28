@@ -582,6 +582,45 @@ test("stale callbacks do not terminate the current session engine", async () => 
   assert.equal(current.terminations, 1);
 });
 
+test("terminated engine objects cannot enter a new init lifecycle", async () => {
+  for (const reuse of ["returned", "callback"] as const) {
+    const retired = engine();
+    const provisional = engine();
+    const fresh = respondingEngine(true);
+    let attempt = 0;
+    const stockfish = new Stockfish({
+      init: (_flavor, callback) => {
+        attempt += 1;
+        if (attempt === 1) return retired;
+        if (attempt === 2) {
+          queueMicrotask(() => callback(null, retired));
+          return reuse === "returned" ? retired : provisional;
+        }
+        queueMicrotask(() => callback(null, fresh));
+        return fresh;
+      },
+      timeouts: { init: 5, handshake: 50, analyze: 50, stopGrace: 5 },
+    });
+
+    const timedOut = stockfish.analyze("first", 1, 1);
+    const reused = stockfish.analyze("second", 1, 1);
+    const recovered = stockfish.analyze("third", 1, 1);
+    await assert.rejects(timedOut, /init timeout/);
+    await assert.rejects(reused, /initializer reused a terminated engine/);
+    assert.equal((await recovered)[0]?.scoreCp, 42);
+    assert.equal(retired.terminations, 1);
+    assert.equal(
+      retired.commands.filter((command) => command === "quit").length,
+      1,
+    );
+    assert.equal(provisional.terminations, reuse === "callback" ? 1 : 0);
+    assert.equal(fresh.terminations, 0);
+
+    await stockfish.quit();
+    assert.equal(fresh.terminations, 1);
+  }
+});
+
 test("initialization callback replaces the returned engine", async () => {
   const returned = engine();
   const initialized = respondingEngine(true);
