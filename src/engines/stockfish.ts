@@ -222,7 +222,9 @@ export class Stockfish {
         (error, initializedEngine) => {
           callbackCalled = true;
           if (this.session !== session) {
-            this.terminate(initializedEngine);
+            if (initializedEngine !== this.session?.engine) {
+              this.terminate(initializedEngine);
+            }
             return;
           }
           if (session.readySettled) {
@@ -254,10 +256,14 @@ export class Stockfish {
       );
 
       if (callbackCalled) {
-        if (engine !== session.engine) this.terminate(engine);
+        if (engine !== session.engine && engine !== this.session?.engine) {
+          this.terminate(engine);
+        }
       } else if (this.session === session && !session.readySettled) {
         session.engine = engine;
         engine.listener = () => {};
+      } else if (engine !== this.session?.engine) {
+        this.terminate(engine);
       }
     } catch (error) {
       this.failSession(session, asError(error));

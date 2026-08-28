@@ -442,6 +442,34 @@ test("late cold readiness sends quit without terminating twice", async () => {
   assert.notEqual(current.listener, null);
 });
 
+test("reentrant quit terminates stale initializer engines exactly once", async () => {
+  let callback!: (error: Error | null, current: StockfishEngine) => void;
+  let quitting!: Promise<void>;
+  const returned = engine();
+  const late = engine();
+  let stockfish!: Stockfish;
+  stockfish = new Stockfish({
+    init: (_flavor, initCallback) => {
+      callback = initCallback;
+      quitting = stockfish.quit();
+      return returned;
+    },
+    timeouts: { init: 50, handshake: 50, analyze: 50, stopGrace: 5 },
+  });
+
+  await assert.rejects(stockfish.analyze("fen", 1, 1), /stockfish quit/);
+  await quitting;
+  assert.equal(returned.terminations, 1);
+  assert.deepEqual(returned.commands, ["quit"]);
+
+  callback(null, returned);
+  callback(null, late);
+  await nextImmediate();
+  assert.equal(returned.terminations, 1);
+  assert.equal(late.terminations, 1);
+  assert.deepEqual(late.commands, ["quit"]);
+});
+
 test("synchronous initialization callback completes the handshake", async () => {
   const current = respondingEngine(true);
   const stockfish = new Stockfish({
@@ -517,6 +545,41 @@ test("late initialization callbacks terminate their delivered engine", async () 
   callback(null, late);
   await nextImmediate();
   assert.equal(late.terminations, 1);
+});
+
+test("stale callbacks do not terminate the current session engine", async () => {
+  let staleCallback!: (error: Error | null, current: StockfishEngine) => void;
+  const first = engine();
+  const current = respondingEngine(true);
+  const stale = engine();
+  let attempt = 0;
+  const stockfish = new Stockfish({
+    init: (_flavor, callback) => {
+      if (attempt++ === 0) {
+        staleCallback = callback;
+        return first;
+      }
+      queueMicrotask(() => callback(null, current));
+      return current;
+    },
+    timeouts: { init: 5, handshake: 50, analyze: 50, stopGrace: 5 },
+  });
+
+  const failed = stockfish.analyze("first", 1, 1);
+  const recovered = stockfish.analyze("second", 1, 1);
+  await assert.rejects(failed, /init timeout/);
+  assert.equal((await recovered)[0]?.scoreCp, 42);
+  assert.equal(first.terminations, 1);
+
+  staleCallback(null, current);
+  staleCallback(null, stale);
+  await nextImmediate();
+  assert.equal(current.terminations, 0);
+  assert.equal(stale.terminations, 1);
+  assert.equal((await stockfish.analyze("third", 1, 1))[0]?.scoreCp, 42);
+
+  await stockfish.quit();
+  assert.equal(current.terminations, 1);
 });
 
 test("initialization callback replaces the returned engine", async () => {

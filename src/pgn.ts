@@ -256,11 +256,11 @@ function movetextTokens(pgn: string): MovetextToken[] {
     }
   };
   const wordWeight = (value: string): number => {
-    let dots = 0;
+    let syntax = 0;
     for (const char of value) {
-      if (char === ".") dots += 1;
+      if (char === "." || (char >= "0" && char <= "9")) syntax += 1;
     }
-    return Math.max(1, dots);
+    return Math.max(1, syntax);
   };
   const pushAnnotated = (value: string): void => {
     let start = 0;
@@ -307,7 +307,8 @@ function movetextTokens(pgn: string): MovetextToken[] {
         pushAnnotated(value.slice(index));
         return;
       }
-      push({ kind: "word", value: value.slice(index, end) });
+      const nag = value.slice(index, end);
+      push({ kind: "word", value: nag }, wordWeight(nag));
       start = end;
       index = end - 1;
     }
@@ -500,7 +501,7 @@ function validatePgnMoves(pgn: string, initialFen: string): void {
     }
     token = token.slice(0, token.length - suffix.length).replaceAll("0", "O");
     if (!token) continue;
-    if (token === "--") {
+    if (/^--[+#]?$/.test(token)) {
       throw new ChessError("INVALID_PGN", "PGN variations cannot contain null moves");
     }
     plies += 1;
@@ -614,11 +615,8 @@ function withoutMainlineEnPassant(pgn: string): string {
     let end = index + 1;
     while (end < pgn.length && !/[\s{}();"]/.test(pgn[end]!)) end += 1;
     const word = pgn.slice(index, end);
-    const attachedResult = PGN_RESULTS.find(
-      (candidate) => word === `e.p.${candidate}`,
-    );
-    if (attachedResult) result += attachedResult;
-    else if (word !== "e.p.") result += word;
+    if (word.startsWith("e.p.")) result += word.slice("e.p.".length);
+    else result += word;
     index = end;
   }
   return result;

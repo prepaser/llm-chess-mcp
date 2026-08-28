@@ -467,6 +467,9 @@ test("parseImportedPgn validates legal moves in recursive variations", () => {
     "1. e4 (e.p. 1. d4) *",
     "1. e4 (1. d4 e.p.) *",
     "1. e4 (1. --) *",
+    "1. e4 (1. --+) *",
+    "1. e4 (1. --#) *",
+    "1. e4 (1. --+!) *",
   ]) {
     assert.throws(
       () => parseImportedPgn(pgn),
@@ -515,6 +518,8 @@ test("parseImportedPgn rejects empty and structurally excessive variations", () 
   for (const pgn of [
     `1.e4${"$1".repeat(MAX_PGN_PLIES * 8)}*`,
     `1.${".".repeat(MAX_PGN_PLIES * 8)}e4*`,
+    `1.e4$${"1".repeat(MAX_PGN_PLIES * 8 + 1)}*`,
+    `${"1".repeat(MAX_PGN_PLIES * 8 + 1)}.e4*`,
   ]) {
     assert.throws(
       () => parseImportedPgn(pgn),
@@ -631,6 +636,16 @@ test("parseImportedPgn accepts actual mainline en-passant annotations", () => {
   assert.deepEqual(attached.history(), ["e4", "a6", "e5", "d5", "exd6"]);
   assert.equal(attached.getComments().at(-1)?.comment, "before between after");
   assert.doesNotThrow(() => parseImportedPgn(pgnOf(attached)));
+
+  for (const [suffix, history] of [
+    ["e.p.$1 cxd6*", ["e4", "a6", "e5", "d5", "exd6", "cxd6"]],
+    ["e.p.$1$2*", ["e4", "a6", "e5", "d5", "exd6"]],
+  ] as const) {
+    assert.deepEqual(
+      parseImportedPgn(`1.e4 a6 2.e5 d5 3.exd6 ${suffix}`).history(),
+      history,
+    );
+  }
 });
 
 test("parseImportedPgn accepts move numbers with additional periods", () => {
@@ -660,7 +675,12 @@ test("parseImportedPgn splits self-delimiting termination markers", () => {
 });
 
 test("parseImportedPgn splits self-delimiting move annotations", () => {
-  for (const pgn of ["1.e4$1$2e5*", "1.e4!?e5*", "1.e4+e5*"]) {
+  for (const pgn of [
+    "1.e4$1$2e5*",
+    "1.e4$123e5*",
+    "1.e4!?e5*",
+    "1.e4+e5*",
+  ]) {
     assert.deepEqual(parseImportedPgn(pgn).history(), ["e4", "e5"]);
   }
 });
