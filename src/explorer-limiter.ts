@@ -29,6 +29,7 @@ interface QueuedRequest {
 class RequestLimiter implements ExplorerLimiter {
   #active = false;
   #cooldownUntil = 0;
+  #lastNow: number | undefined;
   #queue: QueuedRequest[] = [];
 
   constructor(private readonly now: () => number) {}
@@ -38,7 +39,7 @@ class RequestLimiter implements ExplorerLimiter {
   }
 
   cooldown(ms: number, _now: number): void {
-    this.#cooldownUntil = Math.max(this.#cooldownUntil, this.now() + ms);
+    this.#cooldownUntil = Math.max(this.#cooldownUntil, this.#readNow() + ms);
   }
 
   run<T>(
@@ -102,16 +103,30 @@ class RequestLimiter implements ExplorerLimiter {
 
   #waitForCooldown(options: ExplorerLimiterOptions): Promise<void> | undefined {
     const cooldownUntil = this.#cooldownUntil;
-    const delay = cooldownUntil - this.now();
+    const delay = Math.ceil(cooldownUntil - this.#readNow());
     if (delay <= 0) return;
     if (delay >= options.deadline - options.now()) {
       throw explorerError("rate_limited");
     }
     return awaitWithAbort(options.callerSignal, () => options.sleep(delay)).then(
       () => {
-        if (this.#cooldownUntil === cooldownUntil) this.#cooldownUntil = 0;
+        const now = this.#readNow();
+        if (this.#cooldownUntil > now) throw explorerError("rate_limited");
+        this.#cooldownUntil = 0;
       },
     );
+  }
+
+  #readNow(): number {
+    const now = this.now();
+    if (
+      !Number.isFinite(now) ||
+      (this.#lastNow !== undefined && now < this.#lastNow)
+    ) {
+      throw explorerError("invalid_input");
+    }
+    this.#lastNow = now;
+    return now;
   }
 }
 

@@ -5,6 +5,7 @@ import {
   assertLegalPosition,
   assertSafeFenCounters,
   drawResult,
+  MAX_PGN_PLIES,
   parseImportedPgn,
   parseMove,
   pgnOf,
@@ -64,6 +65,22 @@ test("snapshotChess rejects malformed en passant without mutating its source", (
     chess.fen({ forceEnpassantSquare: true }),
     "4k3/8/8/3P4/8/8/P7/4K3 w - e6 0 1",
   );
+});
+
+test("snapshotChess rejects an illegal initial position hidden by later history", () => {
+  const chess = new Chess(
+    "4k3/8/8/8/8/8/P7/4K3 w K - 0 1",
+  );
+  chess.move("O-O");
+  const fen = chess.fen();
+  const history = chess.history();
+
+  assert.throws(
+    () => snapshotChess(chess),
+    (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+  );
+  assert.equal(chess.fen(), fen);
+  assert.deepEqual(chess.history(), history);
 });
 
 test("FEN counters must be safe decimal integers", () => {
@@ -149,6 +166,7 @@ test("custom positions reject impossible pawn and promotion material", () => {
     "4k3/pppppppp/p7/8/8/8/PPPPPPPP/4K3 w - - 0 1",
     "4k3/8/8/8/8/8/PPPPPPPP/3QKQ2 w - - 0 1",
     "4k3/8/8/8/8/4B3/PPPPPPPP/2B1K3 w - - 0 1",
+    "rnbqkbnr/pppppppp/8/8/8/P7/P1PPPPPP/RNBQKBNR w KQkq - 0 1",
   ]) {
     assert.throws(
       () => assertLegalPosition(new Chess(fen)),
@@ -160,6 +178,10 @@ test("custom positions reject impossible pawn and promotion material", () => {
       new Chess("4k3/8/8/8/8/8/PPPPPPP1/3QKQ2 w - - 0 1"),
     ),
   );
+
+  const captured = new Chess();
+  for (const move of ["e4", "d5", "exd5"]) captured.move(move);
+  assert.doesNotThrow(() => assertLegalPosition(captured));
 });
 
 test("stateOf reports the typed public state", () => {
@@ -313,6 +335,11 @@ test("parseImportedPgn validates results outside comments for every game", () =>
   assert.doesNotThrow(() =>
     parseImportedPgn('1. f3 e5 2. g4 Qh4# {\n[Result "1-0"]\n}'),
   );
+  assert.equal(
+    parseImportedPgn('1. e4 {\n[Event "not a header"]\n} *').getHeaders()
+      .Event,
+    "?",
+  );
   for (const pgn of [
     '[Result "invalid"]\n\n1. e4 e5',
     '[Result "1-0"]\n\n1. e4 e5 0-1',
@@ -334,6 +361,96 @@ test("parseImportedPgn ignores standard column-one escape lines", () => {
   assert.deepEqual(chess.history(), ["e4"]);
   assert.equal(chess.getHeaders().Result, "1-0");
   assert.doesNotThrow(() => parseImportedPgn(pgnOf(chess)));
+});
+
+test("parseImportedPgn keeps tag sections contiguous across escape lines", () => {
+  for (const newline of ["\n", "\r", "\r\n"]) {
+    const pgn = [
+      '[Event "x"]',
+      "% ignored",
+      String.raw`[white "A \"B\""]`,
+      "",
+      "1. e4 *",
+    ].join(newline);
+    const chess = parseImportedPgn(pgn);
+    assert.equal(chess.getHeaders().Event, "x");
+    assert.equal(chess.getHeaders().White, 'A "B"');
+    assert.doesNotThrow(() => parseImportedPgn(pgnOf(chess)));
+  }
+});
+
+test("parseImportedPgn accepts one UTF-8 BOM before PGN content", () => {
+  const chess = parseImportedPgn('\uFEFF[Result "*"]\r\n\r\n1. e4 *');
+  assert.deepEqual(chess.history(), ["e4"]);
+  assert.doesNotThrow(() => parseImportedPgn(pgnOf(chess)));
+});
+
+test("parseImportedPgn decodes and re-encodes header escapes", () => {
+  const pgn = String.raw`[Event "A \"quote\" and \\ path"]
+
+1. e4 *`;
+  const chess = parseImportedPgn(pgn);
+  assert.equal(chess.getHeaders().Event, 'A "quote" and \\ path');
+
+  const exported = pgnOf(chess);
+  assert.match(exported, /\[Event "A \\"quote\\" and \\\\ path"\]/);
+  assert.equal(parseImportedPgn(exported).getHeaders().Event, 'A "quote" and \\ path');
+});
+
+test("parseImportedPgn canonicalizes standard header names without duplicates", () => {
+  const chess = parseImportedPgn(
+    String.raw`[event "lower"]
+[white "A \"player\""]
+
+1. e4 *`,
+  );
+  const exported = pgnOf(chess);
+
+  assert.equal(chess.getHeaders().Event, "lower");
+  assert.equal(chess.getHeaders().White, 'A "player"');
+  assert.doesNotMatch(exported, /\[(?:event|white) /);
+  const roundTrip = parseImportedPgn(exported);
+  assert.equal(roundTrip.getHeaders().Event, "lower");
+  assert.equal(roundTrip.getHeaders().White, 'A "player"');
+});
+
+test("parseImportedPgn rejects duplicate custom header names case-insensitively", () => {
+  assert.throws(
+    () => parseImportedPgn('[Event "one"]\n[event "two"]\n\n1. e4 *'),
+    (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+  );
+});
+
+test("parseImportedPgn validates legal moves in recursive variations", () => {
+  const valid = parseImportedPgn(
+    "1. e4 $1 (1. d4 {queen pawn} d5 (1... Nf6)) e5 *",
+  );
+  assert.deepEqual(valid.history(), ["e4", "e5"]);
+
+  for (const pgn of ["1. e4 (1. e5) *", "1. e4 (1. Qh5) *"]) {
+    assert.throws(
+      () => parseImportedPgn(pgn),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+});
+
+test("parseImportedPgn accepts move numbers with additional periods", () => {
+  const chess = parseImportedPgn("1.e4 1..e5 (1....c5) *");
+  assert.deepEqual(chess.history(), ["e4", "e5"]);
+});
+
+test("parseImportedPgn applies the ply cap across recursive variations", () => {
+  const variations = Array.from(
+    { length: MAX_PGN_PLIES },
+    () => "(1. d4)",
+  ).join(" ");
+
+  assert.throws(
+    () => parseImportedPgn(`1. e4 ${variations} *`),
+    (error) =>
+      error instanceof ChessError && error.code === "PGN_TOO_MANY_MOVES",
+  );
 });
 
 test("parseImportedPgn rejects case-insensitive duplicate Result headers", () => {

@@ -126,6 +126,43 @@ test("builds the request and maps a validated response", async () => {
   });
 });
 
+test("uses one plain snapshot of direct API filter arrays", async () => {
+  const speeds = ["blitz"];
+  const ratings = [1800];
+  let speedIterations = 0;
+  let ratingIterations = 0;
+  speeds[Symbol.iterator] = function* () {
+    speedIterations += 1;
+    yield "rapid";
+    return undefined;
+  };
+  ratings[Symbol.iterator] = function* () {
+    ratingIterations += 1;
+    yield 2000;
+    return undefined;
+  };
+  speeds.join = () => "invalid";
+  ratings.join = () => "9999";
+  let input = "";
+
+  await openingExplorer(
+    new Chess(),
+    "lichess",
+    speeds,
+    ratings,
+    options(async (nextInput) => {
+      input = String(nextInput);
+      return response();
+    }),
+  );
+
+  const url = new URL(input);
+  assert.equal(url.searchParams.get("speeds"), "rapid");
+  assert.equal(url.searchParams.get("ratings"), "2000");
+  assert.equal(speedIterations, 1);
+  assert.equal(ratingIterations, 1);
+});
+
 test("rejects unsupported filters before fetching", async () => {
   let calls = 0;
   const fetch: ExplorerFetch = async () => {
@@ -439,6 +476,33 @@ test("does not fetch when the caller already cancelled", async () => {
   assert.equal(calls, 0);
 });
 
+test("returns stable errors for invalid or backward request clocks", async () => {
+  for (const values of [[Number.NaN], [Infinity], [-Infinity], [100, 99]]) {
+    let calls = 0;
+    let index = 0;
+    await assert.rejects(
+      openingExplorer(
+        new Chess(),
+        "lichess",
+        [],
+        [],
+        options(
+          async () => {
+            calls += 1;
+            return response();
+          },
+          {
+            limiter: createExplorerLimiter(() => 0),
+            now: () => values[Math.min(index++, values.length - 1)]!,
+          },
+        ),
+      ),
+      expectKind("invalid_input"),
+    );
+    assert.equal(calls, 0);
+  }
+});
+
 test("cancels retry backoff before another fetch", async () => {
   const controller = new AbortController();
   const cause = new Error("caller cancelled during backoff");
@@ -515,6 +579,7 @@ test("honors bounded Retry-After for 429 and 5xx", async () => {
     [429, "1", 1000],
     [503, "2", 2000],
   ] as const) {
+    let now = 0;
     let calls = 0;
     const delays: number[] = [];
     const fetch: ExplorerFetch = async () => {
@@ -530,8 +595,11 @@ test("honors bounded Retry-After for 429 and 5xx", async () => {
       [],
       [],
       options(fetch, {
-        now: () => 0,
-        sleep: async (ms) => void delays.push(ms),
+        now: () => now,
+        sleep: async (ms) => {
+          delays.push(ms);
+          now += ms;
+        },
       }),
     );
     assert.equal(calls, 2);
@@ -1013,6 +1081,66 @@ test("keeps shared cooldowns on the limiter clock domain", async () => {
   assert.equal(calls, 2);
 });
 
+test("does not trust early cooldown sleeps or ignore cooldown extensions", async () => {
+  for (const extend of [false, true]) {
+    let now = 0;
+    let calls = 0;
+    let wake: (() => void) | undefined;
+    const limiter = createExplorerLimiter(() => now);
+    limiter.cooldown(1_000, 0);
+    const pending = limiter.run(
+      {
+        callerSignal: undefined,
+        deadline: 12_000,
+        now: () => 0,
+        sleep: async () =>
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+          }),
+      },
+      async () => {
+        calls += 1;
+      },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    if (extend) limiter.cooldown(5_000, 0);
+    wake?.();
+
+    await assert.rejects(pending, expectKind("rate_limited"));
+    assert.equal(now, 0);
+    assert.equal(calls, 0);
+  }
+});
+
+test("fails fast for invalid or backward limiter clocks", async () => {
+  for (const values of [[Number.NaN], [Infinity], [1, 0]]) {
+    let index = 0;
+    const limiter = createExplorerLimiter(
+      () => values[Math.min(index++, values.length - 1)]!,
+    );
+    if (values.length === 1) {
+      assert.throws(
+        () => limiter.cooldown(1_000, 0),
+        expectKind("invalid_input"),
+      );
+      continue;
+    }
+    limiter.cooldown(1_000, 0);
+    await assert.rejects(
+      limiter.run(
+        {
+          callerSignal: undefined,
+          deadline: 12_000,
+          now: () => 0,
+          sleep: async () => undefined,
+        },
+        async () => undefined,
+      ),
+      expectKind("invalid_input"),
+    );
+  }
+});
+
 test("uses a one-minute shared cooldown when a 429 lacks Retry-After", async () => {
   let now = 0;
   const limiter = createExplorerLimiter(() => now);
@@ -1313,6 +1441,7 @@ test("accepts obsolete valid HTTP-date Retry-After forms", async () => {
   for (const retryAfter of [
     "Sunday, 06-Nov-94 08:49:37 GMT",
     "Sun Nov  6 08:49:37 1994",
+    "Sun Nov 06 08:49:37 1994",
   ]) {
     let now = 0;
     let calls = 0;
@@ -1430,7 +1559,6 @@ test("rejects malformed asctime spacing", async () => {
   const wallNow = Date.parse("1994-11-06T08:49:36Z");
   for (const retryAfter of [
     "Sun Nov 6 08:49:37 1994",
-    "Sun Nov 06 08:49:37 1994",
     "Sun Nov  06 08:49:37 1994",
   ]) {
     let calls = 0;

@@ -264,7 +264,9 @@ rejected:
 
 - Up to 1,000 games are retained per process; idle games expire after one hour.
 - `move_evaluate` accepts at most 10 moves per call.
-- Imported PGNs are limited to 1 MiB and 4,096 plies.
+- Imported PGNs are limited to 1 MiB and 4,096 plies across the mainline and
+  variations. Every variation is legality-checked; game state retains the
+  mainline. UTF-8 BOMs and standard escaped header values are supported.
 - Custom FENs reject inconsistent castling/en-passant metadata and impossible
   pawn or promotion material.
 - Stockfish accepts up to 32 active or queued analyses.

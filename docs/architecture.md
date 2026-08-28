@@ -86,7 +86,9 @@ Custom positions are validated before snapshotting. King and pawn placement,
 promotion material, castling rights, and en-passant metadata must describe a
 consistent position, so cloning cannot synthesize pieces or expose impossible
 moves. PGN setup headers are treated case-insensitively and canonicalized on
-import so exported games remain re-importable.
+import so exported games remain re-importable. Header escapes are decoded and
+re-encoded at the chess.js boundary, while every recursive annotation variation
+is legality-checked from its parent position before only the mainline is stored.
 
 Games are process-shared. There is no per-user, per-client, or per-MCP-session
 ownership record: possession of an opaque `game_id` is the capability required

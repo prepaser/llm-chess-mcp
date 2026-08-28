@@ -72,6 +72,35 @@ test("resolveStockfishFlavor accepts package keywords and rejects paths", () => 
   );
 });
 
+test("Stockfish timeouts fit the Node timer range", async () => {
+  const names = ["init", "handshake", "analyze", "stopGrace"] as const;
+  const invalid = [0, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648];
+  const warnings: Error[] = [];
+  const onWarning = (warning: Error) => warnings.push(warning);
+  process.on("warning", onWarning);
+  try {
+    assert.doesNotThrow(() => new Stockfish());
+    for (const name of names) {
+      assert.doesNotThrow(
+        () => new Stockfish({ timeouts: { [name]: 2_147_483_647 } }),
+      );
+      for (const value of invalid) {
+        assert.throws(
+          () => new Stockfish({ timeouts: { [name]: value } }),
+          new RegExp(`stockfish ${name} timeout must be a positive safe integer`),
+        );
+      }
+    }
+    await nextImmediate();
+  } finally {
+    process.off("warning", onWarning);
+  }
+  assert.equal(
+    warnings.some((warning) => warning.name === "TimeoutOverflowWarning"),
+    false,
+  );
+});
+
 test("analysis info parser merges partial updates and resets scores", () => {
   const mate = parseAnalysisInfo(
     "info depth 1 multipv 1 score mate -3 wdl 100 200 700",
@@ -262,12 +291,18 @@ test("late cold readiness sends quit without terminating twice", async () => {
   const outcome = active.catch((error: unknown) => error);
   await nextImmediate();
   const quitting = stockfish.quit();
+  let ready!: () => void;
+  const readiness = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
   setTimeout(() => {
     current.sendCommand = (command) => commands.push(command);
     callback(null, current);
+    ready();
   }, 5);
 
   await quitting;
+  await readiness;
   await nextImmediate();
   assert.match(String(await outcome), /stockfish quit/);
   assert.deepEqual(commands, ["quit"]);

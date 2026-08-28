@@ -82,6 +82,7 @@ const DEFAULT_TIMEOUTS: Timeouts = {
   stopGrace: 2000,
 };
 const DEFAULT_MAX_QUEUE = 32;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export function resolveStockfishFlavor(value?: string): StockfishFlavor {
   const normalized = (value || DEFAULT_FLAVOR).toLowerCase();
@@ -155,8 +156,14 @@ export class Stockfish {
       throw new Error("stockfish maxQueue must be a positive integer");
     }
     for (const [name, timeout] of Object.entries(this.timeouts)) {
-      if (!Number.isFinite(timeout) || timeout < 1) {
-        throw new Error(`stockfish ${name} timeout must be positive`);
+      if (
+        !Number.isSafeInteger(timeout) ||
+        timeout < 1 ||
+        timeout > MAX_TIMER_DELAY_MS
+      ) {
+        throw new Error(
+          `stockfish ${name} timeout must be a positive safe integer no greater than ${MAX_TIMER_DELAY_MS}`,
+        );
       }
     }
   }

@@ -100,6 +100,30 @@ const speedSet = new Set<string>(LICHESS_SPEEDS);
 const ratingSet = new Set<number>(LICHESS_RATINGS);
 const dbSet = new Set<string>(["lichess", "masters"]);
 
+function snapshotArray<T>(value: readonly T[]): T[] {
+  if (!Array.isArray(value)) throw explorerError("invalid_input");
+  try {
+    return Array.from(value);
+  } catch {
+    throw explorerError("invalid_input");
+  }
+}
+
+function requestClock(now: () => number): () => number {
+  let previous: number | undefined;
+  return () => {
+    const current = now();
+    if (
+      !Number.isFinite(current) ||
+      (previous !== undefined && current < previous)
+    ) {
+      throw explorerError("invalid_input");
+    }
+    previous = current;
+    return current;
+  };
+}
+
 export function explorerEnabled(): boolean {
   return (process.env.LICHESS_TOKEN || "").length > 0;
 }
@@ -129,30 +153,30 @@ function setupExplorerRequest(
   const token = options.token ?? process.env.LICHESS_TOKEN ?? "";
   if (!token) throw explorerError("disabled");
   if (!dbSet.has(db)) throw explorerError("invalid_input");
+  const speedValues = snapshotArray(speeds);
   if (
-    !Array.isArray(speeds) ||
-    ![...speeds].every((speed) => speedSet.has(speed)) ||
-    new Set(speeds).size !== speeds.length
+    !speedValues.every((speed) => speedSet.has(speed)) ||
+    new Set(speedValues).size !== speedValues.length
   ) {
     throw explorerError("invalid_input");
   }
+  const ratingValues = snapshotArray(ratings);
   if (
-    !Array.isArray(ratings) ||
-    ![...ratings].every((rating) => ratingSet.has(rating)) ||
-    new Set(ratings).size !== ratings.length
+    !ratingValues.every((rating) => ratingSet.has(rating)) ||
+    new Set(ratingValues).size !== ratingValues.length
   ) {
     throw explorerError("invalid_input");
   }
-  if (db === "masters" && (speeds.length > 0 || ratings.length > 0)) {
+  if (db === "masters" && (speedValues.length > 0 || ratingValues.length > 0)) {
     throw explorerError("invalid_input");
   }
 
   const params = new URLSearchParams();
   params.set("fen", chess.fen());
-  if (speeds.length) params.set("speeds", speeds.join(","));
-  if (ratings.length) params.set("ratings", ratings.join(","));
+  if (speedValues.length) params.set("speeds", speedValues.join(","));
+  if (ratingValues.length) params.set("ratings", ratingValues.join(","));
 
-  const now = options.now ?? (() => performance.now());
+  const now = requestClock(options.now ?? (() => performance.now()));
   return {
     callerSignal,
     db,

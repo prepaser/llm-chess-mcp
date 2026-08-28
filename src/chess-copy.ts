@@ -18,6 +18,40 @@ function squareColor(square: Square): 0 | 1 {
   return ((square.charCodeAt(0) - 97 + Number(square[1])) % 2) as 0 | 1;
 }
 
+function minimumPawnCaptures(chess: Chess, color: Color): number {
+  const pawns = chess
+    .findPiece({ type: "p", color })
+    .map((square) => ({
+      advances:
+        color === "w" ? Number(square[1]) - 2 : 7 - Number(square[1]),
+      file: square.charCodeAt(0) - 97,
+    }))
+    .sort((left, right) => left.file - right.file);
+  let costs = new Map<number, number>([[0, 0]]);
+  for (const pawn of pawns) {
+    const next = new Map<number, number>();
+    for (const [mask, cost] of costs) {
+      for (let original = 0; original < 8; original += 1) {
+        const bit = 1 << original;
+        if (mask & bit) continue;
+        const captures = Math.abs(original - pawn.file);
+        if (captures > pawn.advances) continue;
+        const nextMask = mask | bit;
+        next.set(nextMask, Math.min(next.get(nextMask) ?? Infinity, cost + captures));
+      }
+    }
+    costs = next;
+  }
+  return Math.min(...costs.values());
+}
+
+function nonKingMaterial(chess: Chess, color: Color): number {
+  return (["p", "q", "r", "b", "n"] as const).reduce(
+    (total, type) => total + chess.findPiece({ type, color }).length,
+    0,
+  );
+}
+
 function hasPiece(
   chess: Chess,
   square: Square,
@@ -163,6 +197,20 @@ export function assertLegalPosition(chess: Chess): void {
       );
     }
     assertCastlingPosition(chess, color);
+
+    const opponent: Color = color === "w" ? "b" : "w";
+    const opponentPawns = chess.findPiece({ type: "p", color: opponent }).length;
+    const missingOpponentMaterial = 15 - nonKingMaterial(chess, opponent);
+    const possibleOpponentPromotions = 8 - opponentPawns;
+    if (
+      minimumPawnCaptures(chess, color) >
+      missingOpponentMaterial + possibleOpponentPromotions
+    ) {
+      throw new ChessError(
+        "INVALID_FEN",
+        "FEN pawn files require more captures than opposing material allows",
+      );
+    }
   }
 
   assertEnPassantPosition(chess);
@@ -184,6 +232,7 @@ export function snapshotChess(chess: Chess): Chess {
   const initialFen = history[0]?.before ?? chess.fen();
   assertSafeFenCounters(initialFen);
   const snapshot = new Chess(initialFen);
+  assertLegalPosition(snapshot);
   const comments = new Map(
     chess.getComments().map(({ fen, comment }) => [fen, comment]),
   );
