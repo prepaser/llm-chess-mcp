@@ -2,9 +2,11 @@ import {
   awaitWithAbort,
   explorerError,
   EXPLORER_DEFAULT_RETRY_DELAY_MS,
+  EXPLORER_MAX_COOLDOWN_MS,
   EXPLORER_RATE_LIMIT_COOLDOWN_MS,
 } from "./explorer-core.js";
 import type { ExplorerError } from "./explorer-core.js";
+import { isExplorerCooldownError } from "./explorer-limiter.js";
 
 export type ExplorerRetryOutcome<T> =
   | { type: "success"; result: T }
@@ -165,10 +167,11 @@ export function retryAfterMs(value: string | null, now: number): number {
 }
 
 export function rateLimitCooldownMs(value: string | null, now: number): number {
-  if (value === null || value.trim() === "") {
-    return EXPLORER_RATE_LIMIT_COOLDOWN_MS;
-  }
-  return parseRetryAfterMs(value, now) ?? EXPLORER_RATE_LIMIT_COOLDOWN_MS;
+  const delay =
+    value === null || value.trim() === ""
+      ? EXPLORER_RATE_LIMIT_COOLDOWN_MS
+      : (parseRetryAfterMs(value, now) ?? EXPLORER_RATE_LIMIT_COOLDOWN_MS);
+  return Math.min(delay, EXPLORER_MAX_COOLDOWN_MS);
 }
 
 async function waitForRetry(
@@ -191,8 +194,7 @@ export async function retryExplorer<T>(
     if (outcome.type === "success") return outcome.result;
 
     lastError =
-      outcome.error.kind === "rate_limited" &&
-      outcome.error.status === undefined &&
+      isExplorerCooldownError(outcome.error) &&
       lastError?.kind === "rate_limited" &&
       lastError.status !== undefined
         ? lastError

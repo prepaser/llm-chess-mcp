@@ -5,7 +5,13 @@ export {
   assertSafeFenCounters,
   snapshotChess,
 } from "./chess-copy.js";
-export { MAX_PGN_BYTES, MAX_PGN_PLIES, parseImportedPgn, pgnOf } from "./pgn.js";
+export {
+  MAX_PGN_BYTES,
+  MAX_PGN_HEADERS,
+  MAX_PGN_PLIES,
+  parseImportedPgn,
+  pgnOf,
+} from "./pgn.js";
 import { ChessError } from "./errors.js";
 import type { ChessState, DrawResult } from "./domain.js";
 

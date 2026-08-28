@@ -4,6 +4,19 @@ import {
   EXPLORER_MAX_COOLDOWN_MS,
   throwIfAborted,
 } from "./explorer-core.js";
+import type { ExplorerError } from "./explorer-core.js";
+
+const cooldownErrors = new WeakSet<ExplorerError>();
+
+function cooldownError(): ExplorerError {
+  const error = explorerError("rate_limited");
+  cooldownErrors.add(error);
+  return error;
+}
+
+export function isExplorerCooldownError(error: ExplorerError): boolean {
+  return cooldownErrors.has(error);
+}
 
 export interface ExplorerLimiterOptions {
   callerSignal: AbortSignal | undefined;
@@ -119,12 +132,12 @@ class RequestLimiter implements ExplorerLimiter {
     const delay = Math.ceil(cooldownUntil - this.#readNow());
     if (delay <= 0) return;
     if (delay >= options.deadline - options.now()) {
-      throw explorerError("rate_limited");
+      throw cooldownError();
     }
     return awaitWithAbort(options.callerSignal, () => options.sleep(delay)).then(
       () => {
         const now = this.#readNow();
-        if (this.#cooldownUntil > now) throw explorerError("rate_limited");
+        if (this.#cooldownUntil > now) throw cooldownError();
         this.#cooldownUntil = 0;
       },
     );

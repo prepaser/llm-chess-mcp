@@ -22,6 +22,7 @@ export {
   drawResult,
   MAX_EVALUATED_MOVES,
   MAX_PGN_BYTES,
+  MAX_PGN_HEADERS,
   MAX_PGN_PLIES,
   parseImportedPgn,
   snapshotChess,

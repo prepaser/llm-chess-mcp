@@ -7,6 +7,7 @@ import {
 import { ChessError } from "./errors.js";
 
 export const MAX_PGN_BYTES = 1024 * 1024;
+export const MAX_PGN_HEADERS = 256;
 export const MAX_PGN_PLIES = 4096;
 const MAX_PGN_ELEMENTS = MAX_PGN_PLIES * 8;
 
@@ -92,6 +93,12 @@ function prepareHeaders(pgn: string): {
         );
       }
       names.add(key);
+      if (headers.length >= MAX_PGN_HEADERS) {
+        throw new ChessError(
+          "PGN_TOO_COMPLEX",
+          `PGN exceeds the ${MAX_PGN_HEADERS}-header limit`,
+        );
+      }
       const value = decodeHeaderValue(raw);
       headers.push({ name, value });
       const canonical =
@@ -195,7 +202,7 @@ function declaredPgnResult(pgn: string): PgnResult | undefined {
   ].map((match) => match[1] ?? "");
   const movetext = visiblePgn.replace(/^\s*\[[^\r\n]*\]\s*$/gm, "");
   const markers = [
-    ...movetext.matchAll(/(?:^|\s)(1-0|0-1|1\/2-1\/2|\*)(?=\s|$)/g),
+    ...movetext.matchAll(/(1-0|0-1|1\/2-1\/2|\*)(?=\s|$)/g),
   ].map((match) => match[1] ?? "");
   const results = [...headerResults, ...markers];
 
@@ -209,16 +216,33 @@ function declaredPgnResult(pgn: string): PgnResult | undefined {
   return result;
 }
 
-function movetextTokens(pgn: string): string[] {
+type MovetextToken =
+  | { kind: "comment" }
+  | { kind: "variationEnd" }
+  | { kind: "variationStart" }
+  | { kind: "word"; value: string };
+
+function movetextTokens(pgn: string): MovetextToken[] {
   const movetext = pgn;
-  const tokens: string[] = [];
-  const push = (token: string): void => {
+  const tokens: MovetextToken[] = [];
+  const push = (token: MovetextToken): void => {
     tokens.push(token);
     if (tokens.length > MAX_PGN_ELEMENTS) {
       throw new ChessError(
         "PGN_TOO_COMPLEX",
         `PGN exceeds the ${MAX_PGN_ELEMENTS}-element limit`,
       );
+    }
+  };
+  const pushWord = (value: string): void => {
+    const result = PGN_RESULTS.find(
+      (candidate) => value.length > candidate.length && value.endsWith(candidate),
+    );
+    if (result) {
+      push({ kind: "word", value: value.slice(0, -result.length) });
+      push({ kind: "word", value: result });
+    } else {
+      push({ kind: "word", value });
     }
   };
   for (let index = 0; index < movetext.length; ) {
@@ -232,6 +256,7 @@ function movetextTokens(pgn: string): string[] {
       if (end < 0) {
         throw new ChessError("INVALID_PGN", "unterminated PGN comment");
       }
+      push({ kind: "comment" });
       index = end + 1;
       continue;
     }
@@ -239,10 +264,16 @@ function movetextTokens(pgn: string): string[] {
       while (index < movetext.length && !/[\r\n]/.test(movetext[index]!)) {
         index += 1;
       }
+      push({ kind: "comment" });
       continue;
     }
-    if (char === "(" || char === ")") {
-      push(char);
+    if (char === "(") {
+      push({ kind: "variationStart" });
+      index += 1;
+      continue;
+    }
+    if (char === ")") {
+      push({ kind: "variationEnd" });
       index += 1;
       continue;
     }
@@ -253,7 +284,7 @@ function movetextTokens(pgn: string): string[] {
     ) {
       end += 1;
     }
-    push(movetext.slice(index, end));
+    pushWord(movetext.slice(index, end));
     index = end;
   }
   return tokens;
@@ -261,75 +292,122 @@ function movetextTokens(pgn: string): string[] {
 
 function validatePgnMoves(pgn: string, initialFen: string): void {
   const tokens = movetextTokens(pgn);
+  type Phase =
+    | "after-en-passant"
+    | "after-move"
+    | "after-nag"
+    | "after-number"
+    | "after-result"
+    | "after-variation"
+    | "start";
   type Frame = {
     beforeLastFen: string | null;
     chess: Chess;
-    moveNumberOpen: boolean;
+    lastMoveEnPassant: boolean;
     moves: number;
+    phase: Phase;
   };
   const stack: Frame[] = [
     {
       beforeLastFen: null,
       chess: new Chess(initialFen),
-      moveNumberOpen: false,
+      lastMoveEnPassant: false,
       moves: 0,
+      phase: "start",
     },
   ];
+  const canStartMove = (phase: Phase): boolean =>
+    phase === "start" ||
+    phase === "after-move" ||
+    phase === "after-en-passant" ||
+    phase === "after-nag" ||
+    phase === "after-variation";
+  const canEndLine = (phase: Phase): boolean =>
+    phase === "after-move" ||
+    phase === "after-en-passant" ||
+    phase === "after-nag" ||
+    phase === "after-variation";
+  const invalidOrder = (): never => {
+    throw new ChessError("INVALID_PGN", "invalid PGN token order");
+  };
   let plies = 0;
-  for (let index = 0; index < tokens.length; index += 1) {
-    let token = tokens[index]!;
+  for (const current of tokens) {
     const frame = stack.at(-1)!;
-    if (token === "(") {
-      if (!frame.beforeLastFen) {
+    if (current.kind === "comment") {
+      continue;
+    }
+    if (current.kind === "variationStart") {
+      if (!frame.beforeLastFen || !canEndLine(frame.phase)) {
         throw new ChessError("INVALID_PGN", "PGN variation has no parent move");
       }
+      frame.phase = "after-variation";
       stack.push({
         beforeLastFen: null,
         chess: new Chess(frame.beforeLastFen),
-        moveNumberOpen: false,
+        lastMoveEnPassant: false,
         moves: 0,
+        phase: "start",
       });
       continue;
     }
-    if (token === ")") {
+    if (current.kind === "variationEnd") {
       if (stack.length === 1) {
         throw new ChessError("INVALID_PGN", "unexpected PGN variation end");
       }
-      if (frame.moves === 0) {
+      if (frame.moves === 0 || !canEndLine(frame.phase)) {
         throw new ChessError("INVALID_PGN", "PGN variation must contain a move");
       }
       stack.pop();
       continue;
     }
-    if (/^(?:\$\d+)+$/.test(token) || token === "e.p.") continue;
-
-    const moveNumber = /^(\d+)(\.+)(.*)$/.exec(token);
-    if (moveNumber) {
-      token = moveNumber[3] ?? "";
-      frame.moveNumberOpen = token.length === 0;
-      if (!token) continue;
-    } else if (frame.moveNumberOpen) {
-      const dots = /^(\.+)(.*)$/.exec(token);
-      if (dots) {
-        token = dots[2] ?? "";
-        frame.moveNumberOpen = false;
-        if (!token) continue;
+    let token = current.value;
+    if (token === "e.p.") {
+      if (frame.phase !== "after-move" || !frame.lastMoveEnPassant) {
+        invalidOrder();
       }
-      frame.moveNumberOpen = false;
+      frame.phase = "after-en-passant";
+      continue;
+    }
+    if (/^(?:\$\d+)+$/.test(token)) {
+      if (
+        frame.phase !== "after-move" &&
+        frame.phase !== "after-en-passant" &&
+        frame.phase !== "after-nag"
+      ) {
+        invalidOrder();
+      }
+      frame.phase = "after-nag";
+      continue;
     }
 
     if ((PGN_RESULTS as readonly string[]).includes(token)) {
-      if (stack.length !== 1) {
-        throw new ChessError(
-          "INVALID_PGN",
-          "PGN variation cannot contain a result",
-        );
+      if (
+        stack.length !== 1 ||
+        frame.phase === "after-number" ||
+        frame.phase === "after-result"
+      ) {
+        invalidOrder();
       }
-      if (index + 1 !== tokens.length) {
-        throw new ChessError("INVALID_PGN", "moves follow the PGN result");
-      }
+      frame.phase = "after-result";
       continue;
     }
+
+    if (frame.phase === "after-number") {
+      const dots = /^(\.+)(.*)$/.exec(token);
+      if (dots) {
+        token = dots[2] ?? "";
+        if (!token) continue;
+      }
+    } else {
+      if (!canStartMove(frame.phase)) invalidOrder();
+      const moveNumber = /^(\d+)(\.+)(.*)$/.exec(token);
+      if (moveNumber) {
+        token = moveNumber[3] ?? "";
+        frame.phase = "after-number";
+        if (!token) continue;
+      }
+    }
+
     const nag = token.indexOf("$");
     if (nag >= 0) {
       if (!/^(?:\$\d+)+$/.test(token.slice(nag))) {
@@ -352,16 +430,18 @@ function validatePgnMoves(pgn: string, initialFen: string): void {
     }
     frame.beforeLastFen = frame.chess.fen();
     try {
-      frame.chess.move(token);
+      const move = frame.chess.move(token);
+      frame.lastMoveEnPassant = move.isEnPassant();
     } catch {
       throw new ChessError("INVALID_PGN", `illegal PGN move: ${token}`);
     }
     frame.moves += 1;
-    frame.moveNumberOpen = false;
+    frame.phase = nag >= 0 ? "after-nag" : "after-move";
   }
   if (stack.length !== 1) {
     throw new ChessError("INVALID_PGN", "unterminated PGN variation");
   }
+  if (stack[0]!.phase === "after-number") invalidOrder();
 }
 
 function withoutVariations(pgn: string): string {
@@ -406,6 +486,140 @@ function withoutVariations(pgn: string): string {
     } else if (depth === 0) {
       result += char;
     }
+  }
+  return result;
+}
+
+function withoutMainlineEnPassant(pgn: string): string {
+  let result = "";
+  let index = 0;
+  let quoted = false;
+  let escaped = false;
+  while (index < pgn.length) {
+    const char = pgn[index]!;
+    if (quoted) {
+      result += char;
+      index += 1;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === '"') {
+      quoted = true;
+      result += char;
+      index += 1;
+      continue;
+    }
+    if (char === "{") {
+      const end = pgn.indexOf("}", index + 1) + 1;
+      result += pgn.slice(index, end);
+      index = end;
+      continue;
+    }
+    if (char === ";") {
+      let end = index + 1;
+      while (end < pgn.length && !/[\r\n]/.test(pgn[end]!)) end += 1;
+      result += pgn.slice(index, end);
+      index = end;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      result += char;
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (end < pgn.length && !/[\s{}();"]/.test(pgn[end]!)) end += 1;
+    const word = pgn.slice(index, end);
+    const attachedResult = PGN_RESULTS.find(
+      (candidate) => word === `e.p.${candidate}`,
+    );
+    if (attachedResult) result += attachedResult;
+    else if (word !== "e.p.") result += word;
+    index = end;
+  }
+  return result;
+}
+
+function normalizeMainlinePgn(input: string): string {
+  const pgn = withoutMainlineEnPassant(input);
+  let result = "";
+  let index = 0;
+  let quoted = false;
+  let escaped = false;
+  const comment = (): string => {
+    if (pgn[index] === "{") {
+      const end = pgn.indexOf("}", index + 1);
+      const value = pgn.slice(index + 1, end).replace(/[\r\n]+/g, " ");
+      index = end + 1;
+      return value;
+    }
+    let end = index + 1;
+    while (end < pgn.length && !/[\r\n]/.test(pgn[end]!)) end += 1;
+    const value = pgn.slice(index + 1, end).trim();
+    index = end;
+    return value;
+  };
+  while (index < pgn.length) {
+    const char = pgn[index]!;
+    if (quoted) {
+      result += char;
+      index += 1;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === '"') {
+      quoted = true;
+      result += char;
+      index += 1;
+      continue;
+    }
+    if (char === "{" || char === ";") {
+      const moveNumber = /(^|\s)(\d+\.+(?:\s*\.+)*)\s*$/.exec(result);
+      const deferredNumber = moveNumber?.[2] ?? "";
+      if (moveNumber) result = result.slice(0, moveNumber.index + moveNumber[1]!.length);
+      const comments: string[] = [];
+      let trailing = "";
+      while (index < pgn.length && (pgn[index] === "{" || pgn[index] === ";")) {
+        comments.push(comment());
+        const whitespaceStart = index;
+        while (index < pgn.length && /\s/.test(pgn[index]!)) index += 1;
+        if (pgn[index] === "{" || pgn[index] === ";") continue;
+        trailing = pgn.slice(whitespaceStart, index);
+      }
+      const nags: string[] = [];
+      if (!deferredNumber) {
+        while (index < pgn.length) {
+          let end = index;
+          while (end < pgn.length && !/[\s{}();"]/.test(pgn[end]!)) end += 1;
+          const word = pgn.slice(index, end);
+          if (!/^(?:\$\d+)+$/.test(word)) break;
+          nags.push(word);
+          index = end;
+          const whitespaceStart = index;
+          while (index < pgn.length && /\s/.test(pgn[index]!)) index += 1;
+          trailing = pgn.slice(whitespaceStart, index);
+        }
+      }
+      const value = comments.join(" ");
+      if (nags.length) result += `${nags.join(" ")} `;
+      result += value.includes("}") ? `;${value}\n` : `{${value}}`;
+      if (deferredNumber) result += ` ${deferredNumber}`;
+      result += trailing;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      result += char;
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (end < pgn.length && !/[\s{}();"]/.test(pgn[end]!)) end += 1;
+    result += pgn.slice(index, end);
+    index = end;
   }
   return result;
 }
@@ -462,29 +676,34 @@ function restoreHeaders(
   headersToRestore: PgnHeader[],
   result: PgnResult | undefined,
 ): void {
+  const names = new Map<string, string[]>();
+  const values = new Map<string, string>();
+  for (const [name, value] of Object.entries(chess.getHeaders())) {
+    const key = name.toLowerCase();
+    const existing = names.get(key);
+    if (existing) existing.push(name);
+    else names.set(key, [name]);
+    values.set(key, value);
+  }
+  const setCanonical = (name: string, value: string): void => {
+    const key = name.toLowerCase();
+    for (const existing of names.get(key) ?? []) {
+      if (existing !== name) chess.removeHeader(existing);
+    }
+    chess.setHeader(name, value);
+    names.set(key, [name]);
+    values.set(key, value);
+  };
   for (const { name, value } of headersToRestore) {
     const canonical = CANONICAL_HEADERS.get(name.toLowerCase()) ?? name;
-    for (const existing of Object.keys(chess.getHeaders())) {
-      if (existing.toLowerCase() === name.toLowerCase()) {
-        chess.removeHeader(existing);
-      }
-    }
-    chess.setHeader(canonical, value);
+    setCanonical(canonical, value);
   }
-  const headers = chess.getHeaders();
   for (const canonical of ["SetUp", "FEN", "Result"] as const) {
-    const entry = Object.entries(headers).find(
-      ([key]) => key.toLowerCase() === canonical.toLowerCase(),
-    );
-    for (const key of Object.keys(headers)) {
-      if (key !== canonical && key.toLowerCase() === canonical.toLowerCase()) {
-        chess.removeHeader(key);
-      }
-    }
     if (canonical === "Result" && result !== undefined) {
-      chess.setHeader(canonical, result);
-    } else if (entry) {
-      chess.setHeader(canonical, entry[1]);
+      setCanonical(canonical, result);
+    } else {
+      const value = values.get(canonical.toLowerCase());
+      if (value !== undefined) setCanonical(canonical, value);
     }
   }
 }
@@ -538,7 +757,7 @@ export function parseImportedPgn(pgn: string): Chess {
   let chess: Chess;
   try {
     chess = new Chess();
-    chess.loadPgn(withoutVariations(loaderPgn));
+    chess.loadPgn(normalizeMainlinePgn(withoutVariations(loaderPgn)));
   } catch {
     throw new ChessError("INVALID_PGN", "invalid or illegal PGN");
   }

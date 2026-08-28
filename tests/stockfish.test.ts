@@ -195,6 +195,44 @@ test("Stockfish accepts own options on normal and null-prototype objects", () =>
   }
 });
 
+test("Stockfish honors non-enumerable own timeout fields", () => {
+  const timeouts = Object.create({ handshake: 1 }) as Partial<
+    Record<"init" | "handshake" | "analyze" | "stopGrace", number>
+  >;
+  Object.defineProperties(timeouts, {
+    init: { value: 2, enumerable: false },
+    analyze: { value: 3, enumerable: true },
+  });
+
+  const current = new Stockfish({ timeouts }) as unknown as {
+    timeouts: Record<string, number>;
+  };
+  assert.deepEqual(current.timeouts, {
+    init: 2,
+    handshake: 15_000,
+    analyze: 3,
+    stopGrace: 2_000,
+  });
+});
+
+test("Stockfish rejects invalid timeout containers", () => {
+  assert.doesNotThrow(
+    () =>
+      new Stockfish({
+        timeouts: undefined,
+      } as unknown as StockfishOptions),
+  );
+  for (const timeouts of [null, 1, "invalid", [], () => {}]) {
+    assert.throws(
+      () =>
+        new Stockfish({
+          timeouts,
+        } as unknown as StockfishOptions),
+      /stockfish timeouts must be an object/,
+    );
+  }
+});
+
 test("analysis info parser merges partial updates and resets scores", () => {
   const mate = parseAnalysisInfo(
     "info depth 1 multipv 1 score mate -3 wdl 100 200 700",

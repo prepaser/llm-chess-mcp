@@ -246,10 +246,7 @@ async function attemptRequest(
       if (transport.type === "failure") {
         if (transport.error.kind === "rate_limited") {
           setup.limiter.cooldown(
-            Math.min(
-              rateLimitCooldownMs(transport.retryAfter, setup.wallNow()),
-              EXPLORER_MAX_COOLDOWN_MS,
-            ),
+            rateLimitCooldownMs(transport.retryAfter, setup.wallNow()),
             setup.now(),
           );
         }

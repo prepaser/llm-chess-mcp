@@ -90,7 +90,8 @@ import so exported games remain re-importable. Header escapes are decoded and
 re-encoded at the chess.js boundary, while every recursive annotation variation
 is legality-checked from its parent position before only the mainline is stored.
 An iterative pre-parser caps structural elements and strips variations before
-the dependency parser runs, avoiding recursive dependency-stack growth.
+the dependency parser runs, avoiding recursive dependency-stack growth. Header
+count is capped separately and restoration uses one case-insensitive index.
 
 Games are process-shared. There is no per-user, per-client, or per-MCP-session
 ownership record: possession of an opaque `game_id` is the capability required

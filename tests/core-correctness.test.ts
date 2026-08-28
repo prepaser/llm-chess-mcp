@@ -7,6 +7,7 @@ import {
   drawResult,
   MAX_EVALUATED_MOVES,
   MAX_PGN_BYTES,
+  MAX_PGN_HEADERS,
   MAX_PGN_PLIES,
   parseImportedPgn,
   snapshotChess,
@@ -71,6 +72,7 @@ test("all chess.js terminal draw reasons are reported", () => {
 });
 
 test("PGN import enforces UTF-8 byte and ply caps", () => {
+  assert.equal(MAX_PGN_HEADERS, 256);
   assert.throws(
     () => parseImportedPgn("é".repeat(MAX_PGN_BYTES / 2 + 1)),
     (error) => error instanceof ChessError && error.code === "PGN_TOO_LARGE",

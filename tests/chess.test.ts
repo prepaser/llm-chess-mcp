@@ -5,6 +5,7 @@ import {
   assertLegalPosition,
   assertSafeFenCounters,
   drawResult,
+  MAX_PGN_HEADERS,
   MAX_PGN_PLIES,
   parseImportedPgn,
   parseMove,
@@ -421,9 +422,32 @@ test("parseImportedPgn rejects duplicate custom header names case-insensitively"
   );
 });
 
+test("parseImportedPgn bounds the complete header section", () => {
+  const headers = Array.from(
+    { length: MAX_PGN_HEADERS },
+    (_, index) => `[X${index} "${index}"]`,
+  );
+  const chess = parseImportedPgn(`${headers.join("\n")}\n\n*`);
+  assert.equal(
+    chess.getHeaders()[`X${MAX_PGN_HEADERS - 1}`],
+    String(MAX_PGN_HEADERS - 1),
+  );
+
+  for (const count of [MAX_PGN_HEADERS + 1, 1_000]) {
+    const excessive = Array.from(
+      { length: count },
+      (_, index) => `[X${index} "${index}"]`,
+    ).join("\n");
+    assert.throws(
+      () => parseImportedPgn(`${excessive}\n\n*`),
+      (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
+    );
+  }
+});
+
 test("parseImportedPgn validates legal moves in recursive variations", () => {
   const valid = parseImportedPgn(
-    "1. e4 $1 (1. d4!?$1$2 $3 $4 {queen pawn} d5 (1... Nf6)) e5 *",
+    "1. e4 $1 ({one}{two} 1. d4!?$1$2 $3 $4 {before nag} $5 (1. c4) {after one}{after two} d5 (1... Nf6) (1... e6)) {between} (1. c4 e5) e5 * {done}",
   );
   assert.deepEqual(valid.history(), ["e4", "e5"]);
 
@@ -435,9 +459,35 @@ test("parseImportedPgn validates legal moves in recursive variations", () => {
     "1. e4 (1. d4$1junk) *",
     "1. e4 (1. d4!!!) *",
     "1. e4 (1. d4 !) *",
+    "1. e4 ($1 1. d4) *",
+    "1. e4 (1. 2. d4) *",
+    "1. e4 (1. d4 2.) *",
+    "1. e4 (1. d4 (1. c4) $1) *",
+    "1. e4 (1. d4 (1. c4) {comment} $1) *",
+    "1. e4 (e.p. 1. d4) *",
+    "1. e4 (1. d4 e.p.) *",
   ]) {
     assert.throws(
       () => parseImportedPgn(pgn),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+  assert.doesNotThrow(
+    () =>
+      parseImportedPgn(
+        "1. e4 a6 2. e5 d5 3. exd6 (3. exd6 e.p. $1 {ep} 3... cxd6) *",
+      ),
+  );
+  for (const misplaced of [
+    "$1 e.p.",
+    "(3. d4) e.p.",
+    "e.p. e.p.",
+  ]) {
+    assert.throws(
+      () =>
+        parseImportedPgn(
+          `1. e4 a6 2. e5 d5 3. exd6 (3. exd6 ${misplaced}) *`,
+        ),
       (error) => error instanceof ChessError && error.code === "INVALID_PGN",
     );
   }
@@ -476,6 +526,49 @@ test("parseImportedPgn preserves mainline comments around removed variations", (
   assert.match(pgnOf(chess), /\{keep \(parentheses\)\} e5 \{keep \(line\)\}/);
 });
 
+test("parseImportedPgn coalesces consecutive mainline comments", () => {
+  const chess = parseImportedPgn(
+    "{root one};root two\r\n1.e4 {mid one};mid two\n(1.d4) {after rav one};after } rav two\r\n1...e5 * {result one};result two",
+  );
+  assert.deepEqual(chess.history(), ["e4", "e5"]);
+  assert.deepEqual(
+    chess.getComments().map(({ comment }) => comment),
+    [
+      "root one root two",
+      "mid one mid two after rav one after } rav two",
+      "result one result two",
+    ],
+  );
+});
+
+test("parseImportedPgn canonicalizes comments around move syntax", () => {
+  for (const [pgn, comment] of [
+    ["1. {between number and move} e4 *", "between number and move"],
+    ["1.e4 {between move and nag} $1 e5 *", "between move and nag"],
+    [
+      "1.e4 a6 2.e5 d5 3.exd6 {before} e.p. $1 cxd6 *",
+      "before",
+    ],
+  ] as const) {
+    assert.equal(parseImportedPgn(pgn).getComments()[0]?.comment, comment);
+  }
+});
+
+test("parseImportedPgn accepts actual mainline en-passant annotations", () => {
+  const chess = parseImportedPgn(
+    "1.e4 a6 2.e5 d5 3.exd6 e.p. cxd6 *",
+  );
+  assert.deepEqual(chess.history(), ["e4", "a6", "e5", "d5", "exd6", "cxd6"]);
+  assert.doesNotThrow(() => parseImportedPgn(pgnOf(chess)));
+
+  const attached = parseImportedPgn(
+    "1.e4 a6 2.e5 d5 3.exd6 {before};between\n e.p. {after}*",
+  );
+  assert.deepEqual(attached.history(), ["e4", "a6", "e5", "d5", "exd6"]);
+  assert.equal(attached.getComments().at(-1)?.comment, "before between after");
+  assert.doesNotThrow(() => parseImportedPgn(pgnOf(attached)));
+});
+
 test("parseImportedPgn accepts move numbers with additional periods", () => {
   for (const pgn of [
     "1.e4 1..e5 (1....c5) *",
@@ -483,6 +576,22 @@ test("parseImportedPgn accepts move numbers with additional periods", () => {
     "1.e4 1. ..e5 (1. ..c5) *",
   ]) {
     assert.deepEqual(parseImportedPgn(pgn).history(), ["e4", "e5"]);
+  }
+});
+
+test("parseImportedPgn splits self-delimiting termination markers", () => {
+  for (const pgn of ["1.e4*", "1.e40-1", "1.e4$1*"]) {
+    assert.deepEqual(parseImportedPgn(pgn).history(), ["e4"]);
+  }
+  for (const pgn of [
+    "1.e4 (1.d4*) *",
+    "1.e4 (1.d4$1*) *",
+    "1.f3 e5 2.g4 Qh4#1-0",
+  ]) {
+    assert.throws(
+      () => parseImportedPgn(pgn),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
   }
 });
 

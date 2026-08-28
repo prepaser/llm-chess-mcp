@@ -135,6 +135,19 @@ function ownOption<K extends keyof StockfishOptions>(
   return Object.hasOwn(options, name) ? options[name] : undefined;
 }
 
+function mergeTimeouts(value: Partial<Timeouts> | undefined): Timeouts {
+  if (value === undefined) return { ...DEFAULT_TIMEOUTS };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("stockfish timeouts must be an object");
+  }
+
+  const timeouts = { ...DEFAULT_TIMEOUTS };
+  for (const name of Object.keys(DEFAULT_TIMEOUTS) as (keyof Timeouts)[]) {
+    if (Object.hasOwn(value, name)) timeouts[name] = value[name]!;
+  }
+  return timeouts;
+}
+
 export class Stockfish {
   private session: Session | null = null;
   private queue: QueuedAnalysis[] = [];
@@ -157,10 +170,7 @@ export class Stockfish {
     this.initEngine = ownOption(options, "init");
     this.configuredFlavor = ownOption(options, "flavor");
     this.maxQueue = ownOption(options, "maxQueue") ?? DEFAULT_MAX_QUEUE;
-    this.timeouts = {
-      ...DEFAULT_TIMEOUTS,
-      ...ownOption(options, "timeouts"),
-    };
+    this.timeouts = mergeTimeouts(ownOption(options, "timeouts"));
 
     if (!Number.isInteger(this.maxQueue) || this.maxQueue < 1) {
       throw new Error("stockfish maxQueue must be a positive integer");

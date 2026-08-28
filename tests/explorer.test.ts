@@ -16,8 +16,10 @@ import {
   createExplorerLimiter,
   openingExplorer,
   type ExplorerFetch,
+  type ExplorerLimiter,
   type ExplorerRequestOptions,
 } from "../src/explorer.js";
+import { rateLimitCooldownMs } from "../src/explorer-retry.js";
 
 const validBody = {
   white: 10,
@@ -1162,6 +1164,40 @@ test("preserves the original 429 after cooldown fail-fast", async () => {
   assert.equal(calls, 1);
 });
 
+test("propagates the latest custom limiter rate-limit error", async () => {
+  const customError = new ExplorerError(
+    "rate_limited",
+    "custom limiter quota exhausted",
+  );
+  let runs = 0;
+  let calls = 0;
+  const limiter: ExplorerLimiter = {
+    pending: 0,
+    cooldown: () => undefined,
+    run: async (_options, request) => {
+      runs += 1;
+      if (runs > 1) throw customError;
+      return await request();
+    },
+  };
+
+  await assert.rejects(
+    openingExplorer(new Chess(), "lichess", [], [], {
+      token: "shared-token",
+      limiter,
+      now: () => 0,
+      wallNow: () => 0,
+      fetch: async () => {
+        calls += 1;
+        return response(429, {}, { "Retry-After": "0" });
+      },
+    }),
+    (error: unknown) => error === customError,
+  );
+  assert.equal(runs, 2);
+  assert.equal(calls, 1);
+});
+
 test("fails fast for invalid or backward limiter clocks", async () => {
   for (const values of [
     [Number.NaN],
@@ -1246,6 +1282,34 @@ test("validates cooldown durations before mutating limiter state", async () => {
       sleep: async () => undefined,
     },
     async () => undefined,
+  );
+
+  let maximumNow = 0;
+  const maximum = createExplorerLimiter(() => maximumNow);
+  maximum.cooldown(EXPLORER_MAX_COOLDOWN_MS, 0);
+  maximumNow = EXPLORER_MAX_COOLDOWN_MS;
+  await maximum.run(
+    {
+      callerSignal: undefined,
+      deadline: 12_000,
+      now: () => 0,
+      sleep: async () => undefined,
+    },
+    async () => undefined,
+  );
+});
+
+test("caps public rate-limit delays to the public cooldown maximum", () => {
+  assert.equal(
+    rateLimitCooldownMs(String(Math.floor(EXPLORER_MAX_COOLDOWN_MS / 1_000)), 0),
+    2_147_483_000,
+  );
+  assert.equal(
+    rateLimitCooldownMs(
+      String(Math.ceil(EXPLORER_MAX_COOLDOWN_MS / 1_000)),
+      0,
+    ),
+    EXPLORER_MAX_COOLDOWN_MS,
   );
 });
 
