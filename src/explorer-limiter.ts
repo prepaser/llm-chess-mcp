@@ -42,7 +42,7 @@ interface QueuedRequest {
 
 class RequestLimiter implements ExplorerLimiter {
   #active = false;
-  #cooldownUntil = 0;
+  #cooldownUntil: number | undefined;
   #lastNow: number | undefined;
   #queue: QueuedRequest[] = [];
 
@@ -62,10 +62,17 @@ class RequestLimiter implements ExplorerLimiter {
     }
     const now = this.#readNow();
     const cooldownUntil = now + ms;
-    if (!Number.isFinite(cooldownUntil) || (ms > 0 && cooldownUntil <= now)) {
+    if (
+      !Number.isFinite(cooldownUntil) ||
+      Math.abs(cooldownUntil) > Number.MAX_SAFE_INTEGER ||
+      (ms > 0 && cooldownUntil <= now)
+    ) {
       throw explorerError("invalid_input");
     }
-    this.#cooldownUntil = Math.max(this.#cooldownUntil, cooldownUntil);
+    this.#cooldownUntil =
+      this.#cooldownUntil === undefined
+        ? cooldownUntil
+        : Math.max(this.#cooldownUntil, cooldownUntil);
   }
 
   run<T>(
@@ -128,8 +135,10 @@ class RequestLimiter implements ExplorerLimiter {
   }
 
   #waitForCooldown(options: ExplorerLimiterOptions): Promise<void> | undefined {
+    const now = this.#readNow();
     const cooldownUntil = this.#cooldownUntil;
-    const delay = Math.ceil(cooldownUntil - this.#readNow());
+    if (cooldownUntil === undefined) return;
+    const delay = Math.ceil(cooldownUntil - now);
     if (delay <= 0) return;
     if (delay >= options.deadline - options.now()) {
       throw cooldownError();
@@ -137,8 +146,10 @@ class RequestLimiter implements ExplorerLimiter {
     return awaitWithAbort(options.callerSignal, () => options.sleep(delay)).then(
       () => {
         const now = this.#readNow();
-        if (this.#cooldownUntil > now) throw cooldownError();
-        this.#cooldownUntil = 0;
+        if (this.#cooldownUntil !== undefined && this.#cooldownUntil > now) {
+          throw cooldownError();
+        }
+        this.#cooldownUntil = undefined;
       },
     );
   }
@@ -147,7 +158,7 @@ class RequestLimiter implements ExplorerLimiter {
     const now = this.now();
     if (
       !Number.isFinite(now) ||
-      Math.abs(now) > Number.MAX_SAFE_INTEGER - EXPLORER_MAX_COOLDOWN_MS ||
+      Math.abs(now) > Number.MAX_SAFE_INTEGER ||
       (this.#lastNow !== undefined && now < this.#lastNow)
     ) {
       throw explorerError("invalid_input");

@@ -137,20 +137,23 @@ export function createAppServicesLeaseManager(
     acquire(): DefaultAppServicesLease {
       if (quitting) throw new Error("application services are shutting down");
       leaseCount += 1;
-      let released = false;
+      let releasePromise: Promise<void> | undefined;
       return {
         services,
-        async release(): Promise<void> {
-          if (released) return;
-          released = true;
+        release(): Promise<void> {
+          if (releasePromise) return releasePromise;
           leaseCount -= 1;
-          if (leaseCount !== 0) return;
-          quitting = true;
-          try {
-            await services.quit();
-          } finally {
-            quitting = false;
+          if (leaseCount !== 0) {
+            releasePromise = Promise.resolve();
+            return releasePromise;
           }
+          quitting = true;
+          releasePromise = Promise.resolve()
+            .then(() => services.quit())
+            .finally(() => {
+              quitting = false;
+            });
+          return releasePromise;
         },
       };
     },

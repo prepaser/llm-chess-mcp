@@ -466,6 +466,7 @@ test("parseImportedPgn validates legal moves in recursive variations", () => {
     "1. e4 (1. d4 (1. c4) {comment} $1) *",
     "1. e4 (e.p. 1. d4) *",
     "1. e4 (1. d4 e.p.) *",
+    "1. e4 (1. --) *",
   ]) {
     assert.throws(
       () => parseImportedPgn(pgn),
@@ -511,6 +512,15 @@ test("parseImportedPgn rejects empty and structurally excessive variations", () 
     () => parseImportedPgn(`1.e4 ${"() ".repeat(200_000)}*`),
     (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
   );
+  for (const pgn of [
+    `1.e4${"$1".repeat(MAX_PGN_PLIES * 8)}*`,
+    `1.${".".repeat(MAX_PGN_PLIES * 8)}e4*`,
+  ]) {
+    assert.throws(
+      () => parseImportedPgn(pgn),
+      (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
+    );
+  }
 });
 
 test("parseImportedPgn preserves mainline comments around removed variations", () => {
@@ -539,6 +549,57 @@ test("parseImportedPgn coalesces consecutive mainline comments", () => {
       "result one result two",
     ],
   );
+  const roundTrip = parseImportedPgn(pgnOf(chess));
+  assert.deepEqual(roundTrip.history(), ["e4", "e5"]);
+  assert.deepEqual(
+    roundTrip.getComments().map(({ comment }) => comment),
+    chess.getComments().map(({ comment }) => comment),
+  );
+});
+
+test("pgnOf safely exports repeated delimiter-bearing comments", () => {
+  const chess = parseImportedPgn(
+    '[Event "header {same } comment}"]\n\n;same } comment\n1.e4 ;same } comment\n1...e5 ;x}\n2.Nf3 ;x}}\n2...Nc6 *',
+  );
+  chess.setComment("line\nbreak comment");
+
+  const roundTrip = parseImportedPgn(pgnOf(chess));
+  assert.equal(roundTrip.getHeaders().Event, "header {same } comment}");
+  assert.deepEqual(roundTrip.history(), ["e4", "e5", "Nf3", "Nc6"]);
+  assert.deepEqual(
+    roundTrip.getComments().map(({ comment }) => comment),
+    ["same } comment", "same } comment", "x}", "x}}", "line break comment"],
+  );
+
+  const headerless = new Chess();
+  headerless.setComment("line\n\nbreak comment");
+  headerless.move("e4");
+  const headerlessRoundTrip = parseImportedPgn(pgnOf(headerless));
+  assert.deepEqual(headerlessRoundTrip.history(), ["e4"]);
+  assert.equal(
+    headerlessRoundTrip.getComments()[0]?.comment,
+    "line break comment",
+  );
+});
+
+test("pgnOf preserves replacement patterns in unsafe comments", () => {
+  const comments = ["literal $& }", "literal $` }", "literal $' }", "literal $$ }"];
+  const chess = parseImportedPgn(
+    [
+      `;${comments[0]}`,
+      `1.e4 ;${comments[1]}`,
+      `1...e5 ;${comments[2]}`,
+      `2.Nf3 ;${comments[3]}`,
+      "2...Nc6 *",
+    ].join("\n"),
+  );
+
+  const roundTrip = parseImportedPgn(pgnOf(chess));
+  assert.deepEqual(roundTrip.history(), ["e4", "e5", "Nf3", "Nc6"]);
+  assert.deepEqual(
+    roundTrip.getComments().map(({ comment }) => comment),
+    comments,
+  );
 });
 
 test("parseImportedPgn canonicalizes comments around move syntax", () => {
@@ -549,6 +610,9 @@ test("parseImportedPgn canonicalizes comments around move syntax", () => {
       "1.e4 a6 2.e5 d5 3.exd6 {before} e.p. $1 cxd6 *",
       "before",
     ],
+    ["1.e4 {first} $1 {second} e5 *", "first second"],
+    ["1.e4 {first} 1... {second} e5 *", "first second"],
+    ["1.e4 {first}$1{second}$2{third}e5*", "first second third"],
   ] as const) {
     assert.equal(parseImportedPgn(pgn).getComments()[0]?.comment, comment);
   }
@@ -592,6 +656,12 @@ test("parseImportedPgn splits self-delimiting termination markers", () => {
       () => parseImportedPgn(pgn),
       (error) => error instanceof ChessError && error.code === "INVALID_PGN",
     );
+  }
+});
+
+test("parseImportedPgn splits self-delimiting move annotations", () => {
+  for (const pgn of ["1.e4$1$2e5*", "1.e4!?e5*", "1.e4+e5*"]) {
+    assert.deepEqual(parseImportedPgn(pgn).history(), ["e4", "e5"]);
   }
 });
 

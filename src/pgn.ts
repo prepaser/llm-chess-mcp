@@ -133,9 +133,28 @@ function withoutPgnEscapeLines(pgn: string): string {
 function pgnText(chess: Chess): string {
   const raw = chess.pgn();
   const headers = Object.entries(chess.getHeaders());
-  if (!headers.length) return raw;
   const separator = raw.indexOf("\n\n");
-  const movetext = separator < 0 ? "" : raw.slice(separator + 2);
+  let movetext =
+    headers.length === 0
+      ? raw
+      : separator < 0
+        ? ""
+        : raw.slice(separator + 2);
+  const unsafeComments = [
+    ...new Set(
+      chess
+        .getComments()
+        .map(({ comment }) => comment)
+        .filter((comment) => comment.includes("}")),
+    ),
+  ].sort((left, right) => right.length - left.length);
+  for (const comment of unsafeComments) {
+    movetext = movetext.replaceAll(
+      `{${comment}}`,
+      () => `;${comment.replace(/[\r\n]+/g, " ")}\n`,
+    );
+  }
+  if (!headers.length) return movetext;
   const tags = headers
     .map(([name, value]) => `[${name} "${encodeHeaderValue(value)}"]`)
     .join("\n");
@@ -225,24 +244,84 @@ type MovetextToken =
 function movetextTokens(pgn: string): MovetextToken[] {
   const movetext = pgn;
   const tokens: MovetextToken[] = [];
-  const push = (token: MovetextToken): void => {
+  let elements = 0;
+  const push = (token: MovetextToken, weight = 1): void => {
     tokens.push(token);
-    if (tokens.length > MAX_PGN_ELEMENTS) {
+    elements += weight;
+    if (elements > MAX_PGN_ELEMENTS) {
       throw new ChessError(
         "PGN_TOO_COMPLEX",
         `PGN exceeds the ${MAX_PGN_ELEMENTS}-element limit`,
       );
     }
   };
+  const wordWeight = (value: string): number => {
+    let dots = 0;
+    for (const char of value) {
+      if (char === ".") dots += 1;
+    }
+    return Math.max(1, dots);
+  };
+  const pushAnnotated = (value: string): void => {
+    let start = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      const char = value[index]!;
+      if (char !== "!" && char !== "?" && char !== "+" && char !== "#") {
+        continue;
+      }
+      let end = index + 1;
+      if (char === "!" || char === "?") {
+        if (value[end] === "!" || value[end] === "?") end += 1;
+      } else {
+        while (
+          end < index + 3 &&
+          (value[end] === "!" || value[end] === "?")
+        ) {
+          end += 1;
+        }
+      }
+      if (end === value.length) break;
+      push(
+        { kind: "word", value: value.slice(start, end) },
+        wordWeight(value.slice(start, end)),
+      );
+      start = end;
+      index = end - 1;
+    }
+    if (start < value.length) {
+      const word = value.slice(start);
+      push(
+        { kind: "word", value: word },
+        wordWeight(word),
+      );
+    }
+  };
+  const pushBody = (value: string): void => {
+    let start = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      if (value[index] !== "$") continue;
+      if (index > start) pushAnnotated(value.slice(start, index));
+      let end = index + 1;
+      while (end < value.length && /\d/.test(value[end]!)) end += 1;
+      if (end === index + 1) {
+        pushAnnotated(value.slice(index));
+        return;
+      }
+      push({ kind: "word", value: value.slice(index, end) });
+      start = end;
+      index = end - 1;
+    }
+    if (start < value.length) pushAnnotated(value.slice(start));
+  };
   const pushWord = (value: string): void => {
     const result = PGN_RESULTS.find(
       (candidate) => value.length > candidate.length && value.endsWith(candidate),
     );
     if (result) {
-      push({ kind: "word", value: value.slice(0, -result.length) });
+      pushBody(value.slice(0, -result.length));
       push({ kind: "word", value: result });
     } else {
-      push({ kind: "word", value });
+      pushBody(value);
     }
   };
   for (let index = 0; index < movetext.length; ) {
@@ -421,6 +500,9 @@ function validatePgnMoves(pgn: string, initialFen: string): void {
     }
     token = token.slice(0, token.length - suffix.length).replaceAll("0", "O");
     if (!token) continue;
+    if (token === "--") {
+      throw new ChessError("INVALID_PGN", "PGN variations cannot contain null moves");
+    }
     plies += 1;
     if (plies > MAX_PGN_PLIES) {
       throw new ChessError(
@@ -579,30 +661,34 @@ function normalizeMainlinePgn(input: string): string {
     }
     if (char === "{" || char === ";") {
       const moveNumber = /(^|\s)(\d+\.+(?:\s*\.+)*)\s*$/.exec(result);
-      const deferredNumber = moveNumber?.[2] ?? "";
+      let deferredNumber = moveNumber?.[2] ?? "";
       if (moveNumber) result = result.slice(0, moveNumber.index + moveNumber[1]!.length);
       const comments: string[] = [];
-      let trailing = "";
-      while (index < pgn.length && (pgn[index] === "{" || pgn[index] === ";")) {
-        comments.push(comment());
-        const whitespaceStart = index;
-        while (index < pgn.length && /\s/.test(pgn[index]!)) index += 1;
-        if (pgn[index] === "{" || pgn[index] === ";") continue;
-        trailing = pgn.slice(whitespaceStart, index);
-      }
       const nags: string[] = [];
-      if (!deferredNumber) {
-        while (index < pgn.length) {
+      let trailing = "";
+      while (index < pgn.length) {
+        if (pgn[index] === "{" || pgn[index] === ";") {
+          comments.push(comment());
+        } else {
           let end = index;
           while (end < pgn.length && !/[\s{}();"]/.test(pgn[end]!)) end += 1;
           const word = pgn.slice(index, end);
-          if (!/^(?:\$\d+)+$/.test(word)) break;
-          nags.push(word);
+          const nag = /^(?:\$\d+)+/.exec(word)?.[0];
+          if (!deferredNumber && nag) {
+            nags.push(nag);
+            end = index + nag.length;
+          } else if (!deferredNumber && /^\d+\.+$/.test(word)) {
+            deferredNumber = word;
+          } else if (deferredNumber && /^\.+$/.test(word)) {
+            deferredNumber += ` ${word}`;
+          } else {
+            break;
+          }
           index = end;
-          const whitespaceStart = index;
-          while (index < pgn.length && /\s/.test(pgn[index]!)) index += 1;
-          trailing = pgn.slice(whitespaceStart, index);
         }
+        const whitespaceStart = index;
+        while (index < pgn.length && /\s/.test(pgn[index]!)) index += 1;
+        trailing = pgn.slice(whitespaceStart, index);
       }
       const value = comments.join(" ");
       if (nags.length) result += `${nags.join(" ")} `;

@@ -531,6 +531,63 @@ test("accepts finite monotonic fractional request clocks", async () => {
   );
 });
 
+test("allows safe request clocks to advance through deadline boundaries", async () => {
+  for (const start of [
+    Number.MAX_SAFE_INTEGER - EXPLORER_TOTAL_TIMEOUT_MS,
+    -Number.MAX_SAFE_INTEGER,
+  ]) {
+    let now = start;
+    let calls = 0;
+    await openingExplorer(
+      new Chess(),
+      "lichess",
+      [],
+      [],
+      options(
+        async () => {
+          calls += 1;
+          return response();
+        },
+        {
+          limiter: createExplorerLimiter(() => 0),
+          now: () => now++,
+        },
+      ),
+    );
+    assert.equal(calls, 1);
+  }
+});
+
+test("rejects unsafe request clocks and deadline sums before fetching", async () => {
+  for (const start of [
+    Number.MAX_SAFE_INTEGER - EXPLORER_TOTAL_TIMEOUT_MS + 1,
+    Number.MAX_SAFE_INTEGER + 2,
+    -Number.MAX_SAFE_INTEGER - 2,
+  ]) {
+    let calls = 0;
+    await assert.rejects(
+      openingExplorer(
+        new Chess(),
+        "lichess",
+        [],
+        [],
+        options(
+          async () => {
+            calls += 1;
+            return response();
+          },
+          {
+            limiter: createExplorerLimiter(() => 0),
+            now: () => start,
+          },
+        ),
+      ),
+      expectKind("invalid_input"),
+    );
+    assert.equal(calls, 0);
+  }
+});
+
 test("cancels retry backoff before another fetch", async () => {
   const controller = new AbortController();
   const cause = new Error("caller cancelled during backoff");
@@ -1230,6 +1287,54 @@ test("fails fast for invalid or backward limiter clocks", async () => {
       expectKind("invalid_input"),
     );
   }
+});
+
+test("allows safe limiter clocks to advance after boundary cooldowns", async () => {
+  for (const start of [
+    Number.MAX_SAFE_INTEGER - EXPLORER_MAX_COOLDOWN_MS,
+    -Number.MAX_SAFE_INTEGER,
+  ]) {
+    let now = start;
+    let calls = 0;
+    const limiter = createExplorerLimiter(() => now);
+    limiter.cooldown(EXPLORER_MAX_COOLDOWN_MS, 0);
+    now += 1;
+    await limiter.run(
+      {
+        callerSignal: undefined,
+        deadline: EXPLORER_MAX_COOLDOWN_MS + 1,
+        now: () => 0,
+        sleep: async (ms) => {
+          now += ms;
+        },
+      },
+      async () => {
+        calls += 1;
+      },
+    );
+    assert.equal(calls, 1);
+  }
+});
+
+test("rejects unsafe limiter clocks and cooldown sums", () => {
+  for (const now of [
+    Number.MAX_SAFE_INTEGER + 2,
+    -Number.MAX_SAFE_INTEGER - 2,
+  ]) {
+    const limiter = createExplorerLimiter(() => now);
+    assert.throws(
+      () => limiter.cooldown(0, 0),
+      expectKind("invalid_input"),
+    );
+  }
+
+  const limiter = createExplorerLimiter(
+    () => Number.MAX_SAFE_INTEGER - EXPLORER_MAX_COOLDOWN_MS + 1,
+  );
+  assert.throws(
+    () => limiter.cooldown(EXPLORER_MAX_COOLDOWN_MS, 0),
+    expectKind("invalid_input"),
+  );
 });
 
 test("validates cooldown durations before mutating limiter state", async () => {

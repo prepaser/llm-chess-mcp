@@ -117,7 +117,7 @@ function requestClock(now: () => number): () => number {
     const current = now();
     if (
       !Number.isFinite(current) ||
-      Math.abs(current) > Number.MAX_SAFE_INTEGER - EXPLORER_TOTAL_TIMEOUT_MS ||
+      Math.abs(current) > Number.MAX_SAFE_INTEGER ||
       (previous !== undefined && current < previous)
     ) {
       throw explorerError("invalid_input");
@@ -182,7 +182,11 @@ function setupExplorerRequest(
   const now = requestClock(options.now ?? (() => performance.now()));
   const startedAt = now();
   const deadline = startedAt + EXPLORER_TOTAL_TIMEOUT_MS;
-  if (!Number.isFinite(deadline) || deadline <= startedAt) {
+  if (
+    !Number.isFinite(deadline) ||
+    Math.abs(deadline) > Number.MAX_SAFE_INTEGER ||
+    deadline <= startedAt
+  ) {
     throw explorerError("invalid_input");
   }
   return {
