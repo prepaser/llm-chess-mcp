@@ -1,6 +1,7 @@
 import {
   awaitWithAbort,
   explorerError,
+  EXPLORER_MAX_COOLDOWN_MS,
   throwIfAborted,
 } from "./explorer-core.js";
 
@@ -39,7 +40,19 @@ class RequestLimiter implements ExplorerLimiter {
   }
 
   cooldown(ms: number, _now: number): void {
-    this.#cooldownUntil = Math.max(this.#cooldownUntil, this.#readNow() + ms);
+    if (
+      !Number.isSafeInteger(ms) ||
+      ms < 0 ||
+      ms > EXPLORER_MAX_COOLDOWN_MS
+    ) {
+      throw explorerError("invalid_input");
+    }
+    const now = this.#readNow();
+    const cooldownUntil = now + ms;
+    if (!Number.isFinite(cooldownUntil) || (ms > 0 && cooldownUntil <= now)) {
+      throw explorerError("invalid_input");
+    }
+    this.#cooldownUntil = Math.max(this.#cooldownUntil, cooldownUntil);
   }
 
   run<T>(
@@ -121,6 +134,7 @@ class RequestLimiter implements ExplorerLimiter {
     const now = this.now();
     if (
       !Number.isFinite(now) ||
+      Math.abs(now) > Number.MAX_SAFE_INTEGER - EXPLORER_MAX_COOLDOWN_MS ||
       (this.#lastNow !== undefined && now < this.#lastNow)
     ) {
       throw explorerError("invalid_input");

@@ -5,6 +5,7 @@ import {
   EXPLORER_DEFAULT_RETRY_DELAY_MS,
   EXPLORER_ERROR_KINDS,
   EXPLORER_MAX_ATTEMPTS,
+  EXPLORER_MAX_COOLDOWN_MS,
   EXPLORER_MAX_MOVES,
   EXPLORER_MAX_RESPONSE_BYTES,
   EXPLORER_MAX_STRING_LENGTH,
@@ -40,6 +41,7 @@ export {
   EXPLORER_DEFAULT_RETRY_DELAY_MS,
   EXPLORER_ERROR_KINDS,
   EXPLORER_MAX_ATTEMPTS,
+  EXPLORER_MAX_COOLDOWN_MS,
   EXPLORER_MAX_MOVES,
   EXPLORER_MAX_RESPONSE_BYTES,
   EXPLORER_MAX_STRING_LENGTH,
@@ -115,6 +117,7 @@ function requestClock(now: () => number): () => number {
     const current = now();
     if (
       !Number.isFinite(current) ||
+      Math.abs(current) > Number.MAX_SAFE_INTEGER - EXPLORER_TOTAL_TIMEOUT_MS ||
       (previous !== undefined && current < previous)
     ) {
       throw explorerError("invalid_input");
@@ -177,10 +180,15 @@ function setupExplorerRequest(
   if (ratingValues.length) params.set("ratings", ratingValues.join(","));
 
   const now = requestClock(options.now ?? (() => performance.now()));
+  const startedAt = now();
+  const deadline = startedAt + EXPLORER_TOTAL_TIMEOUT_MS;
+  if (!Number.isFinite(deadline) || deadline <= startedAt) {
+    throw explorerError("invalid_input");
+  }
   return {
     callerSignal,
     db,
-    deadline: now() + EXPLORER_TOTAL_TIMEOUT_MS,
+    deadline,
     legalMoves: new Map(
       chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
     ),
@@ -238,7 +246,10 @@ async function attemptRequest(
       if (transport.type === "failure") {
         if (transport.error.kind === "rate_limited") {
           setup.limiter.cooldown(
-            rateLimitCooldownMs(transport.retryAfter, setup.wallNow()),
+            Math.min(
+              rateLimitCooldownMs(transport.retryAfter, setup.wallNow()),
+              EXPLORER_MAX_COOLDOWN_MS,
+            ),
             setup.now(),
           );
         }

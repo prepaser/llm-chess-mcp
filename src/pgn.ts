@@ -8,6 +8,7 @@ import { ChessError } from "./errors.js";
 
 export const MAX_PGN_BYTES = 1024 * 1024;
 export const MAX_PGN_PLIES = 4096;
+const MAX_PGN_ELEMENTS = MAX_PGN_PLIES * 8;
 
 const PGN_RESULTS = ["1-0", "0-1", "1/2-1/2", "*"] as const;
 
@@ -211,6 +212,15 @@ function declaredPgnResult(pgn: string): PgnResult | undefined {
 function movetextTokens(pgn: string): string[] {
   const movetext = pgn;
   const tokens: string[] = [];
+  const push = (token: string): void => {
+    tokens.push(token);
+    if (tokens.length > MAX_PGN_ELEMENTS) {
+      throw new ChessError(
+        "PGN_TOO_COMPLEX",
+        `PGN exceeds the ${MAX_PGN_ELEMENTS}-element limit`,
+      );
+    }
+  };
   for (let index = 0; index < movetext.length; ) {
     const char = movetext[index]!;
     if (/\s/.test(char)) {
@@ -232,7 +242,7 @@ function movetextTokens(pgn: string): string[] {
       continue;
     }
     if (char === "(" || char === ")") {
-      tokens.push(char);
+      push(char);
       index += 1;
       continue;
     }
@@ -243,7 +253,7 @@ function movetextTokens(pgn: string): string[] {
     ) {
       end += 1;
     }
-    tokens.push(movetext.slice(index, end));
+    push(movetext.slice(index, end));
     index = end;
   }
   return tokens;
@@ -251,21 +261,87 @@ function movetextTokens(pgn: string): string[] {
 
 function validatePgnMoves(pgn: string, initialFen: string): void {
   const tokens = movetextTokens(pgn);
+  type Frame = {
+    beforeLastFen: string | null;
+    chess: Chess;
+    moveNumberOpen: boolean;
+    moves: number;
+  };
+  const stack: Frame[] = [
+    {
+      beforeLastFen: null,
+      chess: new Chess(initialFen),
+      moveNumberOpen: false,
+      moves: 0,
+    },
+  ];
   let plies = 0;
-  for (let token of tokens) {
-    if (
-      token === "(" ||
-      token === ")" ||
-      /^\$\d+$/.test(token) ||
-      token === "e.p."
-    ) {
+  for (let index = 0; index < tokens.length; index += 1) {
+    let token = tokens[index]!;
+    const frame = stack.at(-1)!;
+    if (token === "(") {
+      if (!frame.beforeLastFen) {
+        throw new ChessError("INVALID_PGN", "PGN variation has no parent move");
+      }
+      stack.push({
+        beforeLastFen: null,
+        chess: new Chess(frame.beforeLastFen),
+        moveNumberOpen: false,
+        moves: 0,
+      });
       continue;
     }
-    token = token.replace(/^\d+\.+/, "");
-    if (!token || (PGN_RESULTS as readonly string[]).includes(token)) continue;
+    if (token === ")") {
+      if (stack.length === 1) {
+        throw new ChessError("INVALID_PGN", "unexpected PGN variation end");
+      }
+      if (frame.moves === 0) {
+        throw new ChessError("INVALID_PGN", "PGN variation must contain a move");
+      }
+      stack.pop();
+      continue;
+    }
+    if (/^(?:\$\d+)+$/.test(token) || token === "e.p.") continue;
+
+    const moveNumber = /^(\d+)(\.+)(.*)$/.exec(token);
+    if (moveNumber) {
+      token = moveNumber[3] ?? "";
+      frame.moveNumberOpen = token.length === 0;
+      if (!token) continue;
+    } else if (frame.moveNumberOpen) {
+      const dots = /^(\.+)(.*)$/.exec(token);
+      if (dots) {
+        token = dots[2] ?? "";
+        frame.moveNumberOpen = false;
+        if (!token) continue;
+      }
+      frame.moveNumberOpen = false;
+    }
+
+    if ((PGN_RESULTS as readonly string[]).includes(token)) {
+      if (stack.length !== 1) {
+        throw new ChessError(
+          "INVALID_PGN",
+          "PGN variation cannot contain a result",
+        );
+      }
+      if (index + 1 !== tokens.length) {
+        throw new ChessError("INVALID_PGN", "moves follow the PGN result");
+      }
+      continue;
+    }
     const nag = token.indexOf("$");
-    if (nag >= 0) token = token.slice(0, nag);
-    token = token.replace(/[!?]+$/, "");
+    if (nag >= 0) {
+      if (!/^(?:\$\d+)+$/.test(token.slice(nag))) {
+        throw new ChessError("INVALID_PGN", "invalid PGN annotation");
+      }
+      token = token.slice(0, nag);
+    }
+    const suffix = /[!?]+$/.exec(token)?.[0] ?? "";
+    if (suffix.length > 2 || suffix.length === token.length) {
+      throw new ChessError("INVALID_PGN", "invalid PGN annotation");
+    }
+    token = token.slice(0, token.length - suffix.length).replaceAll("0", "O");
     if (!token) continue;
     plies += 1;
     if (plies > MAX_PGN_PLIES) {
@@ -274,56 +350,64 @@ function validatePgnMoves(pgn: string, initialFen: string): void {
         `PGN exceeds the ${MAX_PGN_PLIES}-ply limit`,
       );
     }
+    frame.beforeLastFen = frame.chess.fen();
+    try {
+      frame.chess.move(token);
+    } catch {
+      throw new ChessError("INVALID_PGN", `illegal PGN move: ${token}`);
+    }
+    frame.moves += 1;
+    frame.moveNumberOpen = false;
   }
-  let index = 0;
-  const sequence = (chess: Chess, variation: boolean): void => {
-    let beforeLastFen: string | null = null;
-    while (index < tokens.length) {
-      let token = tokens[index++]!;
-      if (token === ")") {
-        if (!variation) {
-          throw new ChessError("INVALID_PGN", "unexpected PGN variation end");
-        }
-        return;
-      }
-      if (token === "(") {
-        if (!beforeLastFen) {
-          throw new ChessError("INVALID_PGN", "PGN variation has no parent move");
-        }
-        sequence(new Chess(beforeLastFen), true);
-        continue;
-      }
-      if (/^\$\d+$/.test(token) || token === "e.p.") continue;
-      token = token.replace(/^\d+\.+/, "");
-      if (!token) continue;
-      const result = (PGN_RESULTS as readonly string[]).includes(token);
-      if (result) {
-        if (variation) {
-          throw new ChessError(
-            "INVALID_PGN",
-            "PGN variation cannot contain a result",
-          );
-        }
-        if (index !== tokens.length) {
-          throw new ChessError("INVALID_PGN", "moves follow the PGN result");
-        }
-        return;
-      }
-      const nag = token.indexOf("$");
-      if (nag >= 0) token = token.slice(0, nag);
-      token = token.replace(/[!?]+$/, "").replaceAll("0", "O");
-      beforeLastFen = chess.fen();
-      try {
-        chess.move(token);
-      } catch {
-        throw new ChessError("INVALID_PGN", `illegal PGN move: ${token}`);
-      }
+  if (stack.length !== 1) {
+    throw new ChessError("INVALID_PGN", "unterminated PGN variation");
+  }
+}
+
+function withoutVariations(pgn: string): string {
+  let result = "";
+  let depth = 0;
+  let braceComment = false;
+  let lineComment = false;
+  let quoted = false;
+  let escaped = false;
+  for (const char of pgn) {
+    if (braceComment) {
+      if (depth === 0) result += char;
+      if (char === "}") braceComment = false;
+      continue;
     }
-    if (variation) {
-      throw new ChessError("INVALID_PGN", "unterminated PGN variation");
+    if (lineComment) {
+      if (depth === 0) result += char;
+      if (char === "\r" || char === "\n") lineComment = false;
+      continue;
     }
-  };
-  sequence(new Chess(initialFen), false);
+    if (quoted) {
+      if (depth === 0) result += char;
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === "{") {
+      braceComment = true;
+      if (depth === 0) result += char;
+    } else if (char === ";") {
+      lineComment = true;
+      if (depth === 0) result += char;
+    } else if (char === '"') {
+      quoted = true;
+      if (depth === 0) result += char;
+    } else if (char === "(") {
+      if (depth === 0) result += " ";
+      depth += 1;
+    } else if (char === ")") {
+      depth -= 1;
+    } else if (depth === 0) {
+      result += char;
+    }
+  }
+  return result;
 }
 
 function headerValues(pgn: string, name: string): string[] {
@@ -446,19 +530,21 @@ export function parseImportedPgn(pgn: string): Chess {
   const { headers, loaderPgn, movetextPgn } = prepareHeaders(normalizedPgn);
   validatePgnSetup(normalizedPgn);
   const result = declaredPgnResult(normalizedPgn);
+  const setup = headers.find(({ name }) => name.toLowerCase() === "setup")?.value;
+  const fen = headers.find(({ name }) => name.toLowerCase() === "fen")?.value;
+  const initialFen = setup === "1" && fen ? fen : new Chess().fen();
+  validatePgnMoves(movetextPgn, initialFen);
 
   let chess: Chess;
   try {
     chess = new Chess();
-    chess.loadPgn(loaderPgn);
+    chess.loadPgn(withoutVariations(loaderPgn));
   } catch {
     throw new ChessError("INVALID_PGN", "invalid or illegal PGN");
   }
   restoreHeaders(chess, headers, result);
   assertSafeFenCounters(chess.fen());
   assertLegalPosition(chess);
-  const initialFen = chess.history({ verbose: true })[0]?.before ?? chess.fen();
-  validatePgnMoves(movetextPgn, initialFen);
   if (chess.history().length > MAX_PGN_PLIES) {
     throw new ChessError(
       "PGN_TOO_MANY_MOVES",

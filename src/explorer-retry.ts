@@ -190,7 +190,13 @@ export async function retryExplorer<T>(
     const outcome = await attemptRequest();
     if (outcome.type === "success") return outcome.result;
 
-    lastError = outcome.error;
+    lastError =
+      outcome.error.kind === "rate_limited" &&
+      outcome.error.status === undefined &&
+      lastError?.kind === "rate_limited" &&
+      lastError.status !== undefined
+        ? lastError
+        : outcome.error;
     if (outcome.retry === "stop" || attempt + 1 >= options.maxAttempts) {
       throw lastError;
     }

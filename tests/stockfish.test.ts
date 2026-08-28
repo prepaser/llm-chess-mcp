@@ -4,9 +4,11 @@ import test from "node:test";
 import { promisify } from "node:util";
 import {
   resolveStockfishFlavor,
+  stockfish as defaultStockfish,
   Stockfish,
   type StockfishEngine,
   type StockfishInit,
+  type StockfishOptions,
 } from "../src/engines/stockfish.js";
 import {
   mergeAnalysisInfo,
@@ -99,6 +101,98 @@ test("Stockfish timeouts fit the Node timer range", async () => {
     warnings.some((warning) => warning.name === "TimeoutOverflowWarning"),
     false,
   );
+});
+
+test("Stockfish ignores inherited outer options", () => {
+  const inheritedInit: StockfishInit = () => {
+    throw new Error("inherited init must not run");
+  };
+  const polluted = {
+    init: inheritedInit,
+    flavor: "asm",
+    maxQueue: 1,
+    timeouts: { init: 1, handshake: 1, analyze: 1, stopGrace: 1 },
+  };
+  const descriptors = new Map(
+    Object.keys(polluted).map((name) => [
+      name,
+      Object.getOwnPropertyDescriptor(Object.prototype, name),
+    ]),
+  );
+  try {
+    for (const [name, value] of Object.entries(polluted)) {
+      Object.defineProperty(Object.prototype, name, {
+        configurable: true,
+        value,
+      });
+    }
+    for (const options of [{}, Object.create(polluted)] as StockfishOptions[]) {
+      const current = new Stockfish(options) as unknown as {
+        configuredFlavor: string | undefined;
+        initEngine: StockfishInit | undefined;
+        maxQueue: number;
+        timeouts: Record<string, number>;
+      };
+      assert.equal(current.initEngine, undefined);
+      assert.equal(current.configuredFlavor, undefined);
+      assert.equal(current.maxQueue, 32);
+      assert.deepEqual(current.timeouts, {
+        init: 15_000,
+        handshake: 15_000,
+        analyze: 30_000,
+        stopGrace: 2_000,
+      });
+    }
+    const global = defaultStockfish as unknown as {
+      configuredFlavor: string | undefined;
+      initEngine: StockfishInit | undefined;
+      maxQueue: number;
+      timeouts: Record<string, number>;
+    };
+    assert.equal(global.initEngine, undefined);
+    assert.equal(global.configuredFlavor, undefined);
+    assert.equal(global.maxQueue, 32);
+    assert.deepEqual(global.timeouts, {
+      init: 15_000,
+      handshake: 15_000,
+      analyze: 30_000,
+      stopGrace: 2_000,
+    });
+  } finally {
+    for (const [name, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(Object.prototype, name, descriptor);
+      else delete (Object.prototype as Record<string, unknown>)[name];
+    }
+  }
+});
+
+test("Stockfish accepts own options on normal and null-prototype objects", () => {
+  for (const options of [
+    {
+      flavor: "asm",
+      maxQueue: 3,
+      timeouts: Object.assign(Object.create({ init: 1 }), { analyze: 7 }),
+    },
+    Object.assign(Object.create(null), {
+      flavor: "asm",
+      maxQueue: 3,
+      timeouts: Object.assign(Object.create({ init: 1 }), { analyze: 7 }),
+    }),
+  ] as StockfishOptions[]) {
+    const current = new Stockfish(options) as unknown as {
+      configuredFlavor: string | undefined;
+      maxQueue: number;
+      timeouts: Record<string, number>;
+    };
+    assert.equal(current.configuredFlavor, "asm");
+    assert.equal(current.maxQueue, 3);
+    assert.deepEqual(current.timeouts, {
+      init: 15_000,
+      handshake: 15_000,
+      analyze: 7,
+      stopGrace: 2_000,
+    });
+  }
 });
 
 test("analysis info parser merges partial updates and resets scores", () => {

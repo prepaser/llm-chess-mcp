@@ -12,6 +12,7 @@ export const EXPLORER_RATE_LIMIT_COOLDOWN_MS = 60_000;
 export const EXPLORER_MAX_RESPONSE_BYTES = 1024 * 1024;
 export const EXPLORER_MAX_MOVES = 256;
 export const EXPLORER_MAX_STRING_LENGTH = 256;
+export const EXPLORER_MAX_COOLDOWN_MS = 2_147_483_647;
 
 export class ExplorerError extends Error {
   readonly reason: ExplorerErrorKind;

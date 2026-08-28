@@ -128,6 +128,13 @@ function abortError(signal: AbortSignal): Error {
   return asError(signal.reason ?? "stockfish request cancelled");
 }
 
+function ownOption<K extends keyof StockfishOptions>(
+  options: StockfishOptions,
+  name: K,
+): StockfishOptions[K] | undefined {
+  return Object.hasOwn(options, name) ? options[name] : undefined;
+}
+
 export class Stockfish {
   private session: Session | null = null;
   private queue: QueuedAnalysis[] = [];
@@ -147,10 +154,13 @@ export class Stockfish {
   private readonly timeouts: Timeouts;
 
   constructor(options: StockfishOptions = {}) {
-    this.initEngine = options.init;
-    this.configuredFlavor = options.flavor;
-    this.maxQueue = options.maxQueue ?? DEFAULT_MAX_QUEUE;
-    this.timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
+    this.initEngine = ownOption(options, "init");
+    this.configuredFlavor = ownOption(options, "flavor");
+    this.maxQueue = ownOption(options, "maxQueue") ?? DEFAULT_MAX_QUEUE;
+    this.timeouts = {
+      ...DEFAULT_TIMEOUTS,
+      ...ownOption(options, "timeouts"),
+    };
 
     if (!Number.isInteger(this.maxQueue) || this.maxQueue < 1) {
       throw new Error("stockfish maxQueue must be a positive integer");

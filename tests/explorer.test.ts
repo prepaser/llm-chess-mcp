@@ -4,6 +4,7 @@ import { Chess } from "chess.js";
 import {
   EXPLORER_ATTEMPT_TIMEOUT_MS,
   EXPLORER_DEFAULT_RETRY_DELAY_MS,
+  EXPLORER_MAX_COOLDOWN_MS,
   EXPLORER_MAX_MOVES,
   EXPLORER_MAX_RESPONSE_BYTES,
   EXPLORER_MAX_STRING_LENGTH,
@@ -78,6 +79,7 @@ test("exports the exact supported speed and rating filters", () => {
   assert.equal(EXPLORER_MAX_RESPONSE_BYTES, 1024 * 1024);
   assert.equal(EXPLORER_MAX_MOVES, 256);
   assert.equal(EXPLORER_MAX_STRING_LENGTH, 256);
+  assert.equal(EXPLORER_MAX_COOLDOWN_MS, 2_147_483_647);
 });
 
 test("builds the request and maps a validated response", async () => {
@@ -477,7 +479,14 @@ test("does not fetch when the caller already cancelled", async () => {
 });
 
 test("returns stable errors for invalid or backward request clocks", async () => {
-  for (const values of [[Number.NaN], [Infinity], [-Infinity], [100, 99]]) {
+  for (const values of [
+    [Number.NaN],
+    [Infinity],
+    [-Infinity],
+    [Number.MAX_VALUE],
+    [-Number.MAX_VALUE],
+    [100, 99],
+  ]) {
     let calls = 0;
     let index = 0;
     await assert.rejects(
@@ -501,6 +510,23 @@ test("returns stable errors for invalid or backward request clocks", async () =>
     );
     assert.equal(calls, 0);
   }
+});
+
+test("accepts finite monotonic fractional request clocks", async () => {
+  let now = 0.25;
+  await openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(async () => response(), {
+      limiter: createExplorerLimiter(() => now),
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms;
+      },
+    }),
+  );
 });
 
 test("cancels retry backoff before another fetch", async () => {
@@ -1112,8 +1138,37 @@ test("does not trust early cooldown sleeps or ignore cooldown extensions", async
   }
 });
 
+test("preserves the original 429 after cooldown fail-fast", async () => {
+  let now = 0;
+  let calls = 0;
+  await assert.rejects(
+    openingExplorer(new Chess(), "lichess", [], [], {
+      token: "shared-token",
+      limiter: createExplorerLimiter(() => now),
+      now: () => now,
+      sleep: async () => undefined,
+      fetch: async () => {
+        calls += 1;
+        return calls === 1
+          ? response(429, {}, { "Retry-After": "1" })
+          : response();
+      },
+    }),
+    (error: unknown) =>
+      error instanceof ExplorerError &&
+      error.kind === "rate_limited" &&
+      error.status === 429,
+  );
+  assert.equal(calls, 1);
+});
+
 test("fails fast for invalid or backward limiter clocks", async () => {
-  for (const values of [[Number.NaN], [Infinity], [1, 0]]) {
+  for (const values of [
+    [Number.NaN],
+    [Infinity],
+    [Number.MAX_VALUE],
+    [1, 0],
+  ]) {
     let index = 0;
     const limiter = createExplorerLimiter(
       () => values[Math.min(index++, values.length - 1)]!,
@@ -1139,6 +1194,59 @@ test("fails fast for invalid or backward limiter clocks", async () => {
       expectKind("invalid_input"),
     );
   }
+});
+
+test("validates cooldown durations before mutating limiter state", async () => {
+  let now = 0;
+  const limiter = createExplorerLimiter(() => now);
+  limiter.cooldown(1_000, 0);
+  for (const delay of [
+    Number.NaN,
+    Infinity,
+    -1,
+    0.5,
+    EXPLORER_MAX_COOLDOWN_MS + 1,
+  ]) {
+    assert.throws(
+      () => limiter.cooldown(delay, 0),
+      expectKind("invalid_input"),
+    );
+  }
+
+  await assert.rejects(
+    limiter.run(
+      {
+        callerSignal: undefined,
+        deadline: 12_000,
+        now: () => 0,
+        sleep: async () => undefined,
+      },
+      async () => undefined,
+    ),
+    expectKind("rate_limited"),
+  );
+  now = 1_000;
+  await limiter.run(
+    {
+      callerSignal: undefined,
+      deadline: 12_000,
+      now: () => 0,
+      sleep: async () => undefined,
+    },
+    async () => undefined,
+  );
+
+  const zero = createExplorerLimiter(() => 0);
+  zero.cooldown(0, 0);
+  await zero.run(
+    {
+      callerSignal: undefined,
+      deadline: 12_000,
+      now: () => 0,
+      sleep: async () => undefined,
+    },
+    async () => undefined,
+  );
 });
 
 test("uses a one-minute shared cooldown when a 429 lacks Retry-After", async () => {

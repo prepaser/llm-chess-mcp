@@ -423,11 +423,19 @@ test("parseImportedPgn rejects duplicate custom header names case-insensitively"
 
 test("parseImportedPgn validates legal moves in recursive variations", () => {
   const valid = parseImportedPgn(
-    "1. e4 $1 (1. d4 {queen pawn} d5 (1... Nf6)) e5 *",
+    "1. e4 $1 (1. d4!?$1$2 $3 $4 {queen pawn} d5 (1... Nf6)) e5 *",
   );
   assert.deepEqual(valid.history(), ["e4", "e5"]);
 
-  for (const pgn of ["1. e4 (1. e5) *", "1. e4 (1. Qh5) *"]) {
+  for (const pgn of [
+    "1. e4 (1. e5) *",
+    "1. e4 (1. Qh5) *",
+    "1. e4 (1. d4$bogus) *",
+    "1. e4 (1. d4$) *",
+    "1. e4 (1. d4$1junk) *",
+    "1. e4 (1. d4!!!) *",
+    "1. e4 (1. d4 !) *",
+  ]) {
     assert.throws(
       () => parseImportedPgn(pgn),
       (error) => error instanceof ChessError && error.code === "INVALID_PGN",
@@ -435,9 +443,47 @@ test("parseImportedPgn validates legal moves in recursive variations", () => {
   }
 });
 
-test("parseImportedPgn accepts move numbers with additional periods", () => {
-  const chess = parseImportedPgn("1.e4 1..e5 (1....c5) *");
+test("parseImportedPgn validates deeply nested variations without recursion", () => {
+  const depth = 2_500;
+  const pgn = `1.e4 ${"(1.d4 ".repeat(depth)}${")".repeat(depth)} *`;
+  const chess = parseImportedPgn(pgn);
+  assert.deepEqual(chess.history(), ["e4"]);
+});
+
+test("parseImportedPgn rejects empty and structurally excessive variations", () => {
+  for (const variation of ["()", "($1)"]) {
+    assert.throws(
+      () => parseImportedPgn(`1.e4 ${variation} *`),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+  assert.throws(
+    () => parseImportedPgn(`1.e4 ${"() ".repeat(200_000)}*`),
+    (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
+  );
+});
+
+test("parseImportedPgn preserves mainline comments around removed variations", () => {
+  const chess = parseImportedPgn(
+    '[Event "keep (header)"]\n\n1.e4 {keep (parentheses)} (1.d4 {drop}) e5 ; keep (line)\n*',
+  );
   assert.deepEqual(chess.history(), ["e4", "e5"]);
+  assert.equal(chess.getHeaders().Event, "keep (header)");
+  assert.deepEqual(
+    chess.getComments().map(({ comment }) => comment),
+    ["keep (parentheses)", "keep (line)"],
+  );
+  assert.match(pgnOf(chess), /\{keep \(parentheses\)\} e5 \{keep \(line\)\}/);
+});
+
+test("parseImportedPgn accepts move numbers with additional periods", () => {
+  for (const pgn of [
+    "1.e4 1..e5 (1....c5) *",
+    "1.e4 1. ... e5 (1. ... c5) *",
+    "1.e4 1. ..e5 (1. ..c5) *",
+  ]) {
+    assert.deepEqual(parseImportedPgn(pgn).history(), ["e4", "e5"]);
+  }
 });
 
 test("parseImportedPgn applies the ply cap across recursive variations", () => {
