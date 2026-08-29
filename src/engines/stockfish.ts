@@ -180,16 +180,6 @@ function loadStockfish(): StockfishInit {
         process.listeners("uncaughtException"),
         (listener) => process.removeListener("uncaughtException", listener),
         (listener) => process.on("uncaughtException", listener),
-        () =>
-          process.rawListeners(
-            "uncaughtException",
-          ) as UncaughtExceptionListener[],
-        (listeners) => {
-          process.removeAllListeners("uncaughtException");
-          for (const listener of listeners) {
-            process.on("uncaughtException", listener);
-          }
-        },
         (listener) =>
           function ownedUncaughtException(
             this: NodeJS.Process,
@@ -198,22 +188,23 @@ function loadStockfish(): StockfishInit {
           ) {
             Reflect.apply(listener, this, [error, origin]);
           },
+        (listener) => {
+          const registration = function registeredUncaughtException(
+            this: NodeJS.Process,
+            error: Error,
+            origin: "uncaughtException" | "unhandledRejection",
+          ) {
+            Reflect.apply(listener, this, [error, origin]);
+          };
+          Object.defineProperty(registration, "listener", { value: listener });
+          return registration;
+        },
       );
       const cleanupUnhandled = ownAddedListeners<UnhandledRejectionListener>(
         unhandled,
         process.listeners("unhandledRejection"),
         (listener) => process.removeListener("unhandledRejection", listener),
         (listener) => process.on("unhandledRejection", listener),
-        () =>
-          process.rawListeners(
-            "unhandledRejection",
-          ) as UnhandledRejectionListener[],
-        (listeners) => {
-          process.removeAllListeners("unhandledRejection");
-          for (const listener of listeners) {
-            process.on("unhandledRejection", listener);
-          }
-        },
         (listener) =>
           function ownedUnhandledRejection(
             this: NodeJS.Process,
@@ -222,6 +213,17 @@ function loadStockfish(): StockfishInit {
           ) {
             Reflect.apply(listener, this, [reason, promise]);
           },
+        (listener) => {
+          const registration = function registeredUnhandledRejection(
+            this: NodeJS.Process,
+            reason: unknown,
+            promise: Promise<unknown>,
+          ) {
+            Reflect.apply(listener, this, [reason, promise]);
+          };
+          Object.defineProperty(registration, "listener", { value: listener });
+          return registration;
+        },
       );
       let cleaned = false;
       const cleanup = () => {
@@ -269,37 +271,17 @@ function ownAddedListeners<T>(
   after: T[],
   remove: (listener: T) => void,
   add: (listener: T) => void,
-  raw: () => T[],
-  replace: (listeners: T[]) => void,
   wrap: (listener: T) => T,
+  register: (listener: T) => T,
 ): () => void {
   const added = addedListeners(before, after);
   for (let index = added.length - 1; index >= 0; index--) {
     remove(added[index]!);
   }
-  const owned = added.map(wrap);
-  for (const listener of owned) add(listener);
+  const owned = added.map(wrap).map(register);
+  for (const registration of owned) add(registration);
   return () => {
-    const current = raw();
-    const targets = new Set<number>();
-    let collision = false;
-    for (const listener of owned) {
-      const related: number[] = [];
-      let target = -1;
-      for (const [index, candidate] of current.entries()) {
-        const original = (candidate as { listener?: unknown }).listener;
-        if (candidate === listener || original === listener) related.push(index);
-        if (target < 0 && candidate === listener) target = index;
-      }
-      if (target < 0) continue;
-      targets.add(target);
-      if (related.length > 1) collision = true;
-    }
-    if (!collision) {
-      for (const listener of owned) remove(listener);
-      return;
-    }
-    replace(current.filter((_listener, index) => !targets.has(index)));
+    for (const registration of owned) remove(registration);
   };
 }
 

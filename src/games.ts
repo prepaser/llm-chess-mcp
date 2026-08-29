@@ -109,8 +109,18 @@ export class GameStore {
     if (this.games.has(id)) {
       throw new ChessError("GAME_ID_COLLISION", `game ID already exists: ${id}`);
     }
+    const snapshot = snapshotChess(chess);
+    if (this.games.size >= this.maxGames) {
+      throw new ChessError(
+        "GAME_LIMIT_REACHED",
+        `game session limit reached: ${this.maxGames}`,
+      );
+    }
+    if (this.games.has(id)) {
+      throw new ChessError("GAME_ID_COLLISION", `game ID already exists: ${id}`);
+    }
     this.games.set(id, {
-      chess: snapshotChess(chess),
+      chess: snapshot,
       createdAt: now,
       lastAccessedAt: now,
       revision: 0,
@@ -124,6 +134,12 @@ export class GameStore {
   }
 
   applyMove(id: string, expectedRevision: number, move: Move): GameSnapshot {
+    const promotion = move.promotion;
+    const materialized = {
+      from: move.from,
+      to: move.to,
+      ...(promotion ? { promotion } : {}),
+    } as Move;
     const game = this.getLiveGame(id);
     if (expectedRevision !== game.revision) {
       throw new ChessError(
@@ -133,7 +149,7 @@ export class GameStore {
     }
     let applied = false;
     try {
-      playParsedMove(game.chess, move);
+      playParsedMove(game.chess, materialized);
       applied = true;
       assertSafeFenCounters(game.chess.fen());
       const chess = snapshotChess(game.chess);

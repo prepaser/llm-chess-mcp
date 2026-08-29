@@ -133,19 +133,28 @@ export interface HumanModel {
   opponentElo: number;
 }
 
-type OpeningStatsValues = {
-  games: number | null;
-  frequency: number | null;
-  white: number | null;
-  draws: number | null;
-  black: number | null;
+type EmptyOpeningStats = {
+  games: null;
+  frequency: null;
+  white: null;
+  draws: null;
+  black: null;
+  averageRating: null;
+};
+
+type AvailableOpeningStats = {
+  games: number;
+  frequency: number;
+  white: number;
+  draws: number;
+  black: number;
   averageRating: number | null;
 };
 
 export type OpeningStats =
-  | ({ status: "available" | "no_data" } & OpeningStatsValues)
-  | ({ status: "unavailable"; reason: ExplorerErrorKind } & OpeningStatsValues)
-  | ({ status: "disabled" } & OpeningStatsValues);
+  | ({ status: "available" } & (EmptyOpeningStats | AvailableOpeningStats))
+  | ({ status: "no_data" | "disabled" } & EmptyOpeningStats)
+  | ({ status: "unavailable"; reason: ExplorerErrorKind } & EmptyOpeningStats);
 
 export interface Candidate {
   uci: string;

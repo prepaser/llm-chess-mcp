@@ -157,18 +157,86 @@ function childExecArgv(url: URL): string[] {
   return args;
 }
 
+type NodeOptionToken = {
+  value: string;
+  start: number;
+  end: number;
+};
+
+function nodeOptionTokens(value: string): NodeOptionToken[] {
+  const tokens: NodeOptionToken[] = [];
+  let index = 0;
+  while (index < value.length) {
+    while (/\s/.test(value[index] ?? "")) index += 1;
+    if (index >= value.length) break;
+    const start = index;
+    let token = "";
+    let quote: "'" | '"' | null = null;
+    while (index < value.length) {
+      const char = value[index];
+      if (char === undefined) break;
+      if (quote) {
+        if (char === quote) {
+          quote = null;
+          index += 1;
+        } else if (char === "\\" && value[index + 1] !== undefined) {
+          token += value[index + 1];
+          index += 2;
+        } else {
+          token += char;
+          index += 1;
+        }
+      } else if (/\s/.test(char)) {
+        break;
+      } else if (char === "'" || char === '"') {
+        quote = char;
+        index += 1;
+      } else if (char === "\\" && value[index + 1] !== undefined) {
+        token += value[index + 1];
+        index += 2;
+      } else {
+        token += char;
+        index += 1;
+      }
+    }
+    tokens.push({ value: token, start, end: index });
+  }
+  return tokens;
+}
+
+export function withoutNodeInputType(value: string): string {
+  const tokens = nodeOptionTokens(value);
+  const removed: { start: number; end: number }[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!token) continue;
+    if (token.value === "--input-type") {
+      const argument = tokens[index + 1];
+      removed.push({
+        start: token.start,
+        end: argument?.end ?? token.end,
+      });
+      if (argument) index += 1;
+    } else if (token.value.startsWith("--input-type=")) {
+      removed.push({ start: token.start, end: token.end });
+    }
+  }
+  let result = "";
+  let cursor = 0;
+  for (const range of removed) {
+    result += value.slice(cursor, range.start);
+    cursor = range.end;
+  }
+  return `${result}${value.slice(cursor)}`.trim();
+}
+
 function childEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.toUpperCase() === "LICHESS_TOKEN") delete env[key];
   }
   if (env.NODE_OPTIONS) {
-    env.NODE_OPTIONS = env.NODE_OPTIONS
-      .replace(
-        /(^|\s)--input-type(?:=(?:module|commonjs)|\s+(?:module|commonjs))(?=\s|$)/g,
-        " ",
-      )
-      .trim();
+    env.NODE_OPTIONS = withoutNodeInputType(env.NODE_OPTIONS);
   }
   return env;
 }
@@ -266,9 +334,7 @@ class MaiaWorkerSlot {
     const id = this.#nextId++;
     return new Promise<Float32Array>((resolve, reject) => {
       const onAbort = () => {
-        void this.#retire(
-          signal?.reason ?? new Error("Maia3 inference cancelled"),
-        );
+        void this.#retire(signal?.reason);
       };
       const timer = setTimeout(() => {
         void this.#retire(new Error("Maia3 inference timed out"));

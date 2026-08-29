@@ -53,7 +53,10 @@ export async function requestExplorerTransport(
   const remaining = deadline - now();
   if (remaining <= 0) throw explorerError("timeout");
   const attemptSignal = timeout(
-    Math.max(1, Math.min(EXPLORER_ATTEMPT_TIMEOUT_MS, remaining)),
+    Math.max(
+      1,
+      Math.floor(Math.min(EXPLORER_ATTEMPT_TIMEOUT_MS, remaining)),
+    ),
   );
   const signal = AbortSignal.any(
     callerSignal ? [callerSignal, attemptSignal] : [attemptSignal],

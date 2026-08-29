@@ -13,6 +13,7 @@ import {
   type LichessMove,
   type Maia3Move,
   type MoveSensitivity,
+  type OpeningStats,
   type SfLine,
   type Wdl,
 } from "./domain.js";
@@ -175,7 +176,7 @@ export const OpeningStatsSchema = z
   })
   .describe(
     "Non-available stats must all be null. Available stats must be all null or include positive games and frequency plus white, draws, and black; games must equal white + draws + black.",
-  );
+  ) as z.ZodType<OpeningStats>;
 
 export const CandidateSchema = z.strictObject({
   uci,

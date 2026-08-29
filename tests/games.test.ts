@@ -198,6 +198,65 @@ test("GameStore rejects invalid generated IDs without consuming capacity", () =>
   assert.equal(calls, 3);
 });
 
+test("GameStore preserves capacity under reentrant ID generation", () => {
+  let reentered = false;
+  let store: GameStore;
+  store = new GameStore({
+    maxGames: 1,
+    clock: () => 0,
+    createId: () => {
+      if (!reentered) {
+        reentered = true;
+        assert.equal(store.createGame(), "nested");
+        return "outer";
+      }
+      return "nested";
+    },
+  });
+
+  expectChessError("GAME_LIMIT_REACHED", () => store.createGame());
+  assert.deepEqual(store.listGames(), ["nested"]);
+});
+
+test("GameStore rechecks capacity and collisions after snapshot callbacks", () => {
+  let callback = () => {};
+  class ReentrantCommentChess extends Chess {
+    override getComments() {
+      callback();
+      return super.getComments();
+    }
+  }
+
+  let nextId = 0;
+  const limited = new GameStore({
+    maxGames: 1,
+    clock: () => 0,
+    createId: () => `game-${nextId++}`,
+  });
+  callback = () => {
+    callback = () => {};
+    assert.equal(limited.createGame(), "game-1");
+  };
+  expectChessError("GAME_LIMIT_REACHED", () =>
+    limited.createGameFromChess(new ReentrantCommentChess()),
+  );
+  assert.deepEqual(limited.listGames(), ["game-1"]);
+
+  const colliding = new GameStore({
+    maxGames: 2,
+    clock: () => 0,
+    createId: () => "same",
+  });
+  callback = () => {
+    callback = () => {};
+    assert.equal(colliding.createGame(), "same");
+  };
+  expectChessError("GAME_ID_COLLISION", () =>
+    colliding.createGameFromChess(new ReentrantCommentChess()),
+  );
+  assert.deepEqual(colliding.listGames(), ["same"]);
+});
+
 test("GameStore rejects unsafe FEN counters before creating a game", () => {
   const store = new GameStore({ createId: () => "game" });
   const base = "8/8/8/8/8/8/K7/7k w - -";
@@ -284,6 +343,32 @@ test("GameStore applies parsed moves atomically at the expected revision", () =>
   updated.chess.move("e5");
   expectChessError("STALE_POSITION", () => store.applyMove(id, 0, parsed));
   assert.deepEqual(store.getSnapshot(id).chess.history(), ["e4"]);
+});
+
+test("GameStore materializes moves before checking revisions", () => {
+  const store = new GameStore({ clock: () => 0, createId: () => "game" });
+  const id = store.createGame();
+  const e4 = parseMove(store.getSnapshot(id).chess, "e4");
+  const afterE4 = new Chess();
+  afterE4.move("e4");
+  const e5 = parseMove(afterE4, "e5");
+  let reentered = false;
+  Object.defineProperty(e5, "from", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      if (!reentered) {
+        reentered = true;
+        assert.equal(store.applyMove(id, 0, e4).revision, 1);
+      }
+      return "e7";
+    },
+  });
+
+  expectChessError("STALE_POSITION", () => store.applyMove(id, 0, e5));
+  const snapshot = store.getSnapshot(id);
+  assert.equal(snapshot.revision, 1);
+  assert.deepEqual(snapshot.chess.history(), ["e4"]);
 });
 
 test("GameStore rolls back a move that exceeds safe FEN counters", () => {

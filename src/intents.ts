@@ -273,7 +273,7 @@ export function candidateSetFromData(
     if (lichess) {
       const stats = {
         games: lichess.count,
-        frequency: totalGames > 0 ? lichess.count / totalGames : null,
+        frequency: lichess.count / totalGames,
         white: lichess.white,
         draws: lichess.draws,
         black: lichess.black,

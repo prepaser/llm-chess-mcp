@@ -13,13 +13,14 @@ judgment; the MCP server handles all the computation.
 | Engine | Role | Runtime |
 |---|---|---|
 | **Stockfish 18** (WASM) | Objective evaluation, best moves, multipv | In-process (npm `stockfish`) |
-| **Maia3 5M** (ONNX) | Human-like move probabilities conditioned on Elo | In-process (`onnxruntime-node`) |
+| **Maia3 5M** (ONNX) | Human-like move probabilities conditioned on Elo | Dedicated Node child processes (`onnxruntime-node`) |
 | **Lichess explorer** | Real human game statistics | HTTP (needs token) |
 
-Everything runs inside the Node process. No external engine process or Python
-runtime is required at deploy time. The published package bundles the Maia3 5M
-model; other export variants are not runtime options unless their ONNX files are
-provided separately.
+No external engine executable or Python runtime is required at deploy time.
+Stockfish runs in the server process, while Maia inference runs in dedicated
+Node child processes. The published package bundles the Maia3 5M model; other
+export variants are not runtime options unless their ONNX files are provided
+separately.
 
 ## Build from source
 

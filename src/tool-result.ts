@@ -2,7 +2,7 @@ import type { ServerContext } from "@modelcontextprotocol/server";
 import type { ExplorerErrorKind } from "./domain.js";
 import { ChessError } from "./errors.js";
 import { ExplorerError } from "./explorer.js";
-import type * as z from "zod/v4";
+import * as z from "zod/v4";
 
 const UNABORTABLE_SIGNAL = new AbortController().signal;
 const INTERNAL_ERROR_MESSAGE = "internal tool error";
@@ -43,6 +43,17 @@ function explorerErrorCode(kind: ExplorerErrorKind): string {
   return `LICHESS_${kind.toUpperCase()}`;
 }
 
+function assertWireSchema(schema: z.ZodType, kind: "input" | "output"): void {
+  try {
+    z.toJSONSchema(schema);
+  } catch (cause) {
+    throw new TypeError(
+      `MCP ${kind} schema must be representable as JSON Schema`,
+      { cause },
+    );
+  }
+}
+
 export function safeHandler<
   InputSchema extends z.ZodType,
   OutputSchema extends z.ZodType,
@@ -57,6 +68,8 @@ export function safeHandler<
   args: z.input<InputSchema>,
   context?: ServerContext,
 ) => Promise<ToolResult> {
+  assertWireSchema(inputSchema, "input");
+  assertWireSchema(outputSchema, "output");
   return async (args, context) => {
     const signal = context?.mcpReq.signal ?? UNABORTABLE_SIGNAL;
     try {

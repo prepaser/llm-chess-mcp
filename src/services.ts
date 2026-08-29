@@ -68,10 +68,16 @@ export interface AppServices
     CandidateServices,
     LifecycleServices {}
 
-const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) =>
-  stockfish.analyze(fen, depth, multipv, signal);
 let maiaModule: Promise<typeof import("./maia3/inference.js")> | undefined;
 let defaultShutdown: Promise<void> | null = null;
+const shutdownError = (): Error | null =>
+  defaultShutdown ? new Error("application services are shutting down") : null;
+const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) => {
+  const error = shutdownError();
+  return error
+    ? Promise.reject(error)
+    : stockfish.analyze(fen, depth, multipv, signal);
+};
 const loadMaia = (): Promise<typeof import("./maia3/inference.js")> =>
   (maiaModule ??= import("./maia3/inference.js"));
 const humanMoveDistribution: AppServices["humanMoveDistribution"] = async (
@@ -81,9 +87,11 @@ const humanMoveDistribution: AppServices["humanMoveDistribution"] = async (
   topN,
   signal,
 ) => {
-  if (defaultShutdown) throw new Error("application services are shutting down");
+  const beforeLoad = shutdownError();
+  if (beforeLoad) throw beforeLoad;
   const maia = await loadMaia();
-  if (defaultShutdown) throw new Error("application services are shutting down");
+  const afterLoad = shutdownError();
+  if (afterLoad) throw afterLoad;
   return maia.humanMoveDistribution(
     chess,
     elo,
@@ -98,15 +106,18 @@ const openExplorer: AppServices["openingExplorer"] = (
   speeds,
   ratings,
   signal,
-) =>
-  openingExplorer(
+) => {
+  const error = shutdownError();
+  if (error) return Promise.reject(error);
+  return openingExplorer(
     chess,
     db,
     speeds,
     ratings,
     signal === undefined ? {} : { signal },
   );
-const computeCandidates = createCandidateComputation({
+};
+const computeCandidateSet = createCandidateComputation({
   analyze,
   humanMoveDistribution,
   explorerEnabled,
@@ -114,6 +125,10 @@ const computeCandidates = createCandidateComputation({
   explorerFailureReason: (error) =>
     error instanceof ExplorerError ? error.reason : "upstream",
 });
+const computeCandidates: AppServices["computeCandidates"] = (...args) => {
+  const error = shutdownError();
+  return error ? Promise.reject(error) : computeCandidateSet(...args);
+};
 
 function quitDefaultServices(): Promise<void> {
   if (defaultShutdown) return defaultShutdown;

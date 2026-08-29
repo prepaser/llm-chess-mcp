@@ -14,6 +14,7 @@ import {
   MaiaWorkerPool,
   quitMaia,
   softmax,
+  withoutNodeInputType,
 } from "../src/maia3/inference.js";
 import { VOCAB_SIZE } from "../src/maia3/vocab.js";
 
@@ -227,12 +228,21 @@ test("inference children do not inherit the Lichess credential", async () => {
 
 test("child pool preserves falsey active cancellation reasons", async () => {
   const pool = new MaiaWorkerPool(1, 2_000, testChildUrl);
-  const controller = new AbortController();
-  const active = pool.run(poolRequest("hang"), controller.signal);
-  controller.abort(false);
-  await assert.rejects(active, (error: unknown) => error === false);
-  const closing = pool.close(new Error("closed"));
-  await closing;
+  try {
+    for (const reason of [false, null]) {
+      const controller = new AbortController();
+      const outcome = pool
+        .run(poolRequest("hang"), controller.signal)
+        .then(
+          () => ({ resolved: true, reason: undefined }),
+          (error: unknown) => ({ resolved: false, reason: error }),
+        );
+      controller.abort(reason);
+      assert.deepEqual(await outcome, { resolved: false, reason });
+    }
+  } finally {
+    await pool.close(new Error("closed"));
+  }
 });
 
 test("quit fences work, shares completion, and permits lazy restart", async () => {
@@ -259,6 +269,37 @@ test("child execution yields the main event loop", async () => {
   assert.equal(ticked, true);
 });
 
+test("parses quoted and unquoted NODE_OPTIONS without changing other options", () => {
+  for (const input of [
+    "--input-type=module --no-warnings",
+    "\"--input-type=module\" --no-warnings",
+    "'--input-type=module' --no-warnings",
+    "\"--input-type\" \"module\" --no-warnings",
+  ]) {
+    assert.equal(withoutNodeInputType(input), "--no-warnings");
+  }
+  assert.equal(
+    withoutNodeInputType('--require "./loader path.cjs" --no-warnings'),
+    '--require "./loader path.cjs" --no-warnings',
+  );
+});
+
+test("child env strips quoted input-type and preserves other options", async () => {
+  const previous = process.env.NODE_OPTIONS;
+  process.env.NODE_OPTIONS = '"--input-type=module" --no-warnings';
+  const pool = new MaiaWorkerPool(1, 2_000, testChildUrl);
+  try {
+    assert.deepEqual(
+      await pool.run(poolRequest("node-options")),
+      new Float32Array([1]),
+    );
+  } finally {
+    if (previous === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = previous;
+    await pool.close(new Error("closed"));
+  }
+});
+
 test("source children ignore inherited input-type exec arguments", { timeout: 15_000 }, async () => {
   const moduleUrl = new URL("../src/maia3/inference.ts", import.meta.url).href;
   const source = `
@@ -276,7 +317,7 @@ test("source children ignore inherited input-type exec arguments", { timeout: 15
       encoding: "utf8",
       env: {
         ...process.env,
-        NODE_OPTIONS: [process.env.NODE_OPTIONS, "--input-type=module"]
+        NODE_OPTIONS: [process.env.NODE_OPTIONS, '"--input-type=module"']
           .filter(Boolean)
           .join(" "),
       },

@@ -1350,6 +1350,125 @@ test("owned listener wrappers preserve later duplicate user registrations", asyn
   });
 });
 
+test("owned listener tokens survive public wrapper removal and prepending", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const uncaughtOrder = [];
+    const unhandledOrder = [];
+    const markerUncaught = () => uncaughtOrder.push("marker");
+    const markerUnhandled = () => unhandledOrder.push("marker");
+    const originalUncaught = () => uncaughtOrder.push("hook");
+    const originalUnhandled = () => unhandledOrder.push("hook");
+    process.on("uncaughtException", markerUncaught);
+    process.on("unhandledRejection", markerUnhandled);
+    const engine = {
+      listener: null,
+      sendCommand(command) {
+        if (command === "uci") queueMicrotask(() => this.listener?.("uciok"));
+        else if (command === "isready") queueMicrotask(() => this.listener?.("readyok"));
+        else if (command.startsWith("go depth ")) {
+          queueMicrotask(() => this.listener?.("bestmove e2e4"));
+        }
+      },
+      terminate() {},
+    };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          process.on("uncaughtException", originalUncaught);
+          process.on("uncaughtException", originalUncaught);
+          process.on("unhandledRejection", originalUnhandled);
+          process.on("unhandledRejection", originalUnhandled);
+          queueMicrotask(() => callback(null, engine));
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      await stockfish.analyze("fen", 1, 1);
+      const uncaught = process
+        .listeners("uncaughtException")
+        .filter((listener) => listener !== markerUncaught);
+      const unhandled = process
+        .listeners("unhandledRejection")
+        .filter((listener) => listener !== markerUnhandled);
+      const registeredUncaught = process
+        .rawListeners("uncaughtException")
+        .filter((listener) => listener !== markerUncaught);
+      const registeredUnhandled = process
+        .rawListeners("unhandledRejection")
+        .filter((listener) => listener !== markerUnhandled);
+
+      process.removeListener("uncaughtException", uncaught[0]);
+      process.on("uncaughtException", uncaught[0]);
+      process.prependListener("uncaughtException", uncaught[1]);
+      process.removeListener("unhandledRejection", unhandled[0]);
+      process.on("unhandledRejection", unhandled[0]);
+      process.prependListener("unhandledRejection", unhandled[1]);
+      await stockfish.quit();
+
+      const remainingUncaught = process.listeners("uncaughtException");
+      const remainingUnhandled = process.listeners("unhandledRejection");
+      process.emit("uncaughtException", new Error("probe"), "uncaughtException");
+      process.emit("unhandledRejection", {}, Promise.resolve());
+      process.stdout.write(JSON.stringify({
+        uncaughtSequence: remainingUncaught.map((listener) =>
+          listener === uncaught[1]
+            ? "prepend"
+            : listener === markerUncaught
+              ? "marker"
+              : listener === uncaught[0]
+                ? "readd"
+                : "unknown",
+        ),
+        unhandledSequence: remainingUnhandled.map((listener) =>
+          listener === unhandled[1]
+            ? "prepend"
+            : listener === markerUnhandled
+              ? "marker"
+              : listener === unhandled[0]
+                ? "readd"
+                : "unknown",
+        ),
+        uncaughtOrder,
+        unhandledOrder,
+        ownedUncaughtLeft: registeredUncaught.some((listener) =>
+          process.rawListeners("uncaughtException").includes(listener),
+        ),
+        ownedUnhandledLeft: registeredUnhandled.some((listener) =>
+          process.rawListeners("unhandledRejection").includes(listener),
+        ),
+      }));
+    } finally {
+      Module._load = load;
+      process.removeAllListeners("uncaughtException");
+      process.removeAllListeners("unhandledRejection");
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    uncaughtSequence: ["prepend", "marker", "readd"],
+    unhandledSequence: ["prepend", "marker", "readd"],
+    uncaughtOrder: ["hook", "marker", "hook"],
+    unhandledOrder: ["hook", "marker", "hook"],
+    ownedUncaughtLeft: false,
+    ownedUnhandledLeft: false,
+  });
+});
+
 test(
   "real lite-single quit stops active search without leaking stdout",
   { timeout: 15_000 },

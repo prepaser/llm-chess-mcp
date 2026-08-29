@@ -31,6 +31,18 @@ process.on("message", ({ id, modelPath }: Request) => {
         logits: new Float32Array([process.env.LICHESS_TOKEN === undefined ? 1 : -1]),
       });
       return;
+    case "node-options":
+      send({
+        id,
+        ok: true,
+        logits: new Float32Array([
+          process.env.NODE_OPTIONS?.includes("--no-warnings") === true &&
+          !process.env.NODE_OPTIONS.includes("--input-type")
+            ? 1
+            : -1,
+        ]),
+      });
+      return;
     default:
       send({ id, ok: true, logits: new Float32Array([7]) });
   }

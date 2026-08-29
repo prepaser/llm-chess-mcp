@@ -692,6 +692,49 @@ test("honors bounded Retry-After for 429 and 5xx", async () => {
   }
 });
 
+test("uses integer attempt timeouts after long Retry-After waits", async () => {
+  for (const status of [429, 503]) {
+    let now = 0;
+    let calls = 0;
+    const timeouts: number[] = [];
+    const readNow = () => {
+      now += 0.1;
+      return now;
+    };
+
+    await openingExplorer(
+      new Chess(),
+      "lichess",
+      [],
+      [],
+      options(
+        async () => {
+          calls += 1;
+          return calls === 1
+            ? response(status, {}, { "Retry-After": "8" })
+            : response();
+        },
+        {
+          now: readNow,
+          sleep: async (ms) => {
+            now += ms;
+          },
+          timeout: (ms) => {
+            timeouts.push(ms);
+            return AbortSignal.timeout(ms);
+          },
+        },
+      ),
+    );
+
+    assert.equal(calls, 2);
+    assert.equal(timeouts.length, 2);
+    assert.equal(timeouts[0], EXPLORER_ATTEMPT_TIMEOUT_MS);
+    assert.equal(Number.isInteger(timeouts[1]), true);
+    assert.ok(timeouts[1]! > 0 && timeouts[1]! < EXPLORER_ATTEMPT_TIMEOUT_MS);
+  }
+});
+
 test("serializes process-wide explorer requests", async () => {
   let calls = 0;
   let active = 0;

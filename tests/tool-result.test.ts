@@ -80,37 +80,52 @@ test("safeHandler masks unexpected failures", async () => {
   );
 });
 
-test("safeHandler prevalidates successful output without applying transforms", async () => {
+test("safeHandler prevalidates successful output", async () => {
   const outputSchema = z.strictObject({
-    value: z.string().transform((value) => value.trim()),
+    value: z.string().refine((value) => value.length > 0),
   });
   const handler = safeHandler(z.strictObject({}), outputSchema, async () =>
-    toolResult(outputSchema, { value: "  result  " }, "ok"),
+    toolResult(outputSchema, { value: "result" }, "ok"),
   );
 
   assert.deepEqual(
     await handler({}),
-    toolResult(outputSchema, { value: "  result  " }, "ok"),
+    toolResult(outputSchema, { value: "result" }, "ok"),
   );
 });
 
-test("wire output applies a non-idempotent transform only once", async (t) => {
+test("safeHandler rejects non-wire schemas before tool registration", async (t) => {
   const inputSchema = z.strictObject({});
-  const outputSchema = z.strictObject({
-    value: z
-      .number()
-      .transform((value) => value + 1)
-      .refine((value) => value <= 2, "too large"),
-  });
-  const server = new McpServer({ name: "output-transform-test", version: "1" });
+  const outputSchema = z.strictObject({ value: z.number() });
+  const server = new McpServer({ name: "wire-schema-test", version: "1" });
   server.registerTool(
-    "transformed_output",
+    "valid_tool",
     { inputSchema, outputSchema },
     safeHandler(inputSchema, outputSchema, async () =>
       toolResult(outputSchema, { value: 1 }, "ok"),
     ),
   );
-  const client = new Client({ name: "output-transform-client", version: "1" });
+  assert.throws(
+    () =>
+      safeHandler(
+        z.strictObject({ value: z.string().transform(Number) }),
+        outputSchema,
+        async () => toolResult(outputSchema, { value: 1 }, "unreachable"),
+      ),
+    /MCP input schema must be representable as JSON Schema/,
+  );
+  const transformedOutput = z.strictObject({
+    value: z.string().transform(Number),
+  });
+  assert.throws(
+    () =>
+      safeHandler(inputSchema, transformedOutput, async () =>
+        toolResult(transformedOutput, { value: 1 }, "unreachable"),
+      ),
+    /MCP output schema must be representable as JSON Schema/,
+  );
+
+  const client = new Client({ name: "wire-schema-client", version: "1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   await client.connect(clientTransport);
@@ -119,12 +134,8 @@ test("wire output applies a non-idempotent transform only once", async (t) => {
     await server.close();
   });
 
-  const result = await client.callTool({
-    name: "transformed_output",
-    arguments: {},
-  });
-  assert.notEqual(result.isError, true);
-  assert.deepEqual(result.structuredContent, { value: 1 });
+  const listed = await client.listTools();
+  assert.deepEqual(listed.tools.map(({ name }) => name), ["valid_tool"]);
 });
 
 test("safeHandler masks invalid successful output", async () => {
@@ -199,10 +210,10 @@ test("safeHandler rethrows cancellation during async output validation", async (
   });
   const controller = new AbortController();
   const outputSchema = z.strictObject({
-    value: z.string().transform(async (value) => {
+    value: z.string().refine(async () => {
       markValidationStarted();
       await validationFinished;
-      return value;
+      return true;
     }),
   });
   const handler = safeHandler(z.strictObject({}), outputSchema, async () =>

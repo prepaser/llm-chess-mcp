@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ChildProcess } from "node:child_process";
 import test from "node:test";
 import { Chess } from "chess.js";
 import { stockfish } from "../src/engines/stockfish.js";
@@ -144,6 +145,55 @@ test("default shutdown awaits Maia teardown before preserving a Stockfish failur
     await assert.rejects(shuttingDown, (error: unknown) => error === failure);
   } finally {
     stockfish.quit = originalQuit;
+    await defaultAppServices.quit();
+  }
+});
+
+test("delayed Maia teardown fences every default work entrypoint", async () => {
+  const activeMaia = defaultAppServices
+    .humanMoveDistribution(new Chess(), 1500, 1500, 1)
+    .then(() => null, (error: unknown) => error);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const originalKill = ChildProcess.prototype.kill;
+  const originalAnalyze = stockfish.analyze;
+  let analyzeCalls = 0;
+  ChildProcess.prototype.kill = function delayedKill(signal) {
+    setTimeout(() => originalKill.call(this, signal), 100);
+    return true;
+  };
+  stockfish.analyze = async () => {
+    analyzeCalls += 1;
+    return [];
+  };
+
+  try {
+    const shuttingDown = defaultAppServices.quit();
+    let settled = false;
+    void shuttingDown.then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(settled, false);
+
+    await assert.rejects(
+      defaultAppServices.analyze("fen", 1, 1),
+      /application services are shutting down/,
+    );
+    await assert.rejects(
+      defaultAppServices.openingExplorer(new Chess(), "lichess", [], []),
+      /application services are shutting down/,
+    );
+    await assert.rejects(
+      defaultAppServices.computeCandidates(new Chess(), 1500, 1, 1, 1),
+      /application services are shutting down/,
+    );
+    assert.equal(analyzeCalls, 0);
+    assert.match(String(await activeMaia), /cancelled by shutdown/);
+    await shuttingDown;
+  } finally {
+    ChildProcess.prototype.kill = originalKill;
+    stockfish.analyze = originalAnalyze;
     await defaultAppServices.quit();
   }
 });
