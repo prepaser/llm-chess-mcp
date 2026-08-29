@@ -826,6 +826,31 @@
       "description": "The primary move-selection tool. Combine Stockfish objective evaluation (moverCp, whiteCp, cpLoss, mate, WDL), Maia3 human probability, and Lichess real-game statistics into a unified candidate list. moverCp is from the mover's perspective: higher = better for the player choosing the move. Use this before choosing a move; the final choice is yours.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "lichess_db": {
+                  "const": "masters"
+                }
+              },
+              "required": [
+                "lichess_db"
+              ]
+            },
+            "then": {
+              "properties": {
+                "lichess_ratings": {
+                  "maxItems": 0
+                },
+                "lichess_speeds": {
+                  "maxItems": 0
+                }
+              }
+            }
+          }
+        ],
+        "description": "When lichess_db is masters, lichess_speeds and lichess_ratings must both be empty.",
         "properties": {
           "analysis_level": {
             "default": "normal",
@@ -855,6 +880,7 @@
           },
           "lichess_ratings": {
             "default": [],
+            "description": "Rating filters must be unique; duplicates are not allowed.",
             "items": {
               "anyOf": [
                 {
@@ -896,10 +922,12 @@
               ]
             },
             "maxItems": 9,
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           },
           "lichess_speeds": {
             "default": [],
+            "description": "Speed filters must be unique; duplicates are not allowed.",
             "items": {
               "enum": [
                 "ultraBullet",
@@ -912,7 +940,8 @@
               "type": "string"
             },
             "maxItems": 6,
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           },
           "maia_top_n": {
             "default": 5,
@@ -1031,6 +1060,8 @@
                       "anyOf": [
                         {
                           "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                          "maxItems": 3,
+                          "minItems": 3,
                           "prefixItems": [
                             {
                               "maximum": 1000,
@@ -1568,6 +1599,31 @@
       "description": "Convenience layer over move_candidates: rank candidates for a strategic intent. This tool RANKS candidates but does NOT choose a move — use the returned signals and conversation context to make the final decision. Do not map user skill mechanically to an intent. intents: best (strongest engine move), strong (engine-strong but human-plausible), natural (most human-typical), balanced (blend of strength and human-likeness), ease_off (human-plausible moves that modestly reduce advantage without changing the expected result), give_chance (human-plausible inaccuracies that meaningfully improve the opponent's chances).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "lichess_db": {
+                  "const": "masters"
+                }
+              },
+              "required": [
+                "lichess_db"
+              ]
+            },
+            "then": {
+              "properties": {
+                "lichess_ratings": {
+                  "maxItems": 0
+                },
+                "lichess_speeds": {
+                  "maxItems": 0
+                }
+              }
+            }
+          }
+        ],
+        "description": "When lichess_db is masters, lichess_speeds and lichess_ratings must both be empty.",
         "properties": {
           "analysis_level": {
             "default": "normal",
@@ -1608,6 +1664,7 @@
           },
           "lichess_ratings": {
             "default": [],
+            "description": "Rating filters must be unique; duplicates are not allowed.",
             "items": {
               "anyOf": [
                 {
@@ -1649,10 +1706,12 @@
               ]
             },
             "maxItems": 9,
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           },
           "lichess_speeds": {
             "default": [],
+            "description": "Speed filters must be unique; duplicates are not allowed.",
             "items": {
               "enum": [
                 "ultraBullet",
@@ -1665,7 +1724,8 @@
               "type": "string"
             },
             "maxItems": 6,
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           },
           "maia_top_n": {
             "default": 10,
@@ -1785,6 +1845,8 @@
                       "anyOf": [
                         {
                           "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                          "maxItems": 3,
+                          "minItems": 3,
                           "prefixItems": [
                             {
                               "maximum": 1000,
@@ -2509,6 +2571,31 @@
       "description": "Query the Lichess opening explorer for real human game statistics in the current position (requires LICHESS_TOKEN).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "db": {
+                  "const": "masters"
+                }
+              },
+              "required": [
+                "db"
+              ]
+            },
+            "then": {
+              "properties": {
+                "ratings": {
+                  "maxItems": 0
+                },
+                "speeds": {
+                  "maxItems": 0
+                }
+              }
+            }
+          }
+        ],
+        "description": "When db is masters, speeds and ratings must both be empty.",
         "properties": {
           "db": {
             "default": "lichess",
@@ -2523,6 +2610,7 @@
           },
           "ratings": {
             "default": [],
+            "description": "Rating filters must be unique; duplicates are not allowed.",
             "items": {
               "anyOf": [
                 {
@@ -2564,10 +2652,12 @@
               ]
             },
             "maxItems": 9,
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           },
           "speeds": {
             "default": [],
+            "description": "Speed filters must be unique; duplicates are not allowed.",
             "items": {
               "enum": [
                 "ultraBullet",
@@ -2580,7 +2670,8 @@
               "type": "string"
             },
             "maxItems": 6,
-            "type": "array"
+            "type": "array",
+            "uniqueItems": true
           }
         },
         "required": [
@@ -2831,6 +2922,8 @@
                   "anyOf": [
                     {
                       "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                      "maxItems": 3,
+                      "minItems": 3,
                       "prefixItems": [
                         {
                           "maximum": 1000,

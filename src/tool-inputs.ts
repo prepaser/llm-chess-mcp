@@ -12,11 +12,47 @@ import type { ToolName } from "./tool-names.js";
 const lichessSpeedsSchema = z
   .array(lichessSpeedSchema)
   .max(LICHESS_SPEEDS.length)
-  .refine((values) => new Set(values).size === values.length, "duplicate speeds");
+  .refine((values) => new Set(values).size === values.length, "duplicate speeds")
+  .meta({
+    uniqueItems: true,
+    description: "Speed filters must be unique; duplicates are not allowed.",
+  });
 const lichessRatingsSchema = z
   .array(lichessRatingSchema)
   .max(LICHESS_RATINGS.length)
-  .refine((values) => new Set(values).size === values.length, "duplicate ratings");
+  .refine((values) => new Set(values).size === values.length, "duplicate ratings")
+  .meta({
+    uniqueItems: true,
+    description: "Rating filters must be unique; duplicates are not allowed.",
+  });
+
+function mastersFilterContract(
+  db: "db" | "lichess_db",
+  speeds: "speeds" | "lichess_speeds",
+  ratings: "ratings" | "lichess_ratings",
+) {
+  return {
+    description: `When ${db} is masters, ${speeds} and ${ratings} must both be empty.`,
+    allOf: [
+      {
+        if: { properties: { [db]: { const: "masters" } }, required: [db] },
+        then: {
+          properties: {
+            [speeds]: { maxItems: 0 },
+            [ratings]: { maxItems: 0 },
+          },
+        },
+      },
+    ],
+  };
+}
+
+const explorerFilterContract = mastersFilterContract("db", "speeds", "ratings");
+const candidateExplorerFilterContract = mastersFilterContract(
+  "lichess_db",
+  "lichess_speeds",
+  "lichess_ratings",
+);
 
 const explorerFilterFields = {
   db: z.enum(["lichess", "masters"]),
@@ -47,7 +83,8 @@ function addExplorerFilterIssue(
 
 export const ExplorerFiltersSchema = z
   .object(explorerFilterFields)
-  .superRefine((filters, ctx) => addExplorerFilterIssue(filters, ctx, "db"));
+  .superRefine((filters, ctx) => addExplorerFilterIssue(filters, ctx, "db"))
+  .meta(explorerFilterContract);
 
 export type ExplorerFilters = z.output<typeof ExplorerFiltersSchema>;
 
@@ -119,7 +156,8 @@ export const MoveCandidatesInputSchema = z
   })
   .superRefine((value, ctx) => {
     addExplorerFilterIssue(candidateExplorerFilters(value), ctx, "lichess_db");
-  });
+  })
+  .meta(candidateExplorerFilterContract);
 
 export const MoveCandidatesByIntentInputSchema = z
   .object({
@@ -129,7 +167,8 @@ export const MoveCandidatesByIntentInputSchema = z
   })
   .superRefine((value, ctx) => {
     addExplorerFilterIssue(candidateExplorerFilters(value), ctx, "lichess_db");
-  });
+  })
+  .meta(candidateExplorerFilterContract);
 
 export const OpeningExplorerInputSchema = z
   .object({
@@ -140,7 +179,8 @@ export const OpeningExplorerInputSchema = z
   })
   .superRefine((value, ctx) => {
     addExplorerFilterIssue(explorerFilters(value), ctx, "db");
-  });
+  })
+  .meta(explorerFilterContract);
 
 export const GameImportPgnInputSchema = z.object({ pgn: z.string() });
 

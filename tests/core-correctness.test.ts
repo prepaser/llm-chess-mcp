@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Chess } from "chess.js";
+import * as z from "zod/v4";
 import type { Candidate } from "../src/types.js";
 import { ChessError } from "../src/errors.js";
 import {
@@ -128,6 +129,45 @@ test("Lichess filters are strict", () => {
     }).success,
     false,
   );
+
+  const explorerSchema = z.toJSONSchema(
+    TOOL_INPUT_SCHEMAS.opening_explorer,
+  ) as {
+    allOf?: unknown[];
+    description?: string;
+    properties?: Record<string, { uniqueItems?: boolean }>;
+  };
+  const candidateSchema = z.toJSONSchema(
+    TOOL_INPUT_SCHEMAS.move_candidates,
+  ) as typeof explorerSchema;
+  assert.equal(explorerSchema.properties?.speeds?.uniqueItems, true);
+  assert.equal(explorerSchema.properties?.ratings?.uniqueItems, true);
+  assert.match(explorerSchema.description ?? "", /masters/);
+  assert.deepEqual(explorerSchema.allOf, [
+    {
+      if: { properties: { db: { const: "masters" } }, required: ["db"] },
+      then: {
+        properties: { speeds: { maxItems: 0 }, ratings: { maxItems: 0 } },
+      },
+    },
+  ]);
+  assert.equal(candidateSchema.properties?.lichess_speeds?.uniqueItems, true);
+  assert.equal(candidateSchema.properties?.lichess_ratings?.uniqueItems, true);
+  assert.match(candidateSchema.description ?? "", /masters/);
+  assert.deepEqual(candidateSchema.allOf, [
+    {
+      if: {
+        properties: { lichess_db: { const: "masters" } },
+        required: ["lichess_db"],
+      },
+      then: {
+        properties: {
+          lichess_speeds: { maxItems: 0 },
+          lichess_ratings: { maxItems: 0 },
+        },
+      },
+    },
+  ]);
 });
 
 test("constrained intents return no candidates when none satisfy the intent", () => {

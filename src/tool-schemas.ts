@@ -38,6 +38,7 @@ const wdl = z
     z.number().int().min(0).max(1_000),
     z.number().int().min(0).max(1_000),
   ])
+  .meta({ minItems: 3, maxItems: 3 })
   .refine(([wins, draws, losses]) => wins + draws + losses === 1_000, {
     message: "WDL counts must sum to 1000",
   })

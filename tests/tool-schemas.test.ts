@@ -11,8 +11,11 @@ import {
 } from "../src/tool-schemas.js";
 
 type JsonSchema = {
+  anyOf?: JsonSchema[];
   description?: string;
   items?: JsonSchema;
+  maxItems?: number;
+  minItems?: number;
   pattern?: string;
   properties?: Record<string, JsonSchema>;
 };
@@ -168,7 +171,12 @@ test("candidate output enforces move, probability, evaluation, and opening bound
     { ...candidate, san: "" },
     { ...candidate, human: { ...candidate.human, maia3Prob: 1.01 } },
     { ...candidate, objective: { ...candidate.objective, rank: 0 } },
+    { ...candidate, objective: { ...candidate.objective, wdl: [500, 500] } },
     { ...candidate, objective: { ...candidate.objective, wdl: [500, 300, 199] } },
+    {
+      ...candidate,
+      objective: { ...candidate.objective, wdl: [500, 300, 200, 0] },
+    },
     { ...candidate, opening: { ...candidate.opening, frequency: 1.01 } },
     { ...candidate, opening: { ...candidate.opening, games: 8 } },
     { ...candidate, opening: { ...candidate.opening, black: null } },
@@ -192,6 +200,7 @@ test("wire schemas expose UCI and cross-field constraints", () => {
   const uciSchema = candidateSchema.properties?.uci;
   const objectiveSchema = candidateSchema.properties?.objective;
   const wdlSchema = objectiveSchema?.properties?.wdl;
+  const wdlArraySchema = wdlSchema?.anyOf?.[0];
   const openingSchema = candidateSchema.properties?.opening;
   const moveSchema = explorerSchema.properties?.moves?.items;
 
@@ -202,6 +211,8 @@ test("wire schemas expose UCI and cross-field constraints", () => {
   assert.equal(uciPattern.test("e2e1n"), true);
   assert.equal(uciPattern.test("e2e4q"), false);
   assert.match(wdlSchema?.description ?? "", /sum to 1000/);
+  assert.equal(wdlArraySchema?.minItems, 3);
+  assert.equal(wdlArraySchema?.maxItems, 3);
   assert.match(openingSchema?.description ?? "", /all null or all present/);
   assert.match(explorerSchema.description ?? "", /must not exceed/);
   assert.match(moveSchema?.description ?? "", /count must equal/);

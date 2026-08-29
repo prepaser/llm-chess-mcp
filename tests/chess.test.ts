@@ -5,6 +5,7 @@ import {
   assertLegalPosition,
   assertSafeFenCounters,
   drawResult,
+  MAX_PGN_BYTES,
   MAX_PGN_HEADERS,
   MAX_PGN_PLIES,
   parseImportedPgn,
@@ -424,17 +425,27 @@ test("parseImportedPgn rejects duplicate custom header names case-insensitively"
 });
 
 test("parseImportedPgn bounds the complete header section", () => {
-  const headers = Array.from(
-    { length: MAX_PGN_HEADERS },
-    (_, index) => `[X${index} "${index}"]`,
-  );
+  const headers = [
+    '[Event "?"]',
+    '[Site "?"]',
+    '[Date "????.??.??"]',
+    '[Round "?"]',
+    '[White "?"]',
+    '[Black "?"]',
+    '[Result "*"]',
+    ...Array.from(
+      { length: MAX_PGN_HEADERS - 7 },
+      (_, index) => `[X${index} "${index}"]`,
+    ),
+  ];
   const chess = parseImportedPgn(`${headers.join("\n")}\n\n*`);
   assert.equal(
-    chess.getHeaders()[`X${MAX_PGN_HEADERS - 1}`],
-    String(MAX_PGN_HEADERS - 1),
+    chess.getHeaders()[`X${MAX_PGN_HEADERS - 8}`],
+    String(MAX_PGN_HEADERS - 8),
   );
+  assert.doesNotThrow(() => parseImportedPgn(pgnOf(chess)));
 
-  for (const count of [MAX_PGN_HEADERS + 1, 1_000]) {
+  for (const count of [MAX_PGN_HEADERS, MAX_PGN_HEADERS + 1, 1_000]) {
     const excessive = Array.from(
       { length: count },
       (_, index) => `[X${index} "${index}"]`,
@@ -679,6 +690,60 @@ test("pgnOf rejects invalid programmatic header names", () => {
   );
 });
 
+test("pgnOf enforces programmatic header contracts", () => {
+  const duplicate = new Chess();
+  duplicate.setHeader("event", "duplicate");
+  assert.throws(
+    () => pgnOf(duplicate),
+    (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+  );
+
+  const invalidResult = new Chess();
+  invalidResult.setHeader("Result", "draw");
+  assert.throws(
+    () => pgnOf(invalidResult),
+    (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+  );
+
+  for (const headers of [
+    { SetUp: "1" },
+    { FEN: "4k3/8/8/8/8/8/P7/4K3 w - - 0 1" },
+    { SetUp: "0", FEN: "4k3/8/8/8/8/8/P7/4K3 w - - 0 1" },
+  ]) {
+    const chess = new Chess();
+    for (const [name, value] of Object.entries(headers)) {
+      chess.setHeader(name, value);
+    }
+    assert.throws(
+      () => pgnOf(chess),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+
+  const invalidFen = new Chess();
+  invalidFen.setHeader("SetUp", "1");
+  invalidFen.setHeader("FEN", "invalid");
+  assert.throws(
+    () => pgnOf(invalidFen),
+    (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+  );
+
+  const mismatchedFen = new Chess();
+  mismatchedFen.setHeader("SetUp", "1");
+  mismatchedFen.setHeader("FEN", "4k3/8/8/8/8/8/P7/4K3 w - - 0 1");
+  assert.throws(
+    () => pgnOf(mismatchedFen),
+    (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+  );
+
+  const fen = "4k3/8/8/8/8/8/P7/4K3 w - - 0 1";
+  const custom = new Chess(fen);
+  custom.move("a3");
+  const roundTrip = parseImportedPgn(pgnOf(custom));
+  assert.deepEqual(roundTrip.history(), ["a3"]);
+  assert.equal(roundTrip.getHeaders().FEN, fen);
+});
+
 test("pgnOf bounds programmatic headers and comments", () => {
   const maximum = "a".repeat(MAX_PGN_TOKEN_BYTES);
 
@@ -717,6 +782,64 @@ test("pgnOf bounds programmatic headers and comments", () => {
       (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
     );
   }
+});
+
+test("pgnOf bounds aggregate headers and bytes", () => {
+  const exactHeaders = new Chess();
+  for (let index = 0; index < MAX_PGN_HEADERS - 7; index += 1) {
+    exactHeaders.setHeader(`X${index}`, "value");
+  }
+  exactHeaders.move("e4");
+  assert.equal(Object.keys(exactHeaders.getHeaders()).length, MAX_PGN_HEADERS);
+  assert.doesNotThrow(() => parseImportedPgn(pgnOf(exactHeaders)));
+
+  exactHeaders.setHeader("Excessive", "value");
+  assert.throws(
+    () => pgnOf(exactHeaders),
+    (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
+  );
+
+  const exactBytes = new Chess();
+  exactBytes.move("e4");
+  for (let index = 0; index < 63; index += 1) {
+    exactBytes.setHeader(`X${index}`, "a".repeat(MAX_PGN_TOKEN_BYTES));
+  }
+  exactBytes.setHeader("Tail", "");
+  const remaining = MAX_PGN_BYTES - Buffer.byteLength(pgnOf(exactBytes), "utf8");
+  assert.ok(remaining > 0 && remaining < MAX_PGN_TOKEN_BYTES);
+  exactBytes.setHeader("Tail", "a".repeat(remaining));
+  const exactPgn = pgnOf(exactBytes);
+  assert.equal(Buffer.byteLength(exactPgn, "utf8"), MAX_PGN_BYTES);
+  assert.doesNotThrow(() => parseImportedPgn(exactPgn));
+
+  exactBytes.setHeader("Tail", "a".repeat(remaining + 1));
+  assert.throws(
+    () => pgnOf(exactBytes),
+    (error) => error instanceof ChessError && error.code === "PGN_TOO_LARGE",
+  );
+});
+
+test("parseImportedPgn accounts for canonical header expansion", () => {
+  const lines: string[] = [];
+  for (let index = 0; ; index += 1) {
+    const prefix = `[X${index} "`;
+    const suffix = `"]\n`;
+    const used = Buffer.byteLength(`${lines.join("")}\n*`, "utf8");
+    const available =
+      MAX_PGN_BYTES -
+      used -
+      Buffer.byteLength(`${prefix}${suffix}`, "utf8");
+    if (available < 0) break;
+    const value = "a".repeat(Math.min(available, MAX_PGN_TOKEN_BYTES));
+    lines.push(`${prefix}${value}${suffix}`);
+    if (available <= MAX_PGN_TOKEN_BYTES) break;
+  }
+  const pgn = `${lines.join("")}\n*`;
+  assert.equal(Buffer.byteLength(pgn, "utf8"), MAX_PGN_BYTES);
+  assert.throws(
+    () => parseImportedPgn(pgn),
+    (error) => error instanceof ChessError && error.code === "PGN_TOO_LARGE",
+  );
 });
 
 test("parseImportedPgn canonicalizes comments around move syntax", () => {
@@ -795,6 +918,10 @@ test("parseImportedPgn splits self-delimiting move annotations", () => {
   ]) {
     assert.deepEqual(parseImportedPgn(pgn).history(), ["e4", "e5"]);
   }
+  assert.deepEqual(
+    parseImportedPgn(`1.e4${"$1".repeat(8_190)}*`).history(),
+    ["e4"],
+  );
 });
 
 test("parseImportedPgn applies the ply cap across recursive variations", () => {

@@ -44,6 +44,60 @@ function assertPgnTokenSize(value: string): void {
   }
 }
 
+function splitPgnWord(value: string, emit: (token: string) => void): void {
+  const annotated = (part: string): void => {
+    let start = 0;
+    for (let index = 0; index < part.length; index += 1) {
+      const char = part[index]!;
+      if (char !== "!" && char !== "?" && char !== "+" && char !== "#") {
+        continue;
+      }
+      let end = index + 1;
+      if (char === "!" || char === "?") {
+        if (part[end] === "!" || part[end] === "?") end += 1;
+      } else {
+        while (
+          end < index + 3 &&
+          (part[end] === "!" || part[end] === "?")
+        ) {
+          end += 1;
+        }
+      }
+      if (end === part.length) break;
+      emit(part.slice(start, end));
+      start = end;
+      index = end - 1;
+    }
+    if (start < part.length) emit(part.slice(start));
+  };
+  const body = (part: string): void => {
+    let start = 0;
+    for (let index = 0; index < part.length; index += 1) {
+      if (part[index] !== "$") continue;
+      if (index > start) annotated(part.slice(start, index));
+      let end = index + 1;
+      while (end < part.length && /\d/.test(part[end]!)) end += 1;
+      if (end === index + 1) {
+        annotated(part.slice(index));
+        return;
+      }
+      emit(part.slice(index, end));
+      start = end;
+      index = end - 1;
+    }
+    if (start < part.length) annotated(part.slice(start));
+  };
+  const result = PGN_RESULTS.find(
+    (candidate) => value.length > candidate.length && value.endsWith(candidate),
+  );
+  if (result) {
+    body(value.slice(0, -result.length));
+    emit(result);
+  } else {
+    body(value);
+  }
+}
+
 function assertPgnLexicalSizes(pgn: string): void {
   for (let index = 0; index < pgn.length; ) {
     const char = pgn[index]!;
@@ -86,7 +140,7 @@ function assertPgnLexicalSizes(pgn: string): void {
     }
     let end = index + 1;
     while (end < pgn.length && !/[\s[\]{}();"]/.test(pgn[end]!)) end += 1;
-    assertPgnTokenSize(pgn.slice(index, end));
+    splitPgnWord(pgn.slice(index, end), assertPgnTokenSize);
     index = end;
   }
 }
@@ -190,17 +244,33 @@ function withoutPgnEscapeLines(pgn: string): string {
   return pgn.replace(/^%[^\r\n]*(?:\r\n|\r|\n|$)/gm, "");
 }
 
-function pgnText(chess: Chess): string {
+function assertPgnExportHeaders(chess: Chess): {
+  headers: [string, string][];
+  result: PgnResult | undefined;
+} {
   const headers = Object.entries(chess.getHeaders());
+  if (headers.length > MAX_PGN_HEADERS) {
+    throw new ChessError(
+      "PGN_TOO_COMPLEX",
+      `PGN exceeds the ${MAX_PGN_HEADERS}-header limit`,
+    );
+  }
+  const values = new Map<string, string>();
   for (const [name, value] of headers) {
     assertPgnTokenSize(name);
     assertPgnTokenSize(encodeHeaderValue(value));
     if (!HEADER_NAME.test(name)) {
       throw new ChessError("INVALID_PGN", "invalid PGN header name");
     }
+    const key = name.toLowerCase();
+    if (values.has(key)) {
+      throw new ChessError(
+        "INVALID_PGN",
+        `PGN must not repeat ${name} headers`,
+      );
+    }
+    values.set(key, value);
   }
-  const comments = chess.getComments();
-  for (const { comment } of comments) assertPgnTokenSize(comment);
   if (
     headers.some(
       ([name, value]) => /[\r\n]/.test(name) || /[\r\n]/.test(value),
@@ -208,6 +278,48 @@ function pgnText(chess: Chess): string {
   ) {
     throw new ChessError("INVALID_PGN", "PGN headers cannot contain line breaks");
   }
+  const result = values.get("result");
+  if (result !== undefined && !isPgnResult(result)) {
+    throw new ChessError("INVALID_PGN", "invalid PGN result");
+  }
+  const setup = values.get("setup");
+  const fen = values.get("fen");
+  if (setup !== undefined && setup !== "0" && setup !== "1") {
+    throw new ChessError("INVALID_PGN", "PGN SetUp must be 0 or 1");
+  }
+  if ((setup === "1") !== (fen !== undefined)) {
+    throw new ChessError(
+      "INVALID_PGN",
+      "PGN SetUp 1 and FEN headers must appear together",
+    );
+  }
+  let expectedInitialFen = new Chess().fen();
+  if (fen !== undefined) {
+    assertSafeFenCounters(fen);
+    let setupChess: Chess;
+    try {
+      setupChess = new Chess(fen);
+    } catch {
+      throw new ChessError("INVALID_FEN", "invalid FEN");
+    }
+    assertLegalPosition(setupChess);
+    expectedInitialFen = setupChess.fen();
+  }
+  const actualInitialFen = chess.history({ verbose: true })[0]?.before ?? chess.fen();
+  if (actualInitialFen !== expectedInitialFen) {
+    throw new ChessError(
+      "INVALID_PGN",
+      "PGN setup headers do not match the initial position",
+    );
+  }
+  return { headers, result };
+}
+
+function pgnText(chess: Chess): string {
+  const { headers, result } = assertPgnExportHeaders(chess);
+  validateResultForPosition(chess, result);
+  const comments = chess.getComments();
+  for (const { comment } of comments) assertPgnTokenSize(comment);
   const raw = chess.pgn();
   const separator = raw.indexOf("\n\n");
   let movetext =
@@ -229,11 +341,21 @@ function pgnText(chess: Chess): string {
       () => `;${comment.replace(/[\r\n]+/g, " ")}\n`,
     );
   }
-  if (!headers.length) return movetext;
   const tags = headers
     .map(([name, value]) => `[${name} "${encodeHeaderValue(value)}"]`)
     .join("\n");
-  return movetext ? `${tags}\n\n${movetext}` : tags;
+  const pgn = !headers.length
+    ? movetext
+    : movetext
+      ? `${tags}\n\n${movetext}`
+      : tags;
+  if (Buffer.byteLength(pgn, "utf8") > MAX_PGN_BYTES) {
+    throw new ChessError(
+      "PGN_TOO_LARGE",
+      `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
+    );
+  }
+  return pgn;
 }
 
 function withoutPgnComments(pgn: string): string {
@@ -337,69 +459,14 @@ function movetextTokens(pgn: string): MovetextToken[] {
     }
     return Math.max(1, syntax);
   };
-  const pushAnnotated = (value: string): void => {
-    let start = 0;
-    for (let index = 0; index < value.length; index += 1) {
-      const char = value[index]!;
-      if (char !== "!" && char !== "?" && char !== "+" && char !== "#") {
-        continue;
-      }
-      let end = index + 1;
-      if (char === "!" || char === "?") {
-        if (value[end] === "!" || value[end] === "?") end += 1;
-      } else {
-        while (
-          end < index + 3 &&
-          (value[end] === "!" || value[end] === "?")
-        ) {
-          end += 1;
-        }
-      }
-      if (end === value.length) break;
-      push(
-        { kind: "word", value: value.slice(start, end) },
-        wordWeight(value.slice(start, end)),
-      );
-      start = end;
-      index = end - 1;
-    }
-    if (start < value.length) {
-      const word = value.slice(start);
+  const pushWord = (value: string): void => {
+    splitPgnWord(value, (word) => {
+      assertPgnTokenSize(word);
       push(
         { kind: "word", value: word },
-        wordWeight(word),
+        isPgnResult(word) ? 1 : wordWeight(word),
       );
-    }
-  };
-  const pushBody = (value: string): void => {
-    let start = 0;
-    for (let index = 0; index < value.length; index += 1) {
-      if (value[index] !== "$") continue;
-      if (index > start) pushAnnotated(value.slice(start, index));
-      let end = index + 1;
-      while (end < value.length && /\d/.test(value[end]!)) end += 1;
-      if (end === index + 1) {
-        pushAnnotated(value.slice(index));
-        return;
-      }
-      const nag = value.slice(index, end);
-      push({ kind: "word", value: nag }, wordWeight(nag));
-      start = end;
-      index = end - 1;
-    }
-    if (start < value.length) pushAnnotated(value.slice(start));
-  };
-  const pushWord = (value: string): void => {
-    assertPgnTokenSize(value);
-    const result = PGN_RESULTS.find(
-      (candidate) => value.length > candidate.length && value.endsWith(candidate),
-    );
-    if (result) {
-      pushBody(value.slice(0, -result.length));
-      push({ kind: "word", value: result });
-    } else {
-      pushBody(value);
-    }
+    });
   };
   for (let index = 0; index < movetext.length; ) {
     const char = movetext[index]!;
@@ -896,6 +963,7 @@ export function pgnOf(chess: Chess): string {
       : undefined;
   if (result === undefined) return pgnText(chess);
 
+  assertPgnExportHeaders(chess);
   const snapshot = snapshotChess(chess);
   snapshot.setHeader("Result", result);
   return pgnText(snapshot);
@@ -935,5 +1003,6 @@ export function parseImportedPgn(pgn: string): Chess {
     );
   }
   validateResultForPosition(chess, result);
+  pgnOf(chess);
   return chess;
 }

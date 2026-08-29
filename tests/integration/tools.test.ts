@@ -291,6 +291,47 @@ test("all tools expose contracts and execute with isolated fake services", async
     assert.deepEqual(tool.annotations, TOOL_META[tool.name].annotations);
   }
 
+  const explorerTool = listed.tools.find(
+    ({ name }) => name === "opening_explorer",
+  );
+  const candidateTool = listed.tools.find(
+    ({ name }) => name === "move_candidates",
+  );
+  assert.ok(explorerTool);
+  assert.ok(candidateTool);
+  const explorerInput = object(explorerTool.inputSchema);
+  const explorerProperties = object(explorerInput.properties);
+  assert.equal(object(explorerProperties.speeds).uniqueItems, true);
+  assert.equal(object(explorerProperties.ratings).uniqueItems, true);
+  assert.match(String(explorerInput.description), /masters/);
+  assert.equal(array(explorerInput.allOf).length, 1);
+
+  const candidateInput = object(candidateTool.inputSchema);
+  const candidateInputProperties = object(candidateInput.properties);
+  assert.equal(
+    object(candidateInputProperties.lichess_speeds).uniqueItems,
+    true,
+  );
+  assert.equal(
+    object(candidateInputProperties.lichess_ratings).uniqueItems,
+    true,
+  );
+  assert.match(String(candidateInput.description), /masters/);
+  assert.equal(array(candidateInput.allOf).length, 1);
+
+  const candidateOutput = object(candidateTool.outputSchema);
+  const candidateOutputProperties = object(candidateOutput.properties);
+  const candidateItems = object(
+    object(candidateOutputProperties.candidates).items,
+  );
+  const candidateProperties = object(candidateItems.properties);
+  const objectiveProperties = object(
+    object(candidateProperties.objective).properties,
+  );
+  const wdlAlternatives = array(object(objectiveProperties.wdl).anyOf);
+  assert.equal(object(wdlAlternatives[0]).minItems, 3);
+  assert.equal(object(wdlAlternatives[0]).maxItems, 3);
+
   const created = await success(context.client, "create_game", {});
   assert.deepEqual(created, { game_id: "game-1", revision: 0 });
   const gameId = String(created.game_id);
