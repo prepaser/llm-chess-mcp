@@ -14,6 +14,20 @@ const ORIGINAL_PIECES = {
   n: 2,
 } as const;
 
+const CANONICAL_PGN_HEADERS = new Map(
+  [
+    "Event",
+    "Site",
+    "Date",
+    "Round",
+    "White",
+    "Black",
+    "Result",
+    "SetUp",
+    "FEN",
+  ].map((name) => [name.toLowerCase(), name]),
+);
+
 function squareColor(square: Square): 0 | 1 {
   return ((square.charCodeAt(0) - 97 + Number(square[1])) % 2) as 0 | 1;
 }
@@ -234,14 +248,50 @@ export function snapshotChess(chess: Chess): Chess {
   const snapshot = new Chess(initialFen);
   assertLegalPosition(snapshot);
   const comments = new Map(
-    chess.getComments().map(({ fen, comment }) => [fen, comment]),
+    chess.getComments().map(({ fen, comment }) => [
+      fen,
+      /[{}]/.test(comment) ? comment.replace(/[\r\n]+/g, " ") : comment,
+    ]),
   );
-  for (const [key, value] of Object.entries(chess.getHeaders())) {
-    snapshot.setHeader(key, value);
+  const sourceHeaders = Object.entries(chess.getHeaders());
+  const sourceNames = new Set(sourceHeaders.map(([key]) => key.toLowerCase()));
+  for (const key of Object.keys(snapshot.getHeaders())) {
+    if (!sourceNames.has(key.toLowerCase())) snapshot.removeHeader(key);
   }
+  const snapshotNames = new Map<string, string[]>();
+  for (const key of Object.keys(snapshot.getHeaders())) {
+    const names = snapshotNames.get(key.toLowerCase());
+    if (names) names.push(key);
+    else snapshotNames.set(key.toLowerCase(), [key]);
+  }
+  for (const [key, value] of sourceHeaders) {
+    const lower = key.toLowerCase();
+    const canonical = CANONICAL_PGN_HEADERS.get(lower) ?? key;
+    for (const existing of snapshotNames.get(lower) ?? []) {
+      if (existing !== canonical) snapshot.removeHeader(existing);
+    }
+    snapshot.setHeader(canonical, value);
+    snapshotNames.set(lower, [canonical]);
+  }
+  const unsafeComments = [...comments.values()].some((comment) => /[{}]/.test(comment));
+  let markerPrefix = "\uE000";
+  if (unsafeComments) {
+    const occupied = [...sourceHeaders.flat(), ...comments.values()].join("\u0000");
+    while (occupied.includes(markerPrefix)) markerPrefix += "\uE001";
+  }
+  const markers = new Map<string, string>();
+  let markerIndex = 0;
   const restoreComment = () => {
     const comment = comments.get(snapshot.fen());
-    if (comment !== undefined) snapshot.setComment(comment);
+    if (comment === undefined) return;
+    if (!unsafeComments || !/[{}]/.test(comment)) {
+      snapshot.setComment(comment);
+      return;
+    }
+    const marker = `${markerPrefix}${markerIndex}${markerPrefix}`;
+    markerIndex += 1;
+    markers.set(marker, comment);
+    snapshot.setComment(marker);
   };
   restoreComment();
   for (const move of history) {
@@ -249,5 +299,27 @@ export function snapshotChess(chess: Chess): Chess {
     restoreComment();
   }
   assertSafeFenCounters(snapshot.fen());
-  return snapshot;
+  if (!unsafeComments) return snapshot;
+
+  let pgn = snapshot.pgn();
+  for (const [marker, comment] of markers) {
+    pgn = pgn.replaceAll(`{${marker}}`, () => `;${comment}\n`);
+  }
+  const restored = new Chess();
+  restored.loadPgn(pgn);
+  const restoredHistory = restored.history({ verbose: true });
+  while (restored.undo()) {}
+  const restoreSafeComment = () => {
+    const comment = comments.get(restored.fen());
+    if (comment !== undefined && !/[{}]/.test(comment)) {
+      restored.setComment(comment);
+    }
+  };
+  restoreSafeComment();
+  for (const move of restoredHistory) {
+    restored.move(moveDescriptor(move));
+    restoreSafeComment();
+  }
+  assertSafeFenCounters(restored.fen());
+  return restored;
 }

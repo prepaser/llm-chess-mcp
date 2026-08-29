@@ -17,6 +17,7 @@ import {
   stateOf,
 } from "../src/chess.js";
 import { ChessError } from "../src/errors.js";
+import { GameStore } from "../src/games.js";
 import { MAX_PGN_TOKEN_BYTES } from "../src/pgn.js";
 
 test("snapshotChess preserves history without sharing mutations", () => {
@@ -51,6 +52,35 @@ test("snapshotChess preserves safe FEN counters exactly", () => {
 
   assert.equal(chess.fen(), fen);
   assert.equal(snapshot.fen(), fen);
+});
+
+test("GameStore snapshots preserve delimiter-bearing comments exactly", () => {
+  const imported = parseImportedPgn(";same } comment\n1.e4 *");
+  assert.doesNotThrow(() => snapshotChess(imported));
+  const store = new GameStore({ createId: () => "comment-game" });
+  const id = store.createGameFromChess(imported);
+  const stored = store.getSnapshot(id).chess;
+  const roundTrip = parseImportedPgn(pgnOf(stored));
+
+  assert.deepEqual(roundTrip.history(), ["e4"]);
+  assert.deepEqual(roundTrip.getComments(), imported.getComments());
+
+  const multiline = new Chess();
+  multiline.setComment("line\nbreak");
+  assert.equal(
+    snapshotChess(multiline).getComments()[0]?.comment,
+    "line\nbreak",
+  );
+
+  class MultilineBraceCommentChess extends Chess {
+    override getComments() {
+      return [{ fen: this.fen(), comment: "brace } with\nline break" }];
+    }
+  }
+  assert.equal(
+    snapshotChess(new MultilineBraceCommentChess()).getComments()[0]?.comment,
+    "brace } with line break",
+  );
 });
 
 test("snapshotChess rejects malformed en passant without mutating its source", () => {
@@ -742,6 +772,23 @@ test("pgnOf enforces programmatic header contracts", () => {
   const roundTrip = parseImportedPgn(pgnOf(custom));
   assert.deepEqual(roundTrip.history(), ["a3"]);
   assert.equal(roundTrip.getHeaders().FEN, fen);
+
+  const stalemateFen = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1";
+  const lowercaseSetup = new Chess(stalemateFen);
+  lowercaseSetup.removeHeader("SetUp");
+  lowercaseSetup.removeHeader("FEN");
+  lowercaseSetup.setHeader("setup", "1");
+  lowercaseSetup.setHeader("fen", stalemateFen);
+  const lowercaseRoundTrip = parseImportedPgn(pgnOf(lowercaseSetup));
+  assert.equal(lowercaseRoundTrip.getHeaders().SetUp, "1");
+  assert.equal(lowercaseRoundTrip.getHeaders().FEN, stalemateFen);
+  assert.equal(lowercaseRoundTrip.getHeaders().Result, "1/2-1/2");
+
+  lowercaseSetup.setHeader("SetUp", "1");
+  assert.throws(
+    () => pgnOf(lowercaseSetup),
+    (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+  );
 });
 
 test("pgnOf bounds programmatic headers and comments", () => {
