@@ -71,13 +71,12 @@ export function safeHandler<
         }
         result = await handler(parsed.data, signal);
       }
+      signal.throwIfAborted();
       if (result.isError) return result;
       const parsed = await outputSchema.safeParseAsync(result.structuredContent);
       if (!parsed.success) throw new Error("invalid tool output");
-      return {
-        ...result,
-        structuredContent: parsed.data as SchemaOutput<OutputSchema>,
-      };
+      signal.throwIfAborted();
+      return result;
     } catch (error) {
       if (signal.aborted) {
         signal.throwIfAborted();

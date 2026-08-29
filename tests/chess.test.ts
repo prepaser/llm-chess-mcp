@@ -110,6 +110,49 @@ test("snapshotChess rejects board edits outside the last move", () => {
   assert.equal(chess.get("a7"), undefined);
 });
 
+test("snapshotChess ignores unrelated uncloneable own metadata", () => {
+  const chess = new Chess() as Chess & {
+    cache: WeakMap<object, object>;
+    helper: () => string;
+  };
+  chess.cache = new WeakMap();
+  chess.helper = () => "metadata";
+  chess.move("e4");
+
+  const snapshot = snapshotChess(chess);
+  assert.deepEqual(snapshot.history(), ["e4"]);
+  assert.equal(parseImportedPgn(pgnOf(chess)).history()[0], "e4");
+});
+
+test("snapshotChess preserves branded private-field comment overrides", () => {
+  class PrivateCommentChess extends Chess {
+    #comment = "private comment";
+
+    override getComments() {
+      return [{ fen: this.fen(), comment: this.#comment }];
+    }
+  }
+
+  const chess = new PrivateCommentChess();
+  chess.move("e4");
+  const snapshot = snapshotChess(chess);
+  const roundTrip = parseImportedPgn(pgnOf(chess));
+
+  assert.equal(snapshot.getComments()[0]?.comment, "private comment");
+  assert.equal(roundTrip.getComments()[0]?.comment, "private comment");
+  assert.deepEqual(roundTrip.history(), ["e4"]);
+});
+
+test("snapshotChess reports uncloneable base state as a ChessError", () => {
+  const chess = new Chess();
+  (chess as unknown as { _comments: unknown })._comments = () => undefined;
+
+  assert.throws(
+    () => snapshotChess(chess),
+    (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+  );
+});
+
 test("GameStore snapshots preserve delimiter-bearing comments exactly", () => {
   const imported = parseImportedPgn(";same } comment\n1.e4 *");
   assert.doesNotThrow(() => snapshotChess(imported));

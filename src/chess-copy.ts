@@ -15,6 +15,8 @@ const ORIGINAL_PIECES = {
   n: 2,
 } as const;
 
+const CHESS_STATE_KEYS = Reflect.ownKeys(new Chess());
+
 function squareColor(square: Square): 0 | 1 {
   return ((square.charCodeAt(0) - 97 + Number(square[1])) % 2) as 0 | 1;
 }
@@ -54,9 +56,27 @@ function nonKingMaterial(chess: Chess, color: Color): number {
 }
 
 function clonedChess(chess: Chess): Chess {
-  const clone = structuredClone(chess) as Chess;
-  Object.setPrototypeOf(clone, Object.getPrototypeOf(chess));
-  return clone;
+  const state = Object.create(null) as Record<PropertyKey, unknown>;
+  for (const key of CHESS_STATE_KEYS) {
+    const descriptor = Object.getOwnPropertyDescriptor(chess, key);
+    if (!descriptor || !("value" in descriptor)) {
+      throw new ChessError("INVALID_FEN", "chess state cannot be cloned");
+    }
+    Object.defineProperty(state, key, {
+      configurable: true,
+      enumerable: true,
+      value: descriptor.value,
+      writable: true,
+    });
+  }
+
+  try {
+    const clone = structuredClone(state) as unknown as Chess;
+    Object.setPrototypeOf(clone, Chess.prototype);
+    return clone;
+  } catch {
+    throw new ChessError("INVALID_FEN", "chess state cannot be cloned");
+  }
 }
 
 function exactFen(chess: Chess): string {
@@ -295,7 +315,9 @@ function validatedHistory(chess: Chess): {
   const sourceFen = exactFen(chess);
   const sourceHeaders = Object.entries(chess.getHeaders());
   const shadow = clonedChess(chess);
-  const history = shadow.history({ verbose: true });
+  const history = Chess.prototype.history.call(shadow, {
+    verbose: true,
+  }) as Move[];
   if (history.some((move) => move.from === move.to)) {
     throw new ChessError("INVALID_PGN", "null moves are not supported");
   }
@@ -307,7 +329,7 @@ function validatedHistory(chess: Chess): {
   }
 
   const initial = clonedChess(chess);
-  while (initial.undo()) {}
+  while (Chess.prototype.undo.call(initial)) {}
   const initialFen = exactFen(initial);
   if (initialFen !== expectedInitialFen(sourceHeaders)) {
     throw new ChessError(
@@ -325,8 +347,13 @@ export function snapshotChess(chess: Chess): Chess {
   assertSafeFenCounters(initialFen);
   const snapshot = new Chess(initialFen);
   assertLegalPosition(snapshot);
+  const getComments = chess.getComments;
+  const sourceComments =
+    getComments === Chess.prototype.getComments
+      ? Chess.prototype.getComments.call(shadow)
+      : getComments.call(chess);
   const comments = new Map(
-    shadow.getComments().map(({ fen, comment }) => [
+    sourceComments.map(({ fen, comment }) => [
       fen,
       /[{}]/.test(comment) ? comment.replace(/[\r\n]+/g, " ") : comment,
     ]),

@@ -13,6 +13,7 @@ import type { GameRecord } from "./domain.js";
 
 export const MAX_GAMES = 1_000;
 export const GAME_TTL_MS = 60 * 60 * 1_000;
+const MAX_GAME_ID_LENGTH = 256;
 
 function monotonicClock(): () => number {
   const origin = Date.now() - performance.now();
@@ -95,6 +96,16 @@ export class GameStore {
     }
 
     const id = this.createId();
+    if (
+      typeof id !== "string" ||
+      id.length === 0 ||
+      id.length > MAX_GAME_ID_LENGTH
+    ) {
+      throw new ChessError(
+        "GAME_ID_GENERATION_FAILED",
+        `game ID must be a non-empty string of at most ${MAX_GAME_ID_LENGTH} characters`,
+      );
+    }
     if (this.games.has(id)) {
       throw new ChessError("GAME_ID_COLLISION", `game ID already exists: ${id}`);
     }
@@ -172,9 +183,6 @@ export class GameStore {
 
   private validateCleanupTime(now: number): number {
     this.assertSafeClockTime(now);
-    if (this.lastClockTime !== undefined && now < this.lastClockTime) {
-      throw new RangeError("cleanup time must not precede the current clock");
-    }
     return now;
   }
 

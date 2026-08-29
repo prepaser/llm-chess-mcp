@@ -71,6 +71,7 @@ export interface AppServices
 const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) =>
   stockfish.analyze(fen, depth, multipv, signal);
 let maiaModule: Promise<typeof import("./maia3/inference.js")> | undefined;
+let defaultShutdown: Promise<void> | null = null;
 const loadMaia = (): Promise<typeof import("./maia3/inference.js")> =>
   (maiaModule ??= import("./maia3/inference.js"));
 const humanMoveDistribution: AppServices["humanMoveDistribution"] = async (
@@ -79,14 +80,18 @@ const humanMoveDistribution: AppServices["humanMoveDistribution"] = async (
   opponentElo,
   topN,
   signal,
-) =>
-  (await loadMaia()).humanMoveDistribution(
+) => {
+  if (defaultShutdown) throw new Error("application services are shutting down");
+  const maia = await loadMaia();
+  if (defaultShutdown) throw new Error("application services are shutting down");
+  return maia.humanMoveDistribution(
     chess,
     elo,
     opponentElo,
     topN,
     signal,
   );
+};
 const openExplorer: AppServices["openingExplorer"] = (
   chess,
   db,
@@ -110,16 +115,35 @@ const computeCandidates = createCandidateComputation({
     error instanceof ExplorerError ? error.reason : "upstream",
 });
 
+function quitDefaultServices(): Promise<void> {
+  if (defaultShutdown) return defaultShutdown;
+  const maia = maiaModule;
+  let operation!: Promise<void>;
+  operation = Promise.resolve()
+    .then(async () => {
+      const results = await Promise.allSettled([
+        stockfish.quit(),
+        ...(maia ? [maia.then((module) => module.quitMaia())] : []),
+      ]);
+      const errors = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "application services shutdown failed");
+      }
+    })
+    .finally(() => {
+      if (defaultShutdown === operation) defaultShutdown = null;
+    });
+  defaultShutdown = operation;
+  return operation;
+}
+
 export const defaultAppServices: AppServices = {
   games: defaultGameStore,
   analyze,
-  quit: async () => {
-    const maia = maiaModule;
-    await Promise.all([
-      stockfish.quit(),
-      maia?.then((module) => module.quitMaia()),
-    ]);
-  },
+  quit: quitDefaultServices,
   humanMoveDistribution,
   explorerEnabled,
   openingExplorer: openExplorer,

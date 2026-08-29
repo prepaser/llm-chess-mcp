@@ -87,6 +87,7 @@ test("GameStore default TTL timing is independent of wall-clock jumps", (t) => {
   });
   const id = store.createGame();
 
+  assert.equal(store.cleanupGames(Date.now()), 0);
   assert.equal(store.cleanupGames(wallTime + 1_000), 0);
   wallTime += 60 * 60 * 1_000;
   assert.equal(store.getSnapshot(id).revision, 0);
@@ -106,8 +107,20 @@ test("explicit cleanup times do not advance the store clock", () => {
   assert.equal(store.cleanupGames(500), 0);
   now = 101;
   assert.equal(store.getSnapshot(id).revision, 0);
-  assert.throws(() => store.cleanupGames(100), RangeError);
+  assert.equal(store.cleanupGames(100), 0);
+  for (const invalid of [Number.NaN, Infinity, Number.MAX_VALUE]) {
+    assert.throws(() => store.cleanupGames(invalid), RangeError);
+  }
   assert.equal(store.getSnapshot(id).revision, 0);
+});
+
+test("default stores repeatedly accept current Date.now cleanup cutoffs", () => {
+  for (let index = 0; index < 32; index += 1) {
+    const store = new GameStore({ createId: () => `game-${index}` });
+    const id = store.createGame();
+    assert.equal(store.cleanupGames(Date.now()), 0);
+    assert.equal(store.getSnapshot(id).revision, 0);
+  }
 });
 
 test("GameStore rejects invalid or backward clock values without mutating games", () => {
@@ -150,6 +163,39 @@ test("GameStore validates limits and rejects duplicate IDs", () => {
   const store = new GameStore({ maxGames: 2, createId: () => "same" });
   store.createGame();
   expectChessError("GAME_ID_COLLISION", () => store.createGame());
+});
+
+test("GameStore rejects invalid generated IDs without consuming capacity", () => {
+  for (const id of [42, null, {}, "", "x".repeat(257)]) {
+    const store = new GameStore({
+      maxGames: 1,
+      clock: () => 0,
+      createId: () => id as never,
+    });
+    expectChessError("GAME_ID_GENERATION_FAILED", () => store.createGame());
+    assert.equal(store.gameCount(), 0);
+  }
+
+  let nextId: unknown = "valid";
+  let calls = 0;
+  const store = new GameStore({
+    maxGames: 2,
+    clock: () => 0,
+    createId: () => {
+      calls += 1;
+      return nextId as string;
+    },
+  });
+  const valid = store.createGame();
+  nextId = null;
+  expectChessError("GAME_ID_GENERATION_FAILED", () => store.createGame());
+  assert.deepEqual(store.listGames(), [valid]);
+
+  nextId = "second";
+  assert.equal(store.createGame(), "second");
+  nextId = "unused";
+  expectChessError("GAME_LIMIT_REACHED", () => store.createGame());
+  assert.equal(calls, 3);
 });
 
 test("GameStore rejects unsafe FEN counters before creating a game", () => {

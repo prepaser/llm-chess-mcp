@@ -662,17 +662,10 @@ test("callback replacement survives reentrant old-engine teardown", async () => 
     await nextImmediate();
     callback(null, replacement);
 
-    if (reentry === "invalidate") {
-      await assert.rejects(analysis, /initializer reused a terminated engine/);
-      await stockfish.quit();
-      assert.equal(replacement.terminations, 1);
-      assert.deepEqual(replacement.commands, ["quit"]);
-    } else {
-      assert.equal((await analysis)[0]?.scoreCp, 42);
-      assert.equal(replacement.terminations, 0);
-      await stockfish.quit();
-      assert.equal(replacement.terminations, 1);
-    }
+    assert.equal((await analysis)[0]?.scoreCp, 42);
+    assert.equal(replacement.terminations, 0);
+    await stockfish.quit();
+    assert.equal(replacement.terminations, 1);
     assert.equal(returned.terminations, 1);
     assert.equal(
       returned.commands.filter((command) => command === "quit").length,
@@ -1155,6 +1148,206 @@ test("quit publishes its promise before synchronous engine reentry", async () =>
   assert.match(String(await activeOutcome), /stockfish quit/);
   assert.match(String(await reentered), /stockfish shutting down/);
   assert.equal(current.commands.includes("position fen reentered"), false);
+});
+
+test("late repeated init callbacks cannot steal listener cleanup ownership", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const uncaught = () => {};
+    const unhandled = () => {};
+    const engine = (respond) => ({
+      listener: null,
+      sendCommand(command) {
+        if (command === "uci") queueMicrotask(() => this.listener?.("uciok"));
+        else if (command === "isready") queueMicrotask(() => this.listener?.("readyok"));
+        else if (respond && command.startsWith("go depth ")) {
+          queueMicrotask(() => this.listener?.("bestmove e2e4"));
+        }
+      },
+      terminate() {},
+    });
+    const returned = engine(false);
+    const initialized = engine(true);
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          process.on("uncaughtException", uncaught);
+          process.on("unhandledRejection", unhandled);
+          queueMicrotask(() => {
+            callback(null, initialized);
+            setTimeout(() => callback(null, returned), 20);
+          });
+          return returned;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      await stockfish.analyze("fen", 1, 1);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await stockfish.quit();
+      await new Promise((resolve) => setImmediate(resolve));
+      process.stdout.write(JSON.stringify({
+        uncaught: process.listeners("uncaughtException").includes(uncaught),
+        unhandled: process.listeners("unhandledRejection").includes(unhandled),
+      }));
+    } finally {
+      Module._load = load;
+      process.removeListener("uncaughtException", uncaught);
+      process.removeListener("unhandledRejection", unhandled);
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), { uncaught: false, unhandled: false });
+});
+
+test("owned listener wrappers preserve later duplicate user registrations", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const uncaughtOrder = [];
+    const unhandledOrder = [];
+    const beforeUncaught = () => uncaughtOrder.push("before");
+    const beforeUnhandled = () => unhandledOrder.push("before");
+    const uncaught = function(error, origin) {
+      uncaughtOrder.push(
+        this === process && error.message === "probe" && origin === "uncaughtException"
+          ? "owned"
+          : "invalid",
+      );
+    };
+    const reason = {};
+    const promise = Promise.resolve();
+    const unhandled = function(currentReason, currentPromise) {
+      unhandledOrder.push(
+        this === process && currentReason === reason && currentPromise === promise
+          ? "owned"
+          : "invalid",
+      );
+    };
+    process.on("uncaughtException", beforeUncaught);
+    process.on("unhandledRejection", beforeUnhandled);
+    const engine = {
+      listener: null,
+      sendCommand(command) {
+        if (command === "uci") queueMicrotask(() => this.listener?.("uciok"));
+        else if (command === "isready") queueMicrotask(() => this.listener?.("readyok"));
+        else if (command.startsWith("go depth ")) {
+          queueMicrotask(() => this.listener?.("bestmove e2e4"));
+        }
+      },
+      terminate() {},
+    };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          process.on("uncaughtException", uncaught);
+          process.on("uncaughtException", uncaught);
+          process.on("unhandledRejection", unhandled);
+          process.on("unhandledRejection", unhandled);
+          queueMicrotask(() => callback(null, engine));
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      await stockfish.analyze("fen", 1, 1);
+      const ownedUncaught = process
+        .listeners("uncaughtException")
+        .filter((listener) => listener !== beforeUncaught);
+      const ownedUnhandled = process
+        .listeners("unhandledRejection")
+        .filter((listener) => listener !== beforeUnhandled);
+      process.emit("uncaughtException", new Error("probe"), "uncaughtException");
+      process.emit("unhandledRejection", reason, promise);
+      for (const listener of ownedUncaught) {
+        process.once("uncaughtException", listener);
+      }
+      for (const listener of ownedUnhandled) {
+        process.once("unhandledRejection", listener);
+      }
+      await stockfish.quit();
+      const rawUncaught = process.rawListeners("uncaughtException");
+      const rawUnhandled = process.rawListeners("unhandledRejection");
+      const keptOnceUncaught = ownedUncaught.every((owned) =>
+        rawUncaught.some((listener) => listener.listener === owned),
+      );
+      const keptOnceUnhandled = ownedUnhandled.every((owned) =>
+        rawUnhandled.some((listener) => listener.listener === owned),
+      );
+      process.emit("uncaughtException", new Error("probe"), "uncaughtException");
+      process.emit("unhandledRejection", reason, promise);
+      process.stdout.write(JSON.stringify({
+        uncaughtOrder,
+        unhandledOrder,
+        uncaughtCount: rawUncaught.length,
+        unhandledCount: rawUnhandled.length,
+        keptBeforeUncaught: rawUncaught.includes(beforeUncaught),
+        keptBeforeUnhandled: rawUnhandled.includes(beforeUnhandled),
+        keptOnceUncaught,
+        keptOnceUnhandled,
+        onceUncaughtRemoved: process.listenerCount("uncaughtException") === 1,
+        onceUnhandledRemoved: process.listenerCount("unhandledRejection") === 1,
+        leakedUncaught: ownedUncaught.some((owned) => rawUncaught.includes(owned)),
+        leakedUnhandled: ownedUnhandled.some((owned) => rawUnhandled.includes(owned)),
+      }));
+    } finally {
+      Module._load = load;
+      process.removeListener("uncaughtException", beforeUncaught);
+      process.removeListener("unhandledRejection", beforeUnhandled);
+      process.removeListener("uncaughtException", uncaught);
+      process.removeListener("unhandledRejection", unhandled);
+      for (const listener of process.listeners("uncaughtException")) {
+        if (listener !== beforeUncaught) {
+          process.removeListener("uncaughtException", listener);
+        }
+      }
+      for (const listener of process.listeners("unhandledRejection")) {
+        if (listener !== beforeUnhandled) {
+          process.removeListener("unhandledRejection", listener);
+        }
+      }
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    uncaughtOrder: ["before", "owned", "owned", "before", "owned", "owned"],
+    unhandledOrder: ["before", "owned", "owned", "before", "owned", "owned"],
+    uncaughtCount: 3,
+    unhandledCount: 3,
+    keptBeforeUncaught: true,
+    keptBeforeUnhandled: true,
+    keptOnceUncaught: true,
+    keptOnceUnhandled: true,
+    onceUncaughtRemoved: true,
+    onceUnhandledRemoved: true,
+    leakedUncaught: false,
+    leakedUnhandled: false,
+  });
 });
 
 test(

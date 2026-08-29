@@ -119,13 +119,54 @@ export const OpeningStatsSchema = z
     }),
     z.strictObject({ status: z.literal("disabled"), ...openingStatsValues }),
   ])
-  .superRefine(({ games, white, draws, black }, ctx) => {
+  .superRefine((stats, ctx) => {
+    const { games, frequency, white, draws, black, averageRating } = stats;
+    if (stats.status !== "available") {
+      if (
+        [games, frequency, white, draws, black, averageRating].some(
+          (value) => value !== null,
+        )
+      ) {
+        addCountIssue(
+          ctx,
+          ["games"],
+          `${stats.status} opening stats must all be null`,
+        );
+      }
+      return;
+    }
+
     const counts = [games, white, draws, black];
     const present = counts.filter((value) => value !== null);
-    if (present.length === 0) return;
+    if (present.length === 0) {
+      if (frequency !== null || averageRating !== null) {
+        addCountIssue(
+          ctx,
+          ["frequency"],
+          "available opening stats must be all null or include counts and frequency",
+        );
+      }
+      return;
+    }
     if (present.length !== counts.length) {
       addCountIssue(ctx, ["games"], "opening counts must be all null or all present");
       return;
+    }
+    if (frequency === null) {
+      addCountIssue(
+        ctx,
+        ["frequency"],
+        "available opening counts require frequency",
+      );
+    } else if (frequency === 0) {
+      addCountIssue(
+        ctx,
+        ["frequency"],
+        "available opening frequency must be positive",
+      );
+    }
+    if (games === 0) {
+      addCountIssue(ctx, ["games"], "available opening games must be positive");
     }
     const total = safeSum([white!, draws!, black!]);
     if (total === null || games !== total) {
@@ -133,7 +174,7 @@ export const OpeningStatsSchema = z
     }
   })
   .describe(
-    "games, white, draws, and black must be all null or all present; games must equal white + draws + black",
+    "Non-available stats must all be null. Available stats must be all null or include positive games and frequency plus white, draws, and black; games must equal white + draws + black.",
   );
 
 export const CandidateSchema = z.strictObject({

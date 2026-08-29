@@ -182,8 +182,8 @@ waits for the dependency callback before sending UCI `quit` and terminating the
 worker. Terminal depth-zero score records without an explicit MultiPV rank are
 reported as rank one rather than discarded.
 
-Maia runs in a process-local pool of dedicated workers with the bundled ONNX
-model (5M by default). Worker inference sessions are loaded lazily and reused
+Maia runs in a fixed pool of dedicated child processes with the bundled ONNX
+model (5M by default). Child inference sessions are loaded lazily and reused
 after successful creation. At most two inferences run concurrently, with 32
 more waiting in a bounded queue; cancellation removes queued work immediately.
 For each snapshot it
@@ -191,11 +191,11 @@ tokenizes position history, supplies both Elo inputs, masks logits to legal
 moves, mirrors black-to-move moves for the model vocabulary, and normalizes the
 remaining logits. The output is human move likelihood, never an evaluation.
 ONNX Runtime has no safe cooperative cancellation API. Active cancellation or
-the 30-second deadline marks the result as failed; once the native call returns,
-the idle worker and its session are retired. Queued cancellation removes the
-request before dispatch. Idle workers are unreferenced, and application shutdown
-waits for active native calls before terminating the pool and permitting lazy
-restart.
+the 30-second deadline therefore kills that inference child and waits for its
+exit before releasing capacity. Queued cancellation removes the request before
+dispatch. Idle children are unreferenced, and application shutdown terminates
+the pool before permitting lazy restart. Inference children do not inherit the
+Lichess credential.
 
 Lichess is optional and token-gated. The explorer validates speed/rating filters
 locally and forbids filters for `masters`. Each request has a five-second

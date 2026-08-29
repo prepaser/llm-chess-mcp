@@ -299,10 +299,9 @@ MCP cancellation notifications, session deletion, and server shutdown propagate
 to body uploads and Stockfish, Maia, and Lichess work. Stockfish stops safely at
 its UCI queue boundary, drains queued work during shutdown, and rejects new
 analysis until teardown completes. Lichess fetch and retry waits abort
-immediately. Maia runs native inference in dedicated workers; cancelling active
-work discards its result and retires the worker after the native call returns,
-while queued cancellation is immediate. A raw HTTP disconnect alone is not a
-cancellation signal.
+immediately. Maia runs native inference in dedicated child processes; cancelling
+active work terminates its child, while queued cancellation is immediate. A raw
+HTTP disconnect alone is not a cancellation signal.
 
 ## Intents
 

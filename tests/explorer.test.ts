@@ -1748,6 +1748,45 @@ test("keeps the default wall clock independent from a custom request clock", asy
   assert.deepEqual(delays, [1_000]);
 });
 
+test("uses one wall-clock snapshot for a 429 cooldown and retry", async () => {
+  let now = 0;
+  const target = Date.parse("2026-08-21T00:00:01Z");
+  const wallTimes = [target - 1_000, target - 20_000];
+  let wallReads = 0;
+  let calls = 0;
+  const delays: number[] = [];
+
+  await openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    options(
+      async () => {
+        calls += 1;
+        return calls === 1
+          ? response(429, {}, {
+              "Retry-After": "Fri, 21 Aug 2026 00:00:01 GMT",
+            })
+          : response();
+      },
+      {
+        now: () => now,
+        wallNow: () =>
+          wallTimes[Math.min(wallReads++, wallTimes.length - 1)]!,
+        sleep: async (ms) => {
+          delays.push(ms);
+          now += ms;
+        },
+      },
+    ),
+  );
+
+  assert.equal(calls, 2);
+  assert.equal(wallReads, 1);
+  assert.deepEqual(delays, [1_000]);
+});
+
 test("accepts obsolete valid HTTP-date Retry-After forms", async () => {
   const target = Date.parse("1994-11-06T08:49:37Z");
   for (const retryAfter of [

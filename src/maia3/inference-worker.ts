@@ -1,4 +1,3 @@
-import { parentPort } from "node:worker_threads";
 import * as ort from "onnxruntime-node";
 import { createCheckedSession, extractMoveLogits } from "./session.js";
 
@@ -19,8 +18,7 @@ export type MaiaWorkerResponse =
       error: { name: string; message: string; stack?: string };
     };
 
-const port = parentPort;
-if (!port) throw new Error("Maia3 inference worker requires a parent port");
+if (!process.send) throw new Error("Maia3 inference child requires an IPC channel");
 
 let session: ort.InferenceSession | null = null;
 let sessionPath: string | null = null;
@@ -56,7 +54,8 @@ function serializeError(error: unknown): {
   };
 }
 
-port.on("message", (request: MaiaWorkerRequest) => {
+process.on("disconnect", () => process.exit(0));
+process.on("message", (request: MaiaWorkerRequest) => {
   void (async () => {
     try {
       const current = await getSession(request.modelPath);
@@ -78,14 +77,14 @@ port.on("message", (request: MaiaWorkerRequest) => {
       });
       const logits = new Float32Array(extractMoveLogits(results));
       const response: MaiaWorkerResponse = { id: request.id, ok: true, logits };
-      port.postMessage(response, [logits.buffer as ArrayBuffer]);
+      process.send?.(response);
     } catch (error) {
       const response: MaiaWorkerResponse = {
         id: request.id,
         ok: false,
         error: serializeError(error),
       };
-      port.postMessage(response);
+      process.send?.(response);
     }
   })();
 });

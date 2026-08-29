@@ -213,13 +213,15 @@ function failureFor(
   setup: ExplorerSetup,
   error: ExplorerError,
   retryAfter: string | null = null,
+  rateLimitDelay?: number,
 ): ExplorerRetryOutcome<ExplorerResult> {
   if (error.kind === "rate_limited") {
     return {
       type: "failure",
       error,
       retry: "limiter",
-      delay: rateLimitCooldownMs(retryAfter, setup.wallNow()),
+      delay:
+        rateLimitDelay ?? rateLimitCooldownMs(retryAfter, setup.wallNow()),
     };
   }
   if (error.kind === "timeout" || error.kind === "network") {
@@ -249,9 +251,16 @@ async function attemptRequest(
       const transport = await requestExplorerTransport(setup);
       if (transport.type === "failure") {
         if (transport.error.kind === "rate_limited") {
-          setup.limiter.cooldown(
-            rateLimitCooldownMs(transport.retryAfter, setup.wallNow()),
-            setup.now(),
+          const delay = rateLimitCooldownMs(
+            transport.retryAfter,
+            setup.wallNow(),
+          );
+          setup.limiter.cooldown(delay, setup.now());
+          return failureFor(
+            setup,
+            transport.error,
+            transport.retryAfter,
+            delay,
           );
         }
         return failureFor(setup, transport.error, transport.retryAfter);

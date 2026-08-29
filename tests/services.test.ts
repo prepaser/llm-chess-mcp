@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Chess } from "chess.js";
+import { stockfish } from "../src/engines/stockfish.js";
 import {
   createAppServicesLeaseManager,
+  defaultAppServices,
   type AppServices,
 } from "../src/services.js";
 
@@ -102,4 +105,45 @@ test("non-last lease releases remain immediately idempotent", async () => {
 
   await last.release();
   assert.equal(quitCalls, 1);
+});
+
+test("cold default shutdown fences same-tick Maia work and permits restart", async () => {
+  const shuttingDown = defaultAppServices.quit();
+  assert.equal(defaultAppServices.quit(), shuttingDown);
+  await assert.rejects(
+    defaultAppServices.humanMoveDistribution(new Chess(), 1500, 1500, 1),
+    /application services are shutting down/,
+  );
+  await shuttingDown;
+
+  assert.equal(
+    (await defaultAppServices.humanMoveDistribution(new Chess(), 1500, 1500, 1))
+      .length,
+    1,
+  );
+  await defaultAppServices.quit();
+});
+
+test("default shutdown awaits Maia teardown before preserving a Stockfish failure", async () => {
+  const active = defaultAppServices.humanMoveDistribution(
+    new Chess(),
+    1500,
+    1500,
+    1,
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const failure = new Error("Stockfish teardown failed");
+  const originalQuit = stockfish.quit;
+  stockfish.quit = () => Promise.reject(failure);
+  try {
+    const shuttingDown = defaultAppServices.quit();
+    await assert.rejects(
+      active,
+      /Maia3 inference cancelled by shutdown/,
+    );
+    await assert.rejects(shuttingDown, (error: unknown) => error === failure);
+  } finally {
+    stockfish.quit = originalQuit;
+    await defaultAppServices.quit();
+  }
 });

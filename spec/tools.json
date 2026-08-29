@@ -1129,7 +1129,7 @@
                   "type": "object"
                 },
                 "opening": {
-                  "description": "games, white, draws, and black must be all null or all present; games must equal white + draws + black",
+                  "description": "Non-available stats must all be null. Available stats must be all null or include positive games and frequency plus white, draws, and black; games must equal white + draws + black.",
                   "oneOf": [
                     {
                       "additionalProperties": false,
@@ -1915,7 +1915,7 @@
                   "type": "object"
                 },
                 "opening": {
-                  "description": "games, white, draws, and black must be all null or all present; games must equal white + draws + black",
+                  "description": "Non-available stats must all be null. Available stats must be all null or include positive games and frequency plus white, draws, and black; games must equal white + draws + black.",
                   "oneOf": [
                     {
                       "additionalProperties": false,

@@ -25,6 +25,15 @@ export type StockfishEngine = {
 
 const processListenerCleanups = new WeakMap<StockfishEngine, () => void>();
 
+type UncaughtExceptionListener = (
+  error: Error,
+  origin: "uncaughtException" | "unhandledRejection",
+) => void;
+type UnhandledRejectionListener = (
+  reason: unknown,
+  promise: Promise<unknown>,
+) => void;
+
 export type StockfishInit = (
   flavor: string,
   cb: (err: Error | null, engine: StockfishEngine) => void,
@@ -56,6 +65,7 @@ type Session = {
 
 type InitAttempt = {
   callbackCalled: boolean;
+  callbackEngine: StockfishEngine | null;
   session: Session;
 };
 
@@ -124,8 +134,24 @@ function loadStockfish(): StockfishInit {
         StockfishEngine,
       ]> = [];
       let initialized = false;
+      let callbackDelivered = false;
       let owner!: StockfishEngine;
       let engine: StockfishEngine;
+      const deliver = (
+        error: Error | null,
+        initializedEngine: StockfishEngine,
+      ) => {
+        if (!callbackDelivered) {
+          callbackDelivered = true;
+          const cleanup = processListenerCleanups.get(owner);
+          if (cleanup && initializedEngine !== owner) {
+            processListenerCleanups.delete(owner);
+            processListenerCleanups.set(initializedEngine, cleanup);
+            owner = initializedEngine;
+          }
+        }
+        callback(error, initializedEngine);
+      };
       try {
         const init = require(entry) as StockfishInit;
         engine = init(flavor, (error, initializedEngine) => {
@@ -133,13 +159,7 @@ function loadStockfish(): StockfishInit {
             pendingCallbacks.push([error, initializedEngine]);
             return;
           }
-          const cleanup = processListenerCleanups.get(owner);
-          if (cleanup && initializedEngine !== owner) {
-            processListenerCleanups.delete(owner);
-            processListenerCleanups.set(initializedEngine, cleanup);
-            owner = initializedEngine;
-          }
-          callback(error, initializedEngine);
+          deliver(error, initializedEngine);
         });
       } catch (error) {
         removeAddedListeners(
@@ -155,35 +175,66 @@ function loadStockfish(): StockfishInit {
         throw error;
       }
 
-      const addedUncaught = addedListeners(
+      const cleanupUncaught = ownAddedListeners<UncaughtExceptionListener>(
         uncaught,
         process.listeners("uncaughtException"),
+        (listener) => process.removeListener("uncaughtException", listener),
+        (listener) => process.on("uncaughtException", listener),
+        () =>
+          process.rawListeners(
+            "uncaughtException",
+          ) as UncaughtExceptionListener[],
+        (listeners) => {
+          process.removeAllListeners("uncaughtException");
+          for (const listener of listeners) {
+            process.on("uncaughtException", listener);
+          }
+        },
+        (listener) =>
+          function ownedUncaughtException(
+            this: NodeJS.Process,
+            error,
+            origin,
+          ) {
+            Reflect.apply(listener, this, [error, origin]);
+          },
       );
-      const addedUnhandled = addedListeners(
+      const cleanupUnhandled = ownAddedListeners<UnhandledRejectionListener>(
         unhandled,
         process.listeners("unhandledRejection"),
+        (listener) => process.removeListener("unhandledRejection", listener),
+        (listener) => process.on("unhandledRejection", listener),
+        () =>
+          process.rawListeners(
+            "unhandledRejection",
+          ) as UnhandledRejectionListener[],
+        (listeners) => {
+          process.removeAllListeners("unhandledRejection");
+          for (const listener of listeners) {
+            process.on("unhandledRejection", listener);
+          }
+        },
+        (listener) =>
+          function ownedUnhandledRejection(
+            this: NodeJS.Process,
+            reason,
+            promise,
+          ) {
+            Reflect.apply(listener, this, [reason, promise]);
+          },
       );
       let cleaned = false;
       const cleanup = () => {
         if (cleaned) return;
         cleaned = true;
-        for (const listener of addedUncaught) {
-          process.removeListener("uncaughtException", listener);
-        }
-        for (const listener of addedUnhandled) {
-          process.removeListener("unhandledRejection", listener);
-        }
+        cleanupUncaught();
+        cleanupUnhandled();
       };
       processListenerCleanups.set(engine, cleanup);
       owner = engine;
       initialized = true;
       for (const [error, initializedEngine] of pendingCallbacks) {
-        if (initializedEngine !== owner) {
-          processListenerCleanups.delete(owner);
-          processListenerCleanups.set(initializedEngine, cleanup);
-          owner = initializedEngine;
-        }
-        callback(error, initializedEngine);
+        deliver(error, initializedEngine);
       }
       return engine;
     } finally {
@@ -211,6 +262,45 @@ function removeAddedListeners<T>(
   remove: (listener: T) => void,
 ): void {
   for (const listener of addedListeners(before, after)) remove(listener);
+}
+
+function ownAddedListeners<T>(
+  before: T[],
+  after: T[],
+  remove: (listener: T) => void,
+  add: (listener: T) => void,
+  raw: () => T[],
+  replace: (listeners: T[]) => void,
+  wrap: (listener: T) => T,
+): () => void {
+  const added = addedListeners(before, after);
+  for (let index = added.length - 1; index >= 0; index--) {
+    remove(added[index]!);
+  }
+  const owned = added.map(wrap);
+  for (const listener of owned) add(listener);
+  return () => {
+    const current = raw();
+    const targets = new Set<number>();
+    let collision = false;
+    for (const listener of owned) {
+      const related: number[] = [];
+      let target = -1;
+      for (const [index, candidate] of current.entries()) {
+        const original = (candidate as { listener?: unknown }).listener;
+        if (candidate === listener || original === listener) related.push(index);
+        if (target < 0 && candidate === listener) target = index;
+      }
+      if (target < 0) continue;
+      targets.add(target);
+      if (related.length > 1) collision = true;
+    }
+    if (!collision) {
+      for (const listener of owned) remove(listener);
+      return;
+    }
+    replace(current.filter((_listener, index) => !targets.has(index)));
+  };
 }
 
 function asError(error: unknown): Error {
@@ -321,7 +411,12 @@ export class Stockfish {
     error: Error | null,
     engine: StockfishEngine,
   ): void {
+    if (attempt.callbackCalled) {
+      if (engine !== attempt.callbackEngine) this.disposeInitEngine(engine);
+      return;
+    }
     attempt.callbackCalled = true;
+    attempt.callbackEngine = engine;
     const { session } = attempt;
     if (!this.adoptInitEngine(attempt, engine)) return;
     if (error) {
@@ -360,7 +455,11 @@ export class Stockfish {
       invalidators: new Set(),
     };
     this.session = session;
-    const attempt: InitAttempt = { callbackCalled: false, session };
+    const attempt: InitAttempt = {
+      callbackCalled: false,
+      callbackEngine: null,
+      session,
+    };
     session.initTimer = setTimeout(
       () => this.failSession(session, new Error("stockfish init timeout")),
       this.timeouts.init,

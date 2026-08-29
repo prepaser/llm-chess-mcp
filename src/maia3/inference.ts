@@ -1,8 +1,8 @@
 import { Chess } from "chess.js";
+import { fork, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Worker } from "node:worker_threads";
 import type { Maia3Move } from "../domain.js";
 import { ChessError } from "../errors.js";
 import { mirrorMove } from "./mirror.js";
@@ -111,8 +111,6 @@ export class MaiaAdmission {
 
 type PendingWorkerRequest = {
   id: number;
-  failed: boolean;
-  failure: unknown | null;
   signal: AbortSignal | undefined;
   onAbort: () => void;
   timer: NodeJS.Timeout;
@@ -131,7 +129,7 @@ function responseError(response: Extract<MaiaWorkerResponse, { ok: false }>): Er
   return error;
 }
 
-function workerExecArgv(url: URL): string[] {
+function childExecArgv(url: URL): string[] {
   if (!url.pathname.endsWith(".ts")) return [];
   const valueOptions = new Set([
     "--require",
@@ -159,16 +157,93 @@ function workerExecArgv(url: URL): string[] {
   return args;
 }
 
+function childEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === "LICHESS_TOKEN") delete env[key];
+  }
+  if (env.NODE_OPTIONS) {
+    env.NODE_OPTIONS = env.NODE_OPTIONS
+      .replace(
+        /(^|\s)--input-type(?:=(?:module|commonjs)|\s+(?:module|commonjs))(?=\s|$)/g,
+        " ",
+      )
+      .trim();
+  }
+  return env;
+}
+
+function setChildReferenced(child: ChildProcess, referenced: boolean): void {
+  if (referenced) {
+    child.ref();
+    child.channel?.ref();
+  } else {
+    child.unref();
+    child.channel?.unref();
+  }
+}
+
+function killChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+  setChildReferenced(child, true);
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      child.off("exit", finish);
+      child.off("error", finish);
+      setChildReferenced(child, false);
+      resolve();
+    };
+    child.once("exit", finish);
+    child.once("error", finish);
+    try {
+      if (!child.kill("SIGKILL")) finish();
+    } catch {
+      finish();
+    }
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseResponse(
+  value: unknown,
+  id: number,
+): MaiaWorkerResponse | null {
+  if (!isRecord(value) || value.id !== id || typeof value.ok !== "boolean") {
+    return null;
+  }
+  if (value.ok) {
+    return value.logits instanceof Float32Array
+      ? { id, ok: true, logits: value.logits }
+      : null;
+  }
+  if (!isRecord(value.error)) return null;
+  const { name, message, stack } = value.error;
+  if (
+    typeof name !== "string" ||
+    typeof message !== "string" ||
+    (stack !== undefined && typeof stack !== "string")
+  ) {
+    return null;
+  }
+  return {
+    id,
+    ok: false,
+    error: { name, message, ...(stack === undefined ? {} : { stack }) },
+  };
+}
+
 class MaiaWorkerSlot {
-  #worker: Worker | null = null;
+  #child: ChildProcess | null = null;
   #pending: PendingWorkerRequest | null = null;
   #retiring: Promise<void> | null = null;
-  #retireWhenIdle = false;
-  #closeCompletion: {
-    promise: Promise<void>;
-    resolve: () => void;
-    reject: (error: unknown) => void;
-  } | null = null;
   #nextId = 1;
 
   constructor(
@@ -186,22 +261,21 @@ class MaiaWorkerSlot {
   ): Promise<Float32Array> {
     signal?.throwIfAborted();
     if (this.busy) throw new Error("Maia3 worker slot is busy");
-    const worker = this.#worker ?? this.#spawn();
-    worker.ref();
+    const child = this.#child ?? this.#spawn();
+    setChildReferenced(child, true);
     const id = this.#nextId++;
     return new Promise<Float32Array>((resolve, reject) => {
       const onAbort = () => {
-        this.#cancel(signal?.reason ?? new Error("Maia3 inference cancelled"));
+        void this.#retire(
+          signal?.reason ?? new Error("Maia3 inference cancelled"),
+        );
       };
       const timer = setTimeout(() => {
-        this.#retireWhenIdle = true;
-        this.#cancel(new Error("Maia3 inference timed out"));
+        void this.#retire(new Error("Maia3 inference timed out"));
       }, this.timeoutMs);
       timer.unref();
       this.#pending = {
         id,
-        failed: false,
-        failure: null,
         signal,
         onAbort,
         timer,
@@ -212,13 +286,12 @@ class MaiaWorkerSlot {
         signal?.addEventListener("abort", onAbort, { once: true });
         if (signal?.aborted) {
           onAbort();
-          void this.#retire(
-            signal.reason ?? new Error("Maia3 inference cancelled"),
-          );
           return;
         }
         const message: MaiaWorkerRequest = { type: "run", id, ...request };
-        worker.postMessage(message, [request.input.buffer as ArrayBuffer]);
+        child.send(message, (error) => {
+          if (error && this.#pending?.id === id) this.#fail(child, error);
+        });
       } catch (error) {
         void this.#retire(asError(error));
       }
@@ -227,144 +300,59 @@ class MaiaWorkerSlot {
 
   close(error: Error): Promise<void> {
     if (this.#retiring) return this.#retiring;
-    if (this.#pending) {
-      if (this.#closeCompletion) return this.#closeCompletion.promise;
-      this.#retireWhenIdle = true;
-      this.#cancel(error);
-      let resolve!: () => void;
-      let reject!: (reason: unknown) => void;
-      const promise = new Promise<void>((res, rej) => {
-        resolve = res;
-        reject = rej;
-      });
-      this.#closeCompletion = { promise, resolve, reject };
-      return promise;
-    }
-    const worker = this.#worker;
-    if (!worker) return Promise.resolve();
-    this.#worker = null;
-    const settled = worker
-      .terminate()
-      .then(() => {})
-      .finally(() => {
-        if (this.#retiring === settled) this.#retiring = null;
-      });
-    this.#retiring = settled;
-    return settled;
+    if (!this.#child) return Promise.resolve();
+    return this.#retire(error);
   }
 
-  #spawn(): Worker {
-    const worker = new Worker(this.workerUrl, {
-      execArgv: workerExecArgv(this.workerUrl),
+  #spawn(): ChildProcess {
+    const child = fork(fileURLToPath(this.workerUrl), [], {
+      env: childEnv(),
+      execArgv: childExecArgv(this.workerUrl),
+      serialization: "advanced",
+      stdio: ["ignore", "ignore", "inherit", "ipc"],
     });
-    this.#worker = worker;
-    worker.on("message", (message: unknown) => this.#onMessage(worker, message));
-    worker.on("error", (error) => {
-      this.#fail(worker, error);
+    this.#child = child;
+    child.on("message", (message: unknown) => this.#onMessage(child, message));
+    child.on("error", (error) => {
+      this.#fail(child, error);
     });
-    worker.on("messageerror", (error) => {
-      this.#fail(worker, asError(error));
-    });
-    worker.on("exit", (code) => {
-      if (this.#worker !== worker) return;
-      if (this.#pending) {
-        const pending = this.#takePending();
-        this.#worker = null;
-        this.#retireWhenIdle = false;
-        pending?.reject(
-          pending.failed
-            ? pending.failure
-            : new Error(`Maia3 inference worker exited with code ${code}`),
-        );
-        this.#finishClose();
-      } else {
-        this.#worker = null;
+    child.on("disconnect", () => {
+      if (this.#child === child) {
+        this.#fail(child, new Error("Maia3 inference child disconnected"));
       }
     });
-    return worker;
+    child.on("exit", (code, signal) => {
+      if (this.#child !== child) return;
+      this.#child = null;
+      if (this.#pending) {
+        const pending = this.#takePending();
+        pending?.reject(
+          new Error(
+            `Maia3 inference child exited (${signal ?? code ?? "unknown"})`,
+          ),
+        );
+      }
+    });
+    setChildReferenced(child, false);
+    return child;
   }
 
-  #onMessage(worker: Worker, message: unknown): void {
-    if (this.#worker !== worker || !this.#pending) return;
-    const response = message as Partial<MaiaWorkerResponse>;
-    if (response.id !== this.#pending.id || typeof response.ok !== "boolean") {
-      this.#fail(worker, new Error("invalid Maia3 inference worker response"));
-      return;
-    }
-    if (!response.ok) {
-      this.#finish(responseError(response as Extract<MaiaWorkerResponse, { ok: false }>));
-      return;
-    }
-    const logits = response.logits;
-    if (!(logits instanceof Float32Array)) {
-      this.#fail(worker, new Error("invalid Maia3 inference worker logits"));
+  #onMessage(child: ChildProcess, message: unknown): void {
+    if (this.#child !== child || !this.#pending) return;
+    const response = parseResponse(message, this.#pending.id);
+    if (!response) {
+      this.#fail(child, new Error("invalid Maia3 inference child response"));
       return;
     }
     const pending = this.#takePending();
-    const retire = this.#retireWhenIdle;
-    this.#retireWhenIdle = false;
-    const retiring = retire
-      ? this.#retire(new Error("Maia3 inference worker retired"))
-      : null;
-    if (!retiring) worker.unref();
-    const finish = () => {
-      if (pending?.failed) pending.reject(pending.failure);
-      else pending?.resolve(logits);
-    };
-    if (retiring) void retiring.then(finish);
-    else finish();
-    this.#settleClose(retiring);
+    setChildReferenced(child, false);
+    if (response.ok) pending?.resolve(response.logits);
+    else pending?.reject(responseError(response));
   }
 
-  #fail(worker: Worker, error: Error): void {
-    if (this.#worker !== worker) return;
-    this.#settleClose(this.#retire(error));
-  }
-
-  #finish(error: Error): void {
-    const worker = this.#worker;
-    const pending = this.#takePending();
-    const retire = this.#retireWhenIdle;
-    this.#retireWhenIdle = false;
-    const retiring = retire ? this.#retire(error) : null;
-    if (!retiring) worker?.unref();
-    const finish = () =>
-      pending?.reject(pending.failed ? pending.failure : error);
-    if (retiring) void retiring.then(finish);
-    else finish();
-    this.#settleClose(retiring);
-  }
-
-  #cancel(error: unknown): void {
-    const pending = this.#pending;
-    if (!pending || pending.failed) return;
-    pending.failed = true;
-    pending.failure = error;
-    this.#retireWhenIdle = true;
-    clearTimeout(pending.timer);
-    pending.signal?.removeEventListener("abort", pending.onAbort);
-  }
-
-  #settleClose(retiring: Promise<void> | null): void {
-    if (!this.#closeCompletion) return;
-    if (!retiring) {
-      this.#finishClose();
-      return;
-    }
-    void retiring.then(
-      () => this.#finishClose(),
-      (error: unknown) => {
-        const completion = this.#closeCompletion;
-        this.#closeCompletion = null;
-        completion?.reject(error);
-      },
-    );
-  }
-
-  #finishClose(): void {
-    const completion = this.#closeCompletion;
-    this.#closeCompletion = null;
-    completion?.resolve();
+  #fail(child: ChildProcess, error: Error): void {
+    if (this.#child !== child) return;
+    void this.#retire(error);
   }
 
   #takePending(): PendingWorkerRequest | null {
@@ -379,15 +367,11 @@ class MaiaWorkerSlot {
   #retire(error: unknown): Promise<void> {
     if (this.#retiring) return this.#retiring;
     const pending = this.#takePending();
-    this.#retireWhenIdle = false;
-    const worker = this.#worker;
-    this.#worker = null;
-    const retiring = worker
-      ? worker.terminate().then(() => {})
-      : Promise.resolve();
-    const settled = retiring.catch(() => {}).then(() => {
+    const child = this.#child;
+    this.#child = null;
+    const settled = (child ? killChild(child) : Promise.resolve()).then(() => {
       if (this.#retiring === settled) this.#retiring = null;
-      pending?.reject(pending.failed ? pending.failure : error);
+      pending?.reject(error);
     });
     this.#retiring = settled;
     return settled;

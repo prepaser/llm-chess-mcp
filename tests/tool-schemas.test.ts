@@ -53,6 +53,65 @@ test("opening stats enforce status-specific failure reasons", () => {
   for (const status of ["available", "no_data", "disabled"] as const) {
     assert.equal(OpeningStatsSchema.safeParse({ status, ...values }).success, true);
   }
+
+  for (const [status, extra] of [
+    ["no_data", {}],
+    ["disabled", {}],
+    ["unavailable", { reason: "network" }],
+  ] as const) {
+    for (const field of Object.keys(values) as Array<keyof typeof values>) {
+      assert.equal(
+        OpeningStatsSchema.safeParse({
+          status,
+          ...extra,
+          ...values,
+          [field]: field === "frequency" ? 0.5 : 1,
+        }).success,
+        false,
+        `${status}.${field}`,
+      );
+    }
+  }
+
+  assert.equal(
+    OpeningStatsSchema.safeParse({
+      status: "available",
+      ...values,
+      frequency: 0.5,
+    }).success,
+    false,
+  );
+  assert.equal(
+    OpeningStatsSchema.safeParse({
+      status: "available",
+      ...values,
+      averageRating: 1_800,
+    }).success,
+    false,
+  );
+  assert.equal(
+    OpeningStatsSchema.safeParse({
+      status: "available",
+      ...values,
+      games: 9,
+      white: 4,
+      draws: 3,
+      black: 2,
+    }).success,
+    false,
+  );
+  assert.equal(
+    OpeningStatsSchema.safeParse({
+      status: "available",
+      ...values,
+      games: 0,
+      frequency: 0,
+      white: 0,
+      draws: 0,
+      black: 0,
+    }).success,
+    false,
+  );
 });
 
 const lichessMove = {
@@ -213,7 +272,7 @@ test("wire schemas expose UCI and cross-field constraints", () => {
   assert.match(wdlSchema?.description ?? "", /sum to 1000/);
   assert.equal(wdlArraySchema?.minItems, 3);
   assert.equal(wdlArraySchema?.maxItems, 3);
-  assert.match(openingSchema?.description ?? "", /all null or all present/);
+  assert.match(openingSchema?.description ?? "", /Non-available stats must all be null/);
   assert.match(explorerSchema.description ?? "", /must not exceed/);
   assert.match(moveSchema?.description ?? "", /count must equal/);
 });

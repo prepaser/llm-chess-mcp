@@ -18,15 +18,7 @@ import {
 import { VOCAB_SIZE } from "../src/maia3/vocab.js";
 
 const execFileAsync = promisify(execFile);
-
-function dataWorker(source: string): URL {
-  return new URL(
-    `data:text/javascript,${encodeURIComponent(`
-      import { parentPort } from "node:worker_threads";
-      ${source}
-    `)}`,
-  );
-}
+const testChildUrl = new URL("./support/maia-child.ts", import.meta.url);
 
 function poolRequest(modelPath: string) {
   return {
@@ -189,39 +181,58 @@ test("active cancellation retires its worker and later inference recovers", asyn
   assert.equal((await humanMoveDistribution(new Chess(), 1500, 1500, 1)).length, 1);
 });
 
-test("worker pool times out, rejects malformed responses, and restarts", async () => {
+test("child pool times out, rejects failures and malformed responses, and restarts", async () => {
   const pool = new MaiaWorkerPool(
     1,
     500,
-    dataWorker(`
-      parentPort.on("message", ({ id, modelPath }) => {
-        if (modelPath === "slow") {
-          setTimeout(() => {
-            parentPort.postMessage({ id, ok: true, logits: new Float32Array([1]) });
-          }, 700);
-          return;
-        }
-        if (modelPath === "malformed") {
-          parentPort.postMessage({ id, ok: true, logits: [] });
-          return;
-        }
-        parentPort.postMessage({ id, ok: true, logits: new Float32Array([7]) });
-      });
-    `),
+    testChildUrl,
   );
 
-  await assert.rejects(pool.run(poolRequest("slow")), /inference timed out/);
+  await assert.rejects(pool.run(poolRequest("hang")), /inference timed out/);
   assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
   await assert.rejects(
-    pool.run(poolRequest("malformed")),
-    /invalid Maia3 inference worker logits/,
+    pool.run(poolRequest("null")),
+    /invalid Maia3 inference child response/,
   );
   assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
-  const closing = pool.close(new Error("closed"));
+  await assert.rejects(
+    pool.run(poolRequest("bad-error")),
+    /invalid Maia3 inference child response/,
+  );
+  await assert.rejects(pool.run(poolRequest("crash")), /disconnected|exited/);
+  assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
+
+  const active = pool.run(poolRequest("hang"));
+  const cause = new Error("pool closed");
+  const closing = pool.close(cause);
   assert.equal(pool.close(new Error("duplicate")), closing);
+  await assert.rejects(active, (error: unknown) => error === cause);
   await closing;
   assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
   await pool.close(new Error("closed"));
+});
+
+test("inference children do not inherit the Lichess credential", async () => {
+  const previous = process.env.LICHESS_TOKEN;
+  process.env.LICHESS_TOKEN = "secret";
+  const pool = new MaiaWorkerPool(1, 2_000, testChildUrl);
+  try {
+    assert.deepEqual(await pool.run(poolRequest("env")), new Float32Array([1]));
+  } finally {
+    if (previous === undefined) delete process.env.LICHESS_TOKEN;
+    else process.env.LICHESS_TOKEN = previous;
+    await pool.close(new Error("closed"));
+  }
+});
+
+test("child pool preserves falsey active cancellation reasons", async () => {
+  const pool = new MaiaWorkerPool(1, 2_000, testChildUrl);
+  const controller = new AbortController();
+  const active = pool.run(poolRequest("hang"), controller.signal);
+  controller.abort(false);
+  await assert.rejects(active, (error: unknown) => error === false);
+  const closing = pool.close(new Error("closed"));
+  await closing;
 });
 
 test("quit fences work, shares completion, and permits lazy restart", async () => {
@@ -237,7 +248,7 @@ test("quit fences work, shares completion, and permits lazy restart", async () =
   await quitMaia();
 });
 
-test("worker execution yields the main event loop", async () => {
+test("child execution yields the main event loop", async () => {
   await quitMaia();
   let ticked = false;
   const timer = setTimeout(() => {
@@ -248,7 +259,7 @@ test("worker execution yields the main event loop", async () => {
   assert.equal(ticked, true);
 });
 
-test("source workers ignore inherited input-type exec arguments", { timeout: 15_000 }, async () => {
+test("source children ignore inherited input-type exec arguments", { timeout: 15_000 }, async () => {
   const moduleUrl = new URL("../src/maia3/inference.ts", import.meta.url).href;
   const source = `
     import { Chess } from "chess.js";
@@ -260,7 +271,17 @@ test("source workers ignore inherited input-type exec arguments", { timeout: 15_
   const { stdout } = await execFileAsync(
     process.execPath,
     ["--import", "tsx", "--input-type=module", "--eval", source],
-    { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        NODE_OPTIONS: [process.env.NODE_OPTIONS, "--input-type=module"]
+          .filter(Boolean)
+          .join(" "),
+      },
+      timeout: 10_000,
+    },
   );
   assert.equal(stdout, "e2e4");
 });

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ServerContext } from "@modelcontextprotocol/server";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { McpServer, type ServerContext } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
 import { ChessError } from "../src/errors.js";
 import { ExplorerError } from "../src/explorer.js";
@@ -79,7 +80,7 @@ test("safeHandler masks unexpected failures", async () => {
   );
 });
 
-test("safeHandler validates and normalizes successful output", async () => {
+test("safeHandler prevalidates successful output without applying transforms", async () => {
   const outputSchema = z.strictObject({
     value: z.string().transform((value) => value.trim()),
   });
@@ -89,8 +90,41 @@ test("safeHandler validates and normalizes successful output", async () => {
 
   assert.deepEqual(
     await handler({}),
-    toolResult(outputSchema, { value: "result" }, "ok"),
+    toolResult(outputSchema, { value: "  result  " }, "ok"),
   );
+});
+
+test("wire output applies a non-idempotent transform only once", async (t) => {
+  const inputSchema = z.strictObject({});
+  const outputSchema = z.strictObject({
+    value: z
+      .number()
+      .transform((value) => value + 1)
+      .refine((value) => value <= 2, "too large"),
+  });
+  const server = new McpServer({ name: "output-transform-test", version: "1" });
+  server.registerTool(
+    "transformed_output",
+    { inputSchema, outputSchema },
+    safeHandler(inputSchema, outputSchema, async () =>
+      toolResult(outputSchema, { value: 1 }, "ok"),
+    ),
+  );
+  const client = new Client({ name: "output-transform-client", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const result = await client.callTool({
+    name: "transformed_output",
+    arguments: {},
+  });
+  assert.notEqual(result.isError, true);
+  assert.deepEqual(result.structuredContent, { value: 1 });
 });
 
 test("safeHandler masks invalid successful output", async () => {
@@ -152,6 +186,35 @@ test("safeHandler rejects pre-aborted requests without running the handler", asy
 
   await assert.rejects(handler({}, context(controller.signal)), /cancelled/);
   assert.equal(called, false);
+});
+
+test("safeHandler rethrows cancellation during async output validation", async () => {
+  let markValidationStarted!: () => void;
+  let finishValidation!: () => void;
+  const validationStarted = new Promise<void>((resolve) => {
+    markValidationStarted = resolve;
+  });
+  const validationFinished = new Promise<void>((resolve) => {
+    finishValidation = resolve;
+  });
+  const controller = new AbortController();
+  const outputSchema = z.strictObject({
+    value: z.string().transform(async (value) => {
+      markValidationStarted();
+      await validationFinished;
+      return value;
+    }),
+  });
+  const handler = safeHandler(z.strictObject({}), outputSchema, async () =>
+    toolResult(outputSchema, { value: "ok" }, "ok"),
+  );
+  const result = handler({}, context(controller.signal));
+  await validationStarted;
+  const cause = new Error("cancelled during output validation");
+  controller.abort(cause);
+  finishValidation();
+
+  await assert.rejects(result, (error: unknown) => error === cause);
 });
 
 test("safeHandler rethrows when cancellation races a handler error", async () => {
