@@ -70,6 +70,9 @@ export interface AppServices
 
 const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) =>
   stockfish.analyze(fen, depth, multipv, signal);
+let maiaModule: Promise<typeof import("./maia3/inference.js")> | undefined;
+const loadMaia = (): Promise<typeof import("./maia3/inference.js")> =>
+  (maiaModule ??= import("./maia3/inference.js"));
 const humanMoveDistribution: AppServices["humanMoveDistribution"] = async (
   chess,
   elo,
@@ -77,7 +80,7 @@ const humanMoveDistribution: AppServices["humanMoveDistribution"] = async (
   topN,
   signal,
 ) =>
-  (await import("./maia3/inference.js")).humanMoveDistribution(
+  (await loadMaia()).humanMoveDistribution(
     chess,
     elo,
     opponentElo,
@@ -110,7 +113,13 @@ const computeCandidates = createCandidateComputation({
 export const defaultAppServices: AppServices = {
   games: defaultGameStore,
   analyze,
-  quit: () => stockfish.quit(),
+  quit: async () => {
+    const maia = maiaModule;
+    await Promise.all([
+      stockfish.quit(),
+      maia?.then((module) => module.quitMaia()),
+    ]);
+  },
   humanMoveDistribution,
   explorerEnabled,
   openingExplorer: openExplorer,

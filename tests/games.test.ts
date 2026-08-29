@@ -78,6 +78,38 @@ test("GameStore accepts deterministic clocks and IDs", () => {
   assert.equal(store.cleanupGames(), 1);
 });
 
+test("GameStore default TTL timing is independent of wall-clock jumps", (t) => {
+  let wallTime = 1_700_000_000_000;
+  t.mock.method(Date, "now", () => wallTime);
+  const store = new GameStore({
+    idleTtlMs: 60_000,
+    createId: () => "game",
+  });
+  const id = store.createGame();
+
+  assert.equal(store.cleanupGames(wallTime + 1_000), 0);
+  wallTime += 60 * 60 * 1_000;
+  assert.equal(store.getSnapshot(id).revision, 0);
+  wallTime = 0;
+  assert.equal(store.getSnapshot(id).revision, 0);
+});
+
+test("explicit cleanup times do not advance the store clock", () => {
+  let now = 100;
+  const store = new GameStore({
+    clock: () => now,
+    idleTtlMs: 1_000,
+    createId: () => "game",
+  });
+  const id = store.createGame();
+
+  assert.equal(store.cleanupGames(500), 0);
+  now = 101;
+  assert.equal(store.getSnapshot(id).revision, 0);
+  assert.throws(() => store.cleanupGames(100), RangeError);
+  assert.equal(store.getSnapshot(id).revision, 0);
+});
+
 test("GameStore rejects invalid or backward clock values without mutating games", () => {
   for (const value of [
     Number.NaN,
@@ -129,6 +161,20 @@ test("GameStore rejects unsafe FEN counters before creating a game", () => {
     store.createGame(`${base} 0 9007199254740992`),
   );
   assert.equal(store.gameCount(), 0);
+});
+
+test("GameStore normalizes only FEN parse failures", () => {
+  const invalidFen = new GameStore({
+    clock: () => 0,
+    createId: () => "game",
+  });
+  expectChessError("INVALID_FEN", () => invalidFen.createGame("not a FEN"));
+
+  const invalidClock = new GameStore({
+    clock: () => Number.NaN,
+    createId: () => "game",
+  });
+  assert.throws(() => invalidClock.createGame(), RangeError);
 });
 
 test("GameStore rejects positions where the inactive king is capturable", () => {

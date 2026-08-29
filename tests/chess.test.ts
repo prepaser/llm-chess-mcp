@@ -54,6 +54,62 @@ test("snapshotChess preserves safe FEN counters exactly", () => {
   assert.equal(snapshot.fen(), fen);
 });
 
+test("snapshotChess rejects null moves consistently", () => {
+  const chess = new Chess();
+  chess.move("--");
+  const fen = chess.fen();
+  const store = new GameStore({ createId: () => "null-game" });
+
+  for (const operation of [
+    () => snapshotChess(chess),
+    () => pgnOf(chess),
+    () => store.createGameFromChess(chess),
+  ]) {
+    assert.throws(
+      operation,
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+  assert.equal(chess.fen(), fen);
+  assert.deepEqual(chess.history(), ["--"]);
+  assert.equal(store.gameCount(), 0);
+});
+
+test("snapshotChess rejects divergent history without mutating its source", () => {
+  const chess = new Chess();
+  chess.move("e4");
+  chess.remove("e4");
+  const fen = chess.fen({ forceEnpassantSquare: true });
+  const headers = chess.getHeaders();
+
+  for (const operation of [() => snapshotChess(chess), () => pgnOf(chess)]) {
+    assert.throws(
+      operation,
+      (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+    );
+    assert.equal(chess.fen({ forceEnpassantSquare: true }), fen);
+    assert.equal(chess.get("e4"), undefined);
+    assert.deepEqual(chess.getHeaders(), headers);
+  }
+
+  assert.equal(chess.put({ type: "p", color: "w" }, "e4"), true);
+  assert.deepEqual(chess.history(), ["e4"]);
+});
+
+test("snapshotChess rejects board edits outside the last move", () => {
+  const chess = new Chess();
+  chess.move("e4");
+  chess.remove("a7");
+  const fen = chess.fen();
+
+  assert.throws(
+    () => snapshotChess(chess),
+    (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+  );
+  assert.equal(chess.fen(), fen);
+  assert.equal(chess.get("a7"), undefined);
+});
+
 test("GameStore snapshots preserve delimiter-bearing comments exactly", () => {
   const imported = parseImportedPgn(";same } comment\n1.e4 *");
   assert.doesNotThrow(() => snapshotChess(imported));
@@ -233,6 +289,39 @@ test("custom positions reject impossible pawn and promotion material", () => {
   const captured = new Chess();
   for (const move of ["e4", "d5", "exd5"]) captured.move(move);
   assert.doesNotThrow(() => assertLegalPosition(captured));
+});
+
+test("pawn capture budgets count missing units exactly once", () => {
+  assert.throws(
+    () =>
+      assertLegalPosition(
+        new Chess("rnbqkbnr/2pppppp/8/8/P7/P7/P7/4K3 w - - 0 1"),
+      ),
+    (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+  );
+  assert.doesNotThrow(() =>
+    assertLegalPosition(
+      new Chess("rnbqkbnr/3ppppp/8/8/P7/P7/P7/4K3 w - - 0 1"),
+    ),
+  );
+});
+
+test("custom positions reject impossible check topology conservatively", () => {
+  for (const fen of [
+    "4r2k/8/8/8/1b6/5n2/8/4K3 w - - 0 1",
+    "7k/8/8/8/8/5n2/2n5/4K3 w - - 0 1",
+  ]) {
+    assert.throws(
+      () => assertLegalPosition(new Chess(fen)),
+      (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+    );
+  }
+
+  assert.doesNotThrow(() =>
+    assertLegalPosition(
+      new Chess("4r2k/8/8/8/1b6/8/8/4K3 w - - 0 1"),
+    ),
+  );
 });
 
 test("stateOf reports the typed public state", () => {
@@ -694,6 +783,25 @@ test("pgnOf preserves Unicode and replacement patterns in unsafe comments", () =
     roundTrip.getComments().map(({ comment }) => comment),
     comments,
   );
+});
+
+test("pgnOf preserves movetext with empty-valued headers", () => {
+  const chess = parseImportedPgn(
+    '[EmptyA ""]\n[Unicode "한글 😀"]\n[EmptyB ""]\n\n1.e4 e5 *',
+  );
+  const exported = pgnOf(chess);
+  const roundTrip = parseImportedPgn(exported);
+
+  assert.deepEqual(roundTrip.history(), ["e4", "e5"]);
+  assert.equal(roundTrip.getHeaders().EmptyA, "");
+  assert.equal(roundTrip.getHeaders().EmptyB, "");
+  assert.equal(roundTrip.getHeaders().Unicode, "한글 😀");
+  assert.match(exported, /1\. e4 e5 \*/);
+
+  const zeroPly = parseImportedPgn('[Empty ""]');
+  const zeroPlyExport = pgnOf(zeroPly);
+  assert.match(zeroPlyExport, /\*$/);
+  assert.doesNotThrow(() => parseImportedPgn(zeroPlyExport));
 });
 
 test("pgnOf rejects line breaks in programmatic headers", () => {

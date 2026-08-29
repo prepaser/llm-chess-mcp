@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 export type HttpSessionState = {
   lastUsedAt: number;
   activeRequests: number;
@@ -15,8 +17,12 @@ export class HttpSessionRegistry<T extends HttpSessionState> {
   #sessions = new Map<string, T>();
   #initializing = new Set<T>();
   #pendingReservations = 0;
+  #lastClockTime: number | undefined;
 
-  constructor(private readonly maxSessions: number) {}
+  constructor(
+    private readonly maxSessions: number,
+    private readonly clock: () => number = () => performance.now(),
+  ) {}
 
   get size(): number {
     return this.#sessions.size;
@@ -24,6 +30,19 @@ export class HttpSessionRegistry<T extends HttpSessionState> {
 
   get(id: string): T | undefined {
     return this.#sessions.get(id);
+  }
+
+  time(): number {
+    const now = this.clock();
+    if (
+      !Number.isFinite(now) ||
+      Math.abs(now) > Number.MAX_SAFE_INTEGER ||
+      (this.#lastClockTime !== undefined && now < this.#lastClockTime)
+    ) {
+      throw new RangeError("clock must return finite, safe, monotonic time");
+    }
+    this.#lastClockTime = now;
+    return now;
   }
 
   tryReserve(): HttpSessionReservation<T> | undefined {
@@ -34,8 +53,9 @@ export class HttpSessionRegistry<T extends HttpSessionState> {
     return new SessionReservation({
       attach: (session) => this.#initializing.add(session),
       activate: (id, session) => {
+        const now = this.time();
         this.#initializing.delete(session);
-        session.lastUsedAt = Date.now();
+        session.lastUsedAt = now;
         this.#sessions.set(id, session);
       },
       detach: (session) => this.#initializing.delete(session),
@@ -49,13 +69,14 @@ export class HttpSessionRegistry<T extends HttpSessionState> {
   }
 
   async withActive<R>(session: T, work: () => Promise<R>): Promise<R> {
+    const now = this.time();
     session.activeRequests += 1;
-    session.lastUsedAt = Date.now();
+    session.lastUsedAt = now;
     try {
       return await work();
     } finally {
       session.activeRequests -= 1;
-      session.lastUsedAt = Date.now();
+      session.lastUsedAt = this.time();
     }
   }
 
@@ -73,7 +94,7 @@ export class HttpSessionRegistry<T extends HttpSessionState> {
     idleTtlMs: number,
     stop: (session: T) => Promise<void>,
   ): Promise<void> {
-    const now = Date.now();
+    const now = this.time();
     await Promise.allSettled(
       [...this.#sessions.entries()]
         .filter(
@@ -141,9 +162,9 @@ class SessionReservation<T extends HttpSessionState> implements HttpSessionReser
 
   private activate(): void {
     if (this.#activated || !this.#session || !this.#id) return;
+    this.ops.activate(this.#id, this.#session);
     this.#activated = true;
     this.release();
-    this.ops.activate(this.#id, this.#session);
   }
 
   private release(): void {

@@ -205,7 +205,7 @@ function setupExplorerRequest(
     timeout: options.timeout ?? ((ms: number) => AbortSignal.timeout(ms)),
     token,
     url: `${BASE}/${db}?${params}`,
-    wallNow: options.wallNow ?? options.now ?? Date.now,
+    wallNow: options.wallNow ?? Date.now,
   };
 }
 

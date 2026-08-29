@@ -1,31 +1,39 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import test from "node:test";
+import { promisify } from "node:util";
 import { Chess } from "chess.js";
 import * as ort from "onnxruntime-node";
 import { ChessError } from "../src/errors.js";
 import {
   assertSessionContract,
+  createCheckedSession,
   extractMoveLogits,
   humanMoveDistribution,
   MaiaAdmission,
+  MaiaWorkerPool,
+  quitMaia,
   softmax,
 } from "../src/maia3/inference.js";
 import { VOCAB_SIZE } from "../src/maia3/vocab.js";
 
-function abortOnCheck(checkAt: number): { signal: AbortSignal; checks(): number } {
-  let checks = 0;
+const execFileAsync = promisify(execFile);
+
+function dataWorker(source: string): URL {
+  return new URL(
+    `data:text/javascript,${encodeURIComponent(`
+      import { parentPort } from "node:worker_threads";
+      ${source}
+    `)}`,
+  );
+}
+
+function poolRequest(modelPath: string) {
   return {
-    signal: {
-      throwIfAborted() {
-        checks += 1;
-        if (checks === checkAt) {
-          const error = new Error("The operation was aborted");
-          error.name = "AbortError";
-          throw error;
-        }
-      },
-    } as AbortSignal,
-    checks: () => checks,
+    modelPath,
+    input: new Float32Array(64 * 96),
+    elo: 1500,
+    oppoElo: 1500,
   };
 }
 
@@ -64,6 +72,24 @@ test("validates the Maia3 session contract", () => {
       }),
     /model output missing: logits_move/,
   );
+});
+
+test("awaits failed session cleanup without hiding the contract error", async () => {
+  let releases = 0;
+  const candidate = {
+    inputNames: ["tokens"],
+    outputNames: ["logits_move"],
+    async release() {
+      releases += 1;
+      throw new Error("release failed");
+    },
+  } as unknown as ort.InferenceSession;
+
+  await assert.rejects(
+    createCheckedSession(async () => candidate),
+    /Maia3 model input missing: self_elo/,
+  );
+  assert.equal(releases, 1);
 });
 
 test("validates move logits type and shape", () => {
@@ -145,17 +171,98 @@ test("aborts before loading the model", async () => {
   }
 });
 
-test("checks cancellation after native inference and around formatting", async () => {
-  for (const checkAt of [3, 4, 5]) {
-    const cancellation = abortOnCheck(checkAt);
-    await assert.rejects(
-      humanMoveDistribution(new Chess(), 1500, 1500, 1, cancellation.signal),
-      { name: "AbortError" },
-    );
-    assert.equal(cancellation.checks(), checkAt);
-  }
+test("active cancellation retires its worker and later inference recovers", async () => {
+  await quitMaia();
+  await humanMoveDistribution(new Chess(), 1500, 1500, 1);
+  const controller = new AbortController();
+  const cause = new Error("active inference cancelled");
+  const cancelled = humanMoveDistribution(
+    new Chess(),
+    1500,
+    1500,
+    1,
+    controller.signal,
+  );
+  setTimeout(() => controller.abort(cause), 0);
 
+  await assert.rejects(cancelled, (error: unknown) => error === cause);
   assert.equal((await humanMoveDistribution(new Chess(), 1500, 1500, 1)).length, 1);
+});
+
+test("worker pool times out, rejects malformed responses, and restarts", async () => {
+  const pool = new MaiaWorkerPool(
+    1,
+    500,
+    dataWorker(`
+      parentPort.on("message", ({ id, modelPath }) => {
+        if (modelPath === "slow") {
+          setTimeout(() => {
+            parentPort.postMessage({ id, ok: true, logits: new Float32Array([1]) });
+          }, 700);
+          return;
+        }
+        if (modelPath === "malformed") {
+          parentPort.postMessage({ id, ok: true, logits: [] });
+          return;
+        }
+        parentPort.postMessage({ id, ok: true, logits: new Float32Array([7]) });
+      });
+    `),
+  );
+
+  await assert.rejects(pool.run(poolRequest("slow")), /inference timed out/);
+  assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
+  await assert.rejects(
+    pool.run(poolRequest("malformed")),
+    /invalid Maia3 inference worker logits/,
+  );
+  assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
+  const closing = pool.close(new Error("closed"));
+  assert.equal(pool.close(new Error("duplicate")), closing);
+  await closing;
+  assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
+  await pool.close(new Error("closed"));
+});
+
+test("quit fences work, shares completion, and permits lazy restart", async () => {
+  await humanMoveDistribution(new Chess(), 1500, 1500, 1);
+  const first = quitMaia();
+  assert.equal(quitMaia(), first);
+  await assert.rejects(
+    humanMoveDistribution(new Chess(), 1500, 1500, 1),
+    /cancelled by shutdown/,
+  );
+  await first;
+  assert.equal((await humanMoveDistribution(new Chess(), 1500, 1500, 1)).length, 1);
+  await quitMaia();
+});
+
+test("worker execution yields the main event loop", async () => {
+  await quitMaia();
+  let ticked = false;
+  const timer = setTimeout(() => {
+    ticked = true;
+  }, 0);
+  await humanMoveDistribution(new Chess(), 1500, 1500, 1);
+  clearTimeout(timer);
+  assert.equal(ticked, true);
+});
+
+test("source workers ignore inherited input-type exec arguments", { timeout: 15_000 }, async () => {
+  const moduleUrl = new URL("../src/maia3/inference.ts", import.meta.url).href;
+  const source = `
+    import { Chess } from "chess.js";
+    const { humanMoveDistribution, quitMaia } = await import(${JSON.stringify(moduleUrl)});
+    const moves = await humanMoveDistribution(new Chess(), 1500, 1500, 1);
+    await quitMaia();
+    process.stdout.write(moves[0].uci);
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 10_000 },
+  );
+  assert.equal(stdout, "e2e4");
 });
 
 test("preserves bundled model inference parity", async () => {

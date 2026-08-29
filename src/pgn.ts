@@ -402,13 +402,15 @@ function pgnText(chess: Chess): string {
   for (const { comment } of comments) assertPgnTokenSize(comment);
   const raw = chess.pgn();
   assertPgnSize(raw);
-  let movetextStart = 0;
-  for (let index = 0; index < headers.length; index += 1) {
-    const lineEnd = raw.indexOf("\n", movetextStart);
-    movetextStart = lineEnd < 0 ? raw.length : lineEnd + 1;
+  const rawTags = headers
+    .filter(([, value]) => value.length > 0)
+    .map(([name, value]) => `[${name} "${value}"]\n`)
+    .join("");
+  if (!raw.startsWith(rawTags)) {
+    throw new ChessError("INVALID_PGN", "could not locate PGN movetext");
   }
-  if (headers.length > 0 && raw[movetextStart] === "\n") movetextStart += 1;
-  let movetext = raw.slice(movetextStart);
+  let movetext = raw.slice(rawTags.length);
+  if (movetext.startsWith("\n")) movetext = movetext.slice(1);
   movetext = renderUnsafePgnComments(
     movetext,
     comments.map(({ comment }) => comment),
@@ -985,16 +987,16 @@ function validateResultForPosition(chess: Chess, result: PgnResult | undefined):
 }
 
 export function pgnOf(chess: Chess): string {
-  assertPgnPlyLimit(chess.history().length);
-  const result = chess.isCheckmate()
-    ? (chess.turn() === "w" ? "0-1" : "1-0")
-    : chess.isDraw()
+  const snapshot = snapshotChess(chess);
+  assertPgnPlyLimit(snapshot.history().length);
+  const result = snapshot.isCheckmate()
+    ? (snapshot.turn() === "w" ? "0-1" : "1-0")
+    : snapshot.isDraw()
       ? "1/2-1/2"
       : undefined;
-  if (result === undefined) return pgnText(chess);
+  if (result === undefined) return pgnText(snapshot);
 
-  assertPgnExportHeaders(chess);
-  const snapshot = snapshotChess(chess);
+  assertPgnExportHeaders(snapshot);
   snapshot.setHeader("Result", result);
   return pgnText(snapshot);
 }

@@ -785,6 +785,16 @@ test("Streamable HTTP bounds declared and chunked request bodies", async (t) => 
   assert.equal(invalid.status, 400);
   assert.match(invalid.body, /invalid JSON request body/);
 
+  const invalidUtf8 = Buffer.from([0x22, 0xff, 0x22]);
+  const malformedEncoding = await httpRequest(http.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: invalidUtf8,
+  });
+  assert.equal(malformedEncoding.status, 400);
+  assert.match(malformedEncoding.body, /invalid JSON request body/);
+  assert.equal(http.sessionCount(), 0);
+
   const wrongContentType = await httpRequest(http.url, {
     method: "POST",
     headers: { "content-type": "text/plain" },

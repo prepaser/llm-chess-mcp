@@ -79,6 +79,44 @@ test("safeHandler masks unexpected failures", async () => {
   );
 });
 
+test("safeHandler validates and normalizes successful output", async () => {
+  const outputSchema = z.strictObject({
+    value: z.string().transform((value) => value.trim()),
+  });
+  const handler = safeHandler(z.strictObject({}), outputSchema, async () =>
+    toolResult(outputSchema, { value: "  result  " }, "ok"),
+  );
+
+  assert.deepEqual(
+    await handler({}),
+    toolResult(outputSchema, { value: "result" }, "ok"),
+  );
+});
+
+test("safeHandler masks invalid successful output", async () => {
+  const outputSchema = z.strictObject({ value: z.number() });
+  const handler = safeHandler(z.strictObject({}), outputSchema, async () =>
+    toolResult(outputSchema, { value: Number.NaN }, "invalid"),
+  );
+
+  assert.deepEqual(
+    await handler({}),
+    toolError("INTERNAL", "internal tool error"),
+  );
+});
+
+test("safeHandler preserves error results without output validation", async () => {
+  const outputSchema = z.strictObject({ value: z.number() });
+  const expected = toolError("EXPECTED", "expected failure");
+  const handler = safeHandler(
+    z.strictObject({}),
+    outputSchema,
+    async () => expected as never,
+  );
+
+  assert.deepEqual(await handler({}), expected);
+});
+
 test("safeHandler preserves known domain and explorer errors", async () => {
   const outputSchema = z.strictObject({});
   const cases = [

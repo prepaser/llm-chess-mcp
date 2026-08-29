@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { dirname, sep } from "node:path";
 import type { SfLine } from "../domain.js";
+import { ChessError } from "../errors.js";
 import { mergeAnalysisInfo, parseAnalysisInfo } from "./stockfish-info.js";
 
 const require = createRequire(import.meta.url);
@@ -21,6 +22,8 @@ export type StockfishEngine = {
   sendCommand: (cmd: string) => void;
   terminate: () => void;
 };
+
+const processListenerCleanups = new WeakMap<StockfishEngine, () => void>();
 
 export type StockfishInit = (
   flavor: string,
@@ -104,6 +107,8 @@ function loadStockfish(): StockfishInit {
   const packageRoot = dirname(entry) + sep;
   const packageEntry = (id: string) => id === entry || id.startsWith(packageRoot);
   return (flavor, callback) => {
+    const uncaught = process.listeners("uncaughtException");
+    const unhandled = process.listeners("unhandledRejection");
     const cached = new Map(
       Object.entries(require.cache).filter(
         (entry): entry is [string, NodeModule] =>
@@ -114,8 +119,73 @@ function loadStockfish(): StockfishInit {
       if (packageEntry(id)) delete require.cache[id];
     }
     try {
-      const init = require(entry) as StockfishInit;
-      return init(flavor, callback);
+      const pendingCallbacks: Array<[
+        Error | null,
+        StockfishEngine,
+      ]> = [];
+      let initialized = false;
+      let owner!: StockfishEngine;
+      let engine: StockfishEngine;
+      try {
+        const init = require(entry) as StockfishInit;
+        engine = init(flavor, (error, initializedEngine) => {
+          if (!initialized) {
+            pendingCallbacks.push([error, initializedEngine]);
+            return;
+          }
+          const cleanup = processListenerCleanups.get(owner);
+          if (cleanup && initializedEngine !== owner) {
+            processListenerCleanups.delete(owner);
+            processListenerCleanups.set(initializedEngine, cleanup);
+            owner = initializedEngine;
+          }
+          callback(error, initializedEngine);
+        });
+      } catch (error) {
+        removeAddedListeners(
+          uncaught,
+          process.listeners("uncaughtException"),
+          (listener) => process.removeListener("uncaughtException", listener),
+        );
+        removeAddedListeners(
+          unhandled,
+          process.listeners("unhandledRejection"),
+          (listener) => process.removeListener("unhandledRejection", listener),
+        );
+        throw error;
+      }
+
+      const addedUncaught = addedListeners(
+        uncaught,
+        process.listeners("uncaughtException"),
+      );
+      const addedUnhandled = addedListeners(
+        unhandled,
+        process.listeners("unhandledRejection"),
+      );
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        for (const listener of addedUncaught) {
+          process.removeListener("uncaughtException", listener);
+        }
+        for (const listener of addedUnhandled) {
+          process.removeListener("unhandledRejection", listener);
+        }
+      };
+      processListenerCleanups.set(engine, cleanup);
+      owner = engine;
+      initialized = true;
+      for (const [error, initializedEngine] of pendingCallbacks) {
+        if (initializedEngine !== owner) {
+          processListenerCleanups.delete(owner);
+          processListenerCleanups.set(initializedEngine, cleanup);
+          owner = initializedEngine;
+        }
+        callback(error, initializedEngine);
+      }
+      return engine;
     } finally {
       for (const id of Object.keys(require.cache)) {
         if (packageEntry(id)) delete require.cache[id];
@@ -123,6 +193,24 @@ function loadStockfish(): StockfishInit {
       for (const [id, module] of cached) require.cache[id] = module;
     }
   };
+}
+
+function addedListeners<T>(before: T[], after: T[]): T[] {
+  const remaining = [...before];
+  return after.filter((listener) => {
+    const index = remaining.indexOf(listener);
+    if (index < 0) return true;
+    remaining.splice(index, 1);
+    return false;
+  });
+}
+
+function removeAddedListeners<T>(
+  before: T[],
+  after: T[],
+  remove: (listener: T) => void,
+): void {
+  for (const listener of addedListeners(before, after)) remove(listener);
 }
 
 function asError(error: unknown): Error {
@@ -438,7 +526,9 @@ export class Stockfish {
       return Promise.reject(new Error("stockfish shutting down"));
     }
     if (this.admitted >= this.maxQueue) {
-      return Promise.reject(new Error("stockfish queue full"));
+      return Promise.reject(
+        new ChessError("SERVER_BUSY", "stockfish queue full"),
+      );
     }
 
     const quitGeneration = this.quitGeneration;
@@ -670,7 +760,11 @@ export class Stockfish {
         engine.listener = () => {};
         try {
           engine.terminate();
-        } catch {}
+        } catch {} finally {
+          const cleanup = processListenerCleanups.get(engine);
+          processListenerCleanups.delete(engine);
+          cleanup?.();
+        }
         finish();
       });
     };
@@ -737,11 +831,18 @@ export class Stockfish {
 
   quit(): Promise<void> {
     if (this.quitting) return this.quitting;
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const pending = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
     let operation!: Promise<void>;
-    operation = this.performQuit().finally(() => {
+    operation = pending.finally(() => {
       if (this.quitting === operation) this.quitting = null;
     });
     this.quitting = operation;
+    void this.performQuit().then(resolve, reject);
     return operation;
   }
 }

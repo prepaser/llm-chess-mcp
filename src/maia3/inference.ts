@@ -1,24 +1,33 @@
 import { Chess } from "chess.js";
-import * as ort from "onnxruntime-node";
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { buildInput } from "./tokenize.js";
-import { VOCAB_SIZE, vocabIndex } from "./vocab.js";
-import { mirrorMove } from "./mirror.js";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import type { Maia3Move } from "../domain.js";
 import { ChessError } from "../errors.js";
+import { mirrorMove } from "./mirror.js";
+import {
+  assertSessionContract,
+  createCheckedSession,
+  extractMoveLogits,
+} from "./session.js";
+import { buildInput } from "./tokenize.js";
+import { vocabIndex } from "./vocab.js";
+import type {
+  MaiaWorkerRequest,
+  MaiaWorkerResponse,
+} from "./inference-worker.js";
 
-let session: ort.InferenceSession | null = null;
-let sessionPromise: Promise<ort.InferenceSession> | null = null;
 const MODEL_KEYS = new Set(["3m", "5m", "23m", "79m"]);
 const DEFAULT_MAX_CONCURRENCY = 2;
 const DEFAULT_MAX_QUEUE = 32;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 type AdmissionWaiter = {
   onAbort: () => void;
   signal: AbortSignal | undefined;
   start: () => void;
+  reject: (error: unknown) => void;
 };
 
 export class MaiaAdmission {
@@ -67,6 +76,7 @@ export class MaiaAdmission {
       waiter = {
         onAbort: remove,
         signal,
+        reject,
         start: () => {
           void this.#start(work).then(resolve, reject);
         },
@@ -75,6 +85,14 @@ export class MaiaAdmission {
       signal?.addEventListener("abort", remove, { once: true });
       if (signal?.aborted) remove();
     });
+  }
+
+  cancelQueued(error: Error): void {
+    const queue = this.#queue.splice(0);
+    for (const waiter of queue) {
+      waiter.signal?.removeEventListener("abort", waiter.onAbort);
+      waiter.reject(error);
+    }
   }
 
   #start<T>(work: () => Promise<T>): Promise<T> {
@@ -91,79 +109,389 @@ export class MaiaAdmission {
   }
 }
 
-const admission = new MaiaAdmission();
+type PendingWorkerRequest = {
+  id: number;
+  failed: boolean;
+  failure: unknown | null;
+  signal: AbortSignal | undefined;
+  onAbort: () => void;
+  timer: NodeJS.Timeout;
+  resolve: (logits: Float32Array) => void;
+  reject: (error: unknown) => void;
+};
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function responseError(response: Extract<MaiaWorkerResponse, { ok: false }>): Error {
+  const error = new Error(response.error.message);
+  error.name = response.error.name;
+  if (response.error.stack !== undefined) error.stack = response.error.stack;
+  return error;
+}
+
+function workerExecArgv(url: URL): string[] {
+  if (!url.pathname.endsWith(".ts")) return [];
+  const valueOptions = new Set([
+    "--require",
+    "-r",
+    "--import",
+    "--loader",
+    "--experimental-loader",
+  ]);
+  const args: string[] = [];
+  for (let index = 0; index < process.execArgv.length; index += 1) {
+    const arg = process.execArgv[index];
+    if (arg !== undefined && valueOptions.has(arg)) {
+      const value = process.execArgv[index + 1];
+      if (value !== undefined) args.push(arg, value);
+      index += 1;
+      continue;
+    }
+    if (
+      arg !== undefined &&
+      [...valueOptions].some((option) => arg.startsWith(`${option}=`))
+    ) {
+      args.push(arg);
+    }
+  }
+  return args;
+}
+
+class MaiaWorkerSlot {
+  #worker: Worker | null = null;
+  #pending: PendingWorkerRequest | null = null;
+  #retiring: Promise<void> | null = null;
+  #retireWhenIdle = false;
+  #closeCompletion: {
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  } | null = null;
+  #nextId = 1;
+
+  constructor(
+    private readonly workerUrl: URL,
+    private readonly timeoutMs: number,
+  ) {}
+
+  get busy(): boolean {
+    return this.#pending !== null || this.#retiring !== null;
+  }
+
+  run(
+    request: Omit<MaiaWorkerRequest, "type" | "id">,
+    signal?: AbortSignal,
+  ): Promise<Float32Array> {
+    signal?.throwIfAborted();
+    if (this.busy) throw new Error("Maia3 worker slot is busy");
+    const worker = this.#worker ?? this.#spawn();
+    worker.ref();
+    const id = this.#nextId++;
+    return new Promise<Float32Array>((resolve, reject) => {
+      const onAbort = () => {
+        this.#cancel(signal?.reason ?? new Error("Maia3 inference cancelled"));
+      };
+      const timer = setTimeout(() => {
+        this.#retireWhenIdle = true;
+        this.#cancel(new Error("Maia3 inference timed out"));
+      }, this.timeoutMs);
+      timer.unref();
+      this.#pending = {
+        id,
+        failed: false,
+        failure: null,
+        signal,
+        onAbort,
+        timer,
+        resolve,
+        reject,
+      };
+      try {
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) {
+          onAbort();
+          void this.#retire(
+            signal.reason ?? new Error("Maia3 inference cancelled"),
+          );
+          return;
+        }
+        const message: MaiaWorkerRequest = { type: "run", id, ...request };
+        worker.postMessage(message, [request.input.buffer as ArrayBuffer]);
+      } catch (error) {
+        void this.#retire(asError(error));
+      }
+    });
+  }
+
+  close(error: Error): Promise<void> {
+    if (this.#retiring) return this.#retiring;
+    if (this.#pending) {
+      if (this.#closeCompletion) return this.#closeCompletion.promise;
+      this.#retireWhenIdle = true;
+      this.#cancel(error);
+      let resolve!: () => void;
+      let reject!: (reason: unknown) => void;
+      const promise = new Promise<void>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      this.#closeCompletion = { promise, resolve, reject };
+      return promise;
+    }
+    const worker = this.#worker;
+    if (!worker) return Promise.resolve();
+    this.#worker = null;
+    const settled = worker
+      .terminate()
+      .then(() => {})
+      .finally(() => {
+        if (this.#retiring === settled) this.#retiring = null;
+      });
+    this.#retiring = settled;
+    return settled;
+  }
+
+  #spawn(): Worker {
+    const worker = new Worker(this.workerUrl, {
+      execArgv: workerExecArgv(this.workerUrl),
+    });
+    this.#worker = worker;
+    worker.on("message", (message: unknown) => this.#onMessage(worker, message));
+    worker.on("error", (error) => {
+      this.#fail(worker, error);
+    });
+    worker.on("messageerror", (error) => {
+      this.#fail(worker, asError(error));
+    });
+    worker.on("exit", (code) => {
+      if (this.#worker !== worker) return;
+      if (this.#pending) {
+        const pending = this.#takePending();
+        this.#worker = null;
+        this.#retireWhenIdle = false;
+        pending?.reject(
+          pending.failed
+            ? pending.failure
+            : new Error(`Maia3 inference worker exited with code ${code}`),
+        );
+        this.#finishClose();
+      } else {
+        this.#worker = null;
+      }
+    });
+    return worker;
+  }
+
+  #onMessage(worker: Worker, message: unknown): void {
+    if (this.#worker !== worker || !this.#pending) return;
+    const response = message as Partial<MaiaWorkerResponse>;
+    if (response.id !== this.#pending.id || typeof response.ok !== "boolean") {
+      this.#fail(worker, new Error("invalid Maia3 inference worker response"));
+      return;
+    }
+    if (!response.ok) {
+      this.#finish(responseError(response as Extract<MaiaWorkerResponse, { ok: false }>));
+      return;
+    }
+    const logits = response.logits;
+    if (!(logits instanceof Float32Array)) {
+      this.#fail(worker, new Error("invalid Maia3 inference worker logits"));
+      return;
+    }
+    const pending = this.#takePending();
+    const retire = this.#retireWhenIdle;
+    this.#retireWhenIdle = false;
+    const retiring = retire
+      ? this.#retire(new Error("Maia3 inference worker retired"))
+      : null;
+    if (!retiring) worker.unref();
+    const finish = () => {
+      if (pending?.failed) pending.reject(pending.failure);
+      else pending?.resolve(logits);
+    };
+    if (retiring) void retiring.then(finish);
+    else finish();
+    this.#settleClose(retiring);
+  }
+
+  #fail(worker: Worker, error: Error): void {
+    if (this.#worker !== worker) return;
+    this.#settleClose(this.#retire(error));
+  }
+
+  #finish(error: Error): void {
+    const worker = this.#worker;
+    const pending = this.#takePending();
+    const retire = this.#retireWhenIdle;
+    this.#retireWhenIdle = false;
+    const retiring = retire ? this.#retire(error) : null;
+    if (!retiring) worker?.unref();
+    const finish = () =>
+      pending?.reject(pending.failed ? pending.failure : error);
+    if (retiring) void retiring.then(finish);
+    else finish();
+    this.#settleClose(retiring);
+  }
+
+  #cancel(error: unknown): void {
+    const pending = this.#pending;
+    if (!pending || pending.failed) return;
+    pending.failed = true;
+    pending.failure = error;
+    this.#retireWhenIdle = true;
+    clearTimeout(pending.timer);
+    pending.signal?.removeEventListener("abort", pending.onAbort);
+  }
+
+  #settleClose(retiring: Promise<void> | null): void {
+    if (!this.#closeCompletion) return;
+    if (!retiring) {
+      this.#finishClose();
+      return;
+    }
+    void retiring.then(
+      () => this.#finishClose(),
+      (error: unknown) => {
+        const completion = this.#closeCompletion;
+        this.#closeCompletion = null;
+        completion?.reject(error);
+      },
+    );
+  }
+
+  #finishClose(): void {
+    const completion = this.#closeCompletion;
+    this.#closeCompletion = null;
+    completion?.resolve();
+  }
+
+  #takePending(): PendingWorkerRequest | null {
+    const pending = this.#pending;
+    if (!pending) return null;
+    this.#pending = null;
+    clearTimeout(pending.timer);
+    pending.signal?.removeEventListener("abort", pending.onAbort);
+    return pending;
+  }
+
+  #retire(error: unknown): Promise<void> {
+    if (this.#retiring) return this.#retiring;
+    const pending = this.#takePending();
+    this.#retireWhenIdle = false;
+    const worker = this.#worker;
+    this.#worker = null;
+    const retiring = worker
+      ? worker.terminate().then(() => {})
+      : Promise.resolve();
+    const settled = retiring.catch(() => {}).then(() => {
+      if (this.#retiring === settled) this.#retiring = null;
+      pending?.reject(pending.failed ? pending.failure : error);
+    });
+    this.#retiring = settled;
+    return settled;
+  }
+}
+
+export class MaiaWorkerPool {
+  readonly #slots: MaiaWorkerSlot[];
+  #closing: Promise<void> | null = null;
+
+  constructor(size: number, timeoutMs: number, workerUrl: URL) {
+    this.#slots = Array.from(
+      { length: size },
+      () => new MaiaWorkerSlot(workerUrl, timeoutMs),
+    );
+  }
+
+  run(
+    request: Omit<MaiaWorkerRequest, "type" | "id">,
+    signal?: AbortSignal,
+  ): Promise<Float32Array> {
+    if (this.#closing) throw new Error("Maia3 inference is shutting down");
+    const slot = this.#slots.find((candidate) => !candidate.busy);
+    if (!slot) {
+      throw new ChessError("SERVER_BUSY", "Maia3 worker pool unavailable");
+    }
+    return slot.run(request, signal);
+  }
+
+  close(error: Error): Promise<void> {
+    if (this.#closing) return this.#closing;
+    const closing = Promise.all(this.#slots.map((slot) => slot.close(error)))
+      .then(() => {})
+      .finally(() => {
+        if (this.#closing === closing) this.#closing = null;
+      });
+    this.#closing = closing;
+    return closing;
+  }
+}
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 function modelPath(): string {
   const modelKey = process.env.MAIA3_MODEL || "5m";
-  if (!MODEL_KEYS.has(modelKey)) throw new Error(`unsupported Maia3 model: ${modelKey}`);
-  const here = dirname(fileURLToPath(import.meta.url));
+  if (!MODEL_KEYS.has(modelKey)) {
+    throw new Error(`unsupported Maia3 model: ${modelKey}`);
+  }
   const candidates = [
     resolve(here, "../../models", `maia3-${modelKey}.onnx`),
     resolve(process.cwd(), "models", `maia3-${modelKey}.onnx`),
   ];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
   }
   throw new Error(
     `maia3 model not found (models/maia3-${modelKey}.onnx). Run \`pnpm export:maia3\` first.`,
   );
 }
 
-async function getSession(): Promise<ort.InferenceSession> {
-  if (session) return session;
-  if (sessionPromise) return sessionPromise;
-  sessionPromise = ort.InferenceSession.create(modelPath())
-    .then((s) => {
-      try {
-        assertSessionContract(s);
-      } catch (error) {
-        s.release();
-        throw error;
-      }
-      session = s;
-      return s;
-    })
-    .catch((error) => {
-      sessionPromise = null;
-      throw error;
-    });
-  return sessionPromise;
+function workerUrl(): URL {
+  const js = resolve(here, "inference-worker.js");
+  if (existsSync(js)) return pathToFileURL(js);
+  const ts = resolve(here, "inference-worker.ts");
+  if (existsSync(ts)) return pathToFileURL(ts);
+  throw new Error("Maia3 inference worker entry not found");
 }
 
-export function assertSessionContract(
-  candidate: Pick<ort.InferenceSession, "inputNames" | "outputNames">,
-): void {
-  for (const name of ["tokens", "self_elo", "oppo_elo"]) {
-    if (!candidate.inputNames.includes(name)) throw new Error(`Maia3 model input missing: ${name}`);
-  }
-  if (!candidate.outputNames.includes("logits_move")) {
-    throw new Error("Maia3 model output missing: logits_move");
-  }
-}
+const admission = new MaiaAdmission();
+const workers = new MaiaWorkerPool(
+  DEFAULT_MAX_CONCURRENCY,
+  DEFAULT_TIMEOUT_MS,
+  workerUrl(),
+);
+let shutdown: Promise<void> | null = null;
+let shutdownError: Error | null = null;
 
-export function extractMoveLogits(results: ort.InferenceSession.ReturnType): Float32Array {
-  const tensor = results.logits_move;
-  if (!tensor) throw new Error("Maia3 inference output missing: logits_move");
-  if (tensor.type !== "float32" || !(tensor.data instanceof Float32Array)) {
-    throw new Error(`invalid Maia3 logits type: ${tensor.type}`);
-  }
-  if (tensor.dims.length !== 2 || tensor.dims[0] !== 1 || tensor.dims[1] !== VOCAB_SIZE) {
-    throw new Error(`invalid Maia3 logits shape: [${tensor.dims.join(", ")}]`);
-  }
-  if (tensor.data.length !== VOCAB_SIZE) {
-    throw new Error(`invalid Maia3 logits length: ${tensor.data.length}`);
-  }
-  return tensor.data;
+export function quitMaia(): Promise<void> {
+  if (shutdown) return shutdown;
+  const error = new Error("Maia3 inference cancelled by shutdown");
+  shutdownError = error;
+  admission.cancelQueued(error);
+  const closing = workers.close(error).finally(() => {
+    if (shutdown === closing) {
+      shutdown = null;
+      shutdownError = null;
+    }
+  });
+  shutdown = closing;
+  return closing;
 }
 
 export function softmax(logits: Float32Array): Float32Array {
   if (logits.length === 0) throw new Error("cannot normalize empty logits");
   let max = -Infinity;
   for (const logit of logits) {
-    if (Number.isNaN(logit) || logit === Infinity) throw new Error("invalid Maia3 logits");
+    if (Number.isNaN(logit) || logit === Infinity) {
+      throw new Error("invalid Maia3 logits");
+    }
     if (logit > max) max = logit;
   }
-  if (!Number.isFinite(max)) throw new Error("Maia3 logits contain no legal moves");
+  if (!Number.isFinite(max)) {
+    throw new Error("Maia3 logits contain no legal moves");
+  }
 
   let sum = 0;
   const out = new Float32Array(logits.length);
@@ -180,7 +508,9 @@ export function softmax(logits: Float32Array): Float32Array {
 
 function valueAt(values: Float32Array, index: number): number {
   const value = values[index];
-  if (value === undefined) throw new Error(`Maia3 logits index out of range: ${index}`);
+  if (value === undefined) {
+    throw new Error(`Maia3 logits index out of range: ${index}`);
+  }
   return value;
 }
 
@@ -192,6 +522,7 @@ export async function humanMoveDistribution(
   signal?: AbortSignal,
 ): Promise<Maia3Move[]> {
   signal?.throwIfAborted();
+  if (shutdownError) throw shutdownError;
   if (chess.isGameOver()) return [];
   const legal = chess.moves({ verbose: true });
   if (legal.length === 0) return [];
@@ -204,31 +535,32 @@ export async function humanMoveDistribution(
 
   return admission.run(signal, async () => {
     signal?.throwIfAborted();
-    const s = await getSession();
-    signal?.throwIfAborted();
-    const tokens = new ort.Tensor("float32", input, [1, 64, 96]);
-    const selfElo = new ort.Tensor("int64", BigInt64Array.from([BigInt(elo)]), [1]);
-    const oppoEloTensor = new ort.Tensor(
-      "int64",
-      BigInt64Array.from([BigInt(oppoElo)]),
-      [1],
+    if (shutdownError) throw shutdownError;
+    const logits = await workers.run(
+      { modelPath: modelPath(), input, elo, oppoElo },
+      signal,
     );
-    const feeds = { tokens, self_elo: selfElo, oppo_elo: oppoEloTensor };
-    const results = await s.run(feeds);
-    signal?.throwIfAborted();
-    const logits = extractMoveLogits(results);
-
     signal?.throwIfAborted();
     const legalMask = new Float32Array(logits.length).fill(-Infinity);
-    for (const { index } of indexedLegal) legalMask[index] = valueAt(logits, index);
+    for (const { index } of indexedLegal) {
+      legalMask[index] = valueAt(logits, index);
+    }
     const probs = softmax(legalMask);
     const ranked = indexedLegal
-      .map(({ move, index }) => {
-        return { uci: move.lan, san: move.san, prob: valueAt(probs, index) };
-      })
+      .map(({ move, index }) => ({
+        uci: move.lan,
+        san: move.san,
+        prob: valueAt(probs, index),
+      }))
       .sort((a, b) => b.prob - a.prob);
 
     signal?.throwIfAborted();
     return ranked.slice(0, topN);
   });
 }
+
+export {
+  assertSessionContract,
+  createCheckedSession,
+  extractMoveLogits,
+};

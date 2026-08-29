@@ -7,12 +7,12 @@ type Session = {
   activeRequests: number;
 };
 
-function session(lastUsedAt = Date.now()): Session {
+function session(lastUsedAt = 0): Session {
   return { lastUsedAt, activeRequests: 0 };
 }
 
 test("HTTP session reservations are idempotent and capacity-bound", async () => {
-  const registry = new HttpSessionRegistry<Session>(1);
+  const registry = new HttpSessionRegistry<Session>(1, () => 0);
   const reservation = registry.tryReserve();
   assert.ok(reservation);
   assert.equal(registry.tryReserve(), undefined);
@@ -44,10 +44,11 @@ test("HTTP session reservations are idempotent and capacity-bound", async () => 
 });
 
 test("HTTP session reaping ignores active requests", async () => {
-  const registry = new HttpSessionRegistry<Session>(2);
+  let now = 0;
+  const registry = new HttpSessionRegistry<Session>(2, () => now);
   const reservation = registry.tryReserve();
   assert.ok(reservation);
-  const active = session(Date.now() - 1_000);
+  const active = session();
   reservation.attach(active);
   reservation.initialized("active");
 
@@ -57,6 +58,7 @@ test("HTTP session reaping ignores active requests", async () => {
   });
   const running = registry.withActive(active, () => blocked);
   let stopped = 0;
+  now = 1_000;
   await registry.reap(1, async () => {
     stopped += 1;
   });
@@ -64,8 +66,56 @@ test("HTTP session reaping ignores active requests", async () => {
 
   release();
   await running;
-  active.lastUsedAt = Date.now() - 1_000;
+  now += 1;
   await registry.reap(1, async () => {
+    stopped += 1;
+  });
+  assert.equal(stopped, 1);
+  reservation.finish();
+});
+
+test("HTTP session expiry ignores wall-clock jumps", async (t) => {
+  let wallTime = 1_000;
+  let now = 0;
+  t.mock.method(Date, "now", () => wallTime);
+  const registry = new HttpSessionRegistry<Session>(1, () => now);
+  const reservation = registry.tryReserve();
+  assert.ok(reservation);
+  reservation.attach(session());
+  reservation.initialized("session");
+
+  let stopped = 0;
+  wallTime += 60 * 60 * 1_000;
+  now = 9;
+  await registry.reap(10, async () => {
+    stopped += 1;
+  });
+  assert.equal(stopped, 0);
+
+  wallTime = 0;
+  now = 10;
+  await registry.reap(10, async () => {
+    stopped += 1;
+  });
+  assert.equal(stopped, 1);
+  reservation.finish();
+});
+
+test("HTTP session clock failures do not poison later reaping", async () => {
+  let now = 100;
+  const registry = new HttpSessionRegistry<Session>(1, () => now);
+  const reservation = registry.tryReserve();
+  assert.ok(reservation);
+  reservation.attach(session());
+  reservation.initialized("session");
+
+  now = 99;
+  await assert.rejects(registry.reap(10, async () => {}), RangeError);
+  assert.equal(registry.size, 1);
+
+  let stopped = 0;
+  now = 110;
+  await registry.reap(10, async () => {
     stopped += 1;
   });
   assert.equal(stopped, 1);

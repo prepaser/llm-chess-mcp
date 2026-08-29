@@ -291,7 +291,10 @@ function readPostBody(
     };
     const onEnd = (): void => {
       try {
-        finish({ ok: true, value: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(
+          Buffer.concat(chunks),
+        );
+        finish({ ok: true, value: JSON.parse(text) });
       } catch {
         finish({ ok: false, status: 400, message: "invalid JSON request body" });
       }
@@ -557,7 +560,7 @@ export async function serveHttp(
             server: mcp,
             transport,
             abort,
-            lastUsedAt: Date.now(),
+            lastUsedAt: sessions.time(),
             activeRequests: 0,
             activePosts: 0,
             controlPosts: { activePosts: 0 },

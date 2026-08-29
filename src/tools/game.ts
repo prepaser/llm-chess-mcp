@@ -22,13 +22,7 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
       TOOL_OUTPUT_SCHEMAS.create_game,
       async ({ fen }, signal) => {
         signal.throwIfAborted();
-        let id: string;
-        try {
-          id = services.games.createGame(fen);
-        } catch (error) {
-          if (error instanceof ChessError) throw error;
-          throw new ChessError("INVALID_FEN", "invalid FEN");
-        }
+        const id = services.games.createGame(fen);
         return toolResult(
           TOOL_OUTPUT_SCHEMAS.create_game,
           { game_id: id, revision: 0 },

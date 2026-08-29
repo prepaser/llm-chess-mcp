@@ -14,6 +14,7 @@ import {
   mergeAnalysisInfo,
   parseAnalysisInfo,
 } from "../src/engines/stockfish-info.js";
+import { ChessError } from "../src/errors.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -808,7 +809,13 @@ test("queue capacity fails fast", async () => {
   });
 
   const pending = stockfish.analyze("first", 1, 1);
-  await assert.rejects(stockfish.analyze("second", 1, 1), /queue full/);
+  await assert.rejects(
+    stockfish.analyze("second", 1, 1),
+    (error: unknown) =>
+      error instanceof ChessError &&
+      error.code === "SERVER_BUSY" &&
+      error.message === "stockfish queue full",
+  );
   const pendingOutcome = pending.catch((error: unknown) => error);
   await stockfish.quit();
   assert.match(String(await pendingOutcome), /stockfish quit/);
@@ -933,7 +940,13 @@ test("cancelled queued requests are removed instead of accumulating behind activ
   }
 
   const queued = stockfish.analyze("queued", 1, 1);
-  await assert.rejects(stockfish.analyze("overflow", 1, 1), /queue full/);
+  await assert.rejects(
+    stockfish.analyze("overflow", 1, 1),
+    (error: unknown) =>
+      error instanceof ChessError &&
+      error.code === "SERVER_BUSY" &&
+      error.message === "stockfish queue full",
+  );
   assert.equal(
     (stockfish as unknown as { queue: unknown[] }).queue.length,
     1,
@@ -1102,6 +1115,48 @@ test("quit drains old work before starting a new generation", async () => {
   assert.equal(initCalls, 2);
 });
 
+test("quit publishes its promise before synchronous engine reentry", async () => {
+  let analysisStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    analysisStarted = resolve;
+  });
+  let innerQuit!: Promise<void>;
+  let reentered!: Promise<unknown>;
+  let stopped = false;
+  let stockfish!: Stockfish;
+  const current = engine((current, command) => {
+    if (command === "uci") {
+      queueMicrotask(() => current.listener?.("uciok"));
+    } else if (command === "isready") {
+      queueMicrotask(() => current.listener?.("readyok"));
+    } else if (command.startsWith("go depth ")) {
+      analysisStarted();
+    } else if (command === "stop" && !stopped) {
+      stopped = true;
+      innerQuit = stockfish.quit();
+      reentered = stockfish
+        .analyze("reentered", 1, 1)
+        .then(() => null, (error: unknown) => error);
+      queueMicrotask(() => current.listener?.("bestmove e2e4"));
+    }
+  });
+  stockfish = new Stockfish({
+    init: initializer([current]),
+    timeouts: { init: 50, handshake: 50, analyze: 100, stopGrace: 10 },
+  });
+
+  const active = stockfish.analyze("active", 1, 1);
+  const activeOutcome = active.then(() => null, (error: unknown) => error);
+  await started;
+  const outerQuit = stockfish.quit();
+
+  assert.equal(innerQuit, outerQuit);
+  await outerQuit;
+  assert.match(String(await activeOutcome), /stockfish quit/);
+  assert.match(String(await reentered), /stockfish shutting down/);
+  assert.equal(current.commands.includes("position fen reentered"), false);
+});
+
 test(
   "real lite-single quit stops active search without leaking stdout",
   { timeout: 15_000 },
@@ -1179,6 +1234,76 @@ test(
         pv: [],
       },
     ]);
+  },
+);
+
+test(
+  "real Stockfish restarts release only their process listeners",
+  { timeout: 20_000 },
+  async () => {
+    const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+    const source = `
+      import { Stockfish } from ${JSON.stringify(moduleUrl)};
+      const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+      const warnings = [];
+      const beforeUncaught = () => {};
+      const beforeUnhandled = () => {};
+      const afterUncaught = () => {};
+      const afterUnhandled = () => {};
+      process.on("warning", (warning) => warnings.push(warning.name));
+      process.on("uncaughtException", beforeUncaught);
+      process.on("unhandledRejection", beforeUnhandled);
+
+      for (let index = 0; index < 12; index++) {
+        const stockfish = new Stockfish({
+          flavor: "lite-single",
+          timeouts: { init: 5000, handshake: 5000, analyze: 5000, stopGrace: 500 },
+        });
+        await stockfish.analyze(fen, 1, 1);
+        if (index === 0) {
+          process.on("uncaughtException", afterUncaught);
+          process.on("unhandledRejection", afterUnhandled);
+          const engine = stockfish.session.engine;
+          const terminate = engine.terminate.bind(engine);
+          engine.terminate = () => {
+            terminate();
+            throw new Error("termination wrapper failed");
+          };
+        }
+        await stockfish.quit();
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      process.stdout.write(JSON.stringify({
+        uncaught: process.listenerCount("uncaughtException"),
+        unhandled: process.listenerCount("unhandledRejection"),
+        keptUncaught:
+          process.listeners("uncaughtException").includes(beforeUncaught) &&
+          process.listeners("uncaughtException").includes(afterUncaught),
+        keptUnhandled:
+          process.listeners("unhandledRejection").includes(beforeUnhandled) &&
+          process.listeners("unhandledRejection").includes(afterUnhandled),
+        warnings,
+      }));
+    `;
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", source],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 15_000 },
+    );
+    const result = JSON.parse(stdout) as {
+      uncaught: number;
+      unhandled: number;
+      keptUncaught: boolean;
+      keptUnhandled: boolean;
+      warnings: string[];
+    };
+    assert.deepEqual(result, {
+      uncaught: 2,
+      unhandled: 2,
+      keptUncaught: true,
+      keptUnhandled: true,
+      warnings: [],
+    });
   },
 );
 

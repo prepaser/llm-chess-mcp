@@ -599,6 +599,23 @@ test("handler failures retain structured error envelopes", async (t) => {
   assert.equal(internal.message, "internal tool error");
   context.faults.analysis = false;
 
+  context.services.analyze = async () => [
+    {
+      multipv: 1,
+      scoreCp: Number.NaN,
+      scoreMate: null,
+      wdl: null,
+      pv: [],
+    },
+  ];
+  const invalidOutput = await errorEnvelope(
+    context.client,
+    "position_analyze",
+    { game_id: gameId },
+    "INTERNAL",
+  );
+  assert.equal(invalidOutput.message, "internal tool error");
+
   context.faults.explorer = "rate_limited";
   await errorEnvelope(
     context.client,
@@ -621,6 +638,23 @@ test("handler failures retain structured error envelopes", async (t) => {
   assert.equal(invalidInput.isError, true);
   assert.equal(invalidInput.structuredContent, undefined);
   assert.match(text(invalidInput), /^Input validation error:/);
+});
+
+test("create_game does not misclassify operational failures as invalid FEN", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    await context.client.close();
+    await context.server.close();
+  });
+  context.services.games = new GameStore({ clock: () => Number.NaN });
+
+  const error = await errorEnvelope(
+    context.client,
+    "create_game",
+    {},
+    "INTERNAL",
+  );
+  assert.equal(error.message, "internal tool error");
 });
 
 test("candidate payload keeps the original position when injected computation mutates its chess", async (t) => {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { Chess } from "chess.js";
 import type { Move } from "chess.js";
 import {
@@ -12,6 +13,11 @@ import type { GameRecord } from "./domain.js";
 
 export const MAX_GAMES = 1_000;
 export const GAME_TTL_MS = 60 * 60 * 1_000;
+
+function monotonicClock(): () => number {
+  const origin = Date.now() - performance.now();
+  return () => origin + performance.now();
+}
 
 export interface GameStoreOptions {
   maxGames?: number;
@@ -37,7 +43,7 @@ export class GameStore {
   constructor(options: GameStoreOptions = {}) {
     this.maxGames = options.maxGames ?? MAX_GAMES;
     this.idleTtlMs = options.idleTtlMs ?? GAME_TTL_MS;
-    this.clock = options.clock ?? Date.now;
+    this.clock = options.clock ?? monotonicClock();
     this.createId = options.createId ?? randomUUID;
 
     if (!Number.isInteger(this.maxGames) || this.maxGames < 1) {
@@ -49,10 +55,15 @@ export class GameStore {
   }
 
   cleanupGames(now?: number): number {
-    const current = this.validateClockTime(now ?? this.clock());
+    const current =
+      now === undefined ? this.clockTime() : this.validateCleanupTime(now);
+    return this.cleanupGamesAt(current);
+  }
+
+  private cleanupGamesAt(now: number): number {
     let removed = 0;
     for (const [id, game] of this.games) {
-      if (!this.isExpired(game, current)) continue;
+      if (!this.isExpired(game, now)) continue;
       this.games.delete(id);
       removed += 1;
     }
@@ -60,15 +71,22 @@ export class GameStore {
   }
 
   createGame(fen?: string): string {
-    if (fen !== undefined) assertSafeFenCounters(fen);
-    const chess = fen === undefined ? new Chess() : new Chess(fen);
+    if (fen === undefined) return this.createGameFromChess(new Chess());
+
+    assertSafeFenCounters(fen);
+    let chess: Chess;
+    try {
+      chess = new Chess(fen);
+    } catch {
+      throw new ChessError("INVALID_FEN", "invalid FEN");
+    }
     return this.createGameFromChess(chess);
   }
 
   createGameFromChess(chess: Chess): string {
     assertLegalPosition(chess);
     const now = this.clockTime();
-    this.cleanupGames(now);
+    this.cleanupGamesAt(now);
     if (this.games.size >= this.maxGames) {
       throw new ChessError(
         "GAME_LIMIT_REACHED",
@@ -152,16 +170,27 @@ export class GameStore {
     return this.validateClockTime(this.clock());
   }
 
+  private validateCleanupTime(now: number): number {
+    this.assertSafeClockTime(now);
+    if (this.lastClockTime !== undefined && now < this.lastClockTime) {
+      throw new RangeError("cleanup time must not precede the current clock");
+    }
+    return now;
+  }
+
   private validateClockTime(now: number): number {
-    if (
-      !Number.isFinite(now) ||
-      Math.abs(now) > Number.MAX_SAFE_INTEGER ||
-      (this.lastClockTime !== undefined && now < this.lastClockTime)
-    ) {
+    this.assertSafeClockTime(now);
+    if (this.lastClockTime !== undefined && now < this.lastClockTime) {
       throw new RangeError("clock must return finite, safe, monotonic time");
     }
     this.lastClockTime = now;
     return now;
+  }
+
+  private assertSafeClockTime(now: number): void {
+    if (!Number.isFinite(now) || Math.abs(now) > Number.MAX_SAFE_INTEGER) {
+      throw new RangeError("clock must return finite, safe, monotonic time");
+    }
   }
 }
 

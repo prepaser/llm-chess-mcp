@@ -53,6 +53,16 @@ function nonKingMaterial(chess: Chess, color: Color): number {
   );
 }
 
+function clonedChess(chess: Chess): Chess {
+  const clone = structuredClone(chess) as Chess;
+  Object.setPrototypeOf(clone, Object.getPrototypeOf(chess));
+  return clone;
+}
+
+function exactFen(chess: Chess): string {
+  return chess.fen({ forceEnpassantSquare: true });
+}
+
 function hasPiece(
   chess: Chess,
   square: Square,
@@ -200,13 +210,8 @@ export function assertLegalPosition(chess: Chess): void {
     assertCastlingPosition(chess, color);
 
     const opponent: Color = color === "w" ? "b" : "w";
-    const opponentPawns = chess.findPiece({ type: "p", color: opponent }).length;
     const missingOpponentMaterial = 15 - nonKingMaterial(chess, opponent);
-    const possibleOpponentPromotions = 8 - opponentPawns;
-    if (
-      minimumPawnCaptures(chess, color) >
-      missingOpponentMaterial + possibleOpponentPromotions
-    ) {
+    if (minimumPawnCaptures(chess, color) > missingOpponentMaterial) {
       throw new ChessError(
         "INVALID_FEN",
         "FEN pawn files require more captures than opposing material allows",
@@ -225,23 +230,107 @@ export function assertLegalPosition(chess: Chess): void {
       "FEN cannot leave the side that just moved in check",
     );
   }
+
+  const king = chess.findPiece({ type: "k", color: turn })[0];
+  if (king) {
+    const checkers = chess.attackers(king, previous);
+    const leapers = checkers.filter((square) => {
+      const type = chess.get(square)?.type;
+      return type === "k" || type === "n" || type === "p";
+    });
+    if (checkers.length > 2 || leapers.length > 1) {
+      throw new ChessError(
+        "INVALID_FEN",
+        "FEN contains an impossible check topology",
+      );
+    }
+  }
+}
+
+function expectedInitialFen(
+  headers: readonly (readonly [string, string])[],
+): string {
+  const values = new Map<string, string>();
+  for (const [name, value] of headers) {
+    const key = name.toLowerCase();
+    if (values.has(key)) {
+      throw new ChessError(
+        "INVALID_PGN",
+        `PGN must not repeat ${name} headers`,
+      );
+    }
+    values.set(key, value);
+  }
+
+  const setup = values.get("setup");
+  const fen = values.get("fen");
+  if (setup !== undefined && setup !== "0" && setup !== "1") {
+    throw new ChessError("INVALID_PGN", "PGN SetUp must be 0 or 1");
+  }
+  if ((setup === "1") !== (fen !== undefined)) {
+    throw new ChessError(
+      "INVALID_PGN",
+      "PGN SetUp 1 and FEN headers must appear together",
+    );
+  }
+  if (fen === undefined) return exactFen(new Chess());
+
+  assertSafeFenCounters(fen);
+  let initial: Chess;
+  try {
+    initial = new Chess(fen);
+  } catch {
+    throw new ChessError("INVALID_FEN", "invalid FEN");
+  }
+  assertLegalPosition(initial);
+  return exactFen(initial);
+}
+
+function validatedHistory(chess: Chess): {
+  history: Move[];
+  initialFen: string;
+  shadow: Chess;
+  sourceHeaders: [string, string][];
+} {
+  const sourceFen = exactFen(chess);
+  const sourceHeaders = Object.entries(chess.getHeaders());
+  const shadow = clonedChess(chess);
+  const history = shadow.history({ verbose: true });
+  if (history.some((move) => move.from === move.to)) {
+    throw new ChessError("INVALID_PGN", "null moves are not supported");
+  }
+  if (exactFen(shadow) !== sourceFen) {
+    throw new ChessError(
+      "INVALID_FEN",
+      "current position does not match move history",
+    );
+  }
+
+  const initial = clonedChess(chess);
+  while (initial.undo()) {}
+  const initialFen = exactFen(initial);
+  if (initialFen !== expectedInitialFen(sourceHeaders)) {
+    throw new ChessError(
+      "INVALID_PGN",
+      "move history does not match PGN setup headers",
+    );
+  }
+  return { history, initialFen, shadow, sourceHeaders };
 }
 
 export function snapshotChess(chess: Chess): Chess {
   assertLegalPosition(chess);
-  const history = chess.history({ verbose: true });
+  const { history, initialFen, shadow, sourceHeaders } = validatedHistory(chess);
   assertPgnPlyLimit(history.length);
-  const initialFen = history[0]?.before ?? chess.fen();
   assertSafeFenCounters(initialFen);
   const snapshot = new Chess(initialFen);
   assertLegalPosition(snapshot);
   const comments = new Map(
-    chess.getComments().map(({ fen, comment }) => [
+    shadow.getComments().map(({ fen, comment }) => [
       fen,
       /[{}]/.test(comment) ? comment.replace(/[\r\n]+/g, " ") : comment,
     ]),
   );
-  const sourceHeaders = Object.entries(chess.getHeaders());
   const unsafeComments = [...comments.values()].some((comment) => /[{}]/.test(comment));
   let markerPrefix = "\uE000";
   if (unsafeComments) {

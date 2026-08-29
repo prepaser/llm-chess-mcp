@@ -48,7 +48,7 @@ export function safeHandler<
   OutputSchema extends z.ZodType,
 >(
   inputSchema: InputSchema,
-  _outputSchema: OutputSchema,
+  outputSchema: OutputSchema,
   handler: (
     args: z.output<InputSchema>,
     signal: AbortSignal,
@@ -61,11 +61,23 @@ export function safeHandler<
     const signal = context?.mcpReq.signal ?? UNABORTABLE_SIGNAL;
     try {
       signal.throwIfAborted();
-      if (context) return await handler(args as z.output<InputSchema>, signal);
-
-      const parsed = inputSchema.safeParse(args);
-      if (!parsed.success) return toolError("INVALID_INPUT", "invalid tool input");
-      return await handler(parsed.data, signal);
+      let result: ToolResult<SchemaOutput<OutputSchema>>;
+      if (context) {
+        result = await handler(args as z.output<InputSchema>, signal);
+      } else {
+        const parsed = inputSchema.safeParse(args);
+        if (!parsed.success) {
+          return toolError("INVALID_INPUT", "invalid tool input");
+        }
+        result = await handler(parsed.data, signal);
+      }
+      if (result.isError) return result;
+      const parsed = await outputSchema.safeParseAsync(result.structuredContent);
+      if (!parsed.success) throw new Error("invalid tool output");
+      return {
+        ...result,
+        structuredContent: parsed.data as SchemaOutput<OutputSchema>,
+      };
     } catch (error) {
       if (signal.aborted) {
         signal.throwIfAborted();

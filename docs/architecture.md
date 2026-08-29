@@ -133,18 +133,19 @@ before deciding what to do. Proxy timeouts are client-delivery limits, not proof
 that backend work was cancelled.
 
 HTTP admission is bounded before SDK dispatch. POST bodies are parsed once with
-a 2 MiB byte cap, initialization reserves one of 64 session slots atomically,
-and only 16 normal POSTs process-wide or two per session may run concurrently.
+a 2 MiB byte cap; after parsing, only 16 normal POST dispatches process-wide or
+two per session may run concurrently. Initialization then reserves one of 64
+session slots atomically.
 A separately bounded control lane admits cancellation-only notifications when
 those slots are saturated. The same normal limits independently bound downstream
 compute and network jobs. A job retains its slot after the HTTP response or
 socket closes and releases it only when the service promise settles. Sessions
-with no active request expire after 30 minutes without deleting their
-process-shared games. Open GET SSE streams keep their session active without
-consuming POST permits. Header, upload, connection, socket, and keep-alive
-limits are enforced by the Node listener.
-Deleting a session also aborts any body reader that has not reached SDK
-dispatch, releasing its POST permit immediately.
+with no active request expire after 30 minutes on a monotonic clock; expiry does
+not delete their process-shared games. Open GET SSE streams keep their session
+active without consuming POST permits. Header, upload, connection, socket, and
+keep-alive limits are enforced by the Node listener. Partial uploads consume
+connection and body limits but no POST dispatch permit. Deleting a session also
+aborts any body reader that has not reached SDK dispatch.
 `bodyTimeoutMs` bounds body upload only; engine and network work use their own
 timeouts and MCP cancellation rather than a transport-wide request deadline.
 Session reservations/expiry, POST admission, and downstream work admission are
@@ -181,15 +182,20 @@ waits for the dependency callback before sending UCI `quit` and terminating the
 worker. Terminal depth-zero score records without an explicit MultiPV rank are
 reported as rank one rather than discarded.
 
-Maia runs in-process with the bundled ONNX model (5M by default). The native
-addon and inference session are loaded lazily and the session is shared after
-successful creation. For each snapshot it
+Maia runs in a process-local pool of dedicated workers with the bundled ONNX
+model (5M by default). Worker inference sessions are loaded lazily and reused
+after successful creation. At most two inferences run concurrently, with 32
+more waiting in a bounded queue; cancellation removes queued work immediately.
+For each snapshot it
 tokenizes position history, supplies both Elo inputs, masks logits to legal
 moves, mirrors black-to-move moves for the model vocabulary, and normalizes the
 remaining logits. The output is human move likelihood, never an evaluation.
-ONNX Runtime has no request cancellation API, so cancellation is checked before
-and after native inference and a completed cancelled result is discarded
-without releasing the shared session.
+ONNX Runtime has no safe cooperative cancellation API. Active cancellation or
+the 30-second deadline marks the result as failed; once the native call returns,
+the idle worker and its session are retired. Queued cancellation removes the
+request before dispatch. Idle workers are unreferenced, and application shutdown
+waits for active native calls before terminating the pool and permitting lazy
+restart.
 
 Lichess is optional and token-gated. The explorer validates speed/rating filters
 locally and forbids filters for `masters`. Each request has a five-second
