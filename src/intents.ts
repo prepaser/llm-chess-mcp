@@ -58,11 +58,6 @@ export interface LichessOpts {
   ratings: number[];
 }
 
-function toSan(chess: Chess, uci: string): string {
-  const m = chess.moves({ verbose: true }).find((x) => x.lan === uci);
-  return m ? m.san : uci;
-}
-
 function objectiveFromLine(
   line: SfLine | undefined,
   turn: "w" | "b",
@@ -98,6 +93,13 @@ function objectiveFromLine(
 export interface CandidateSet {
   candidates: Candidate[];
   moveSensitivity: MoveSensitivity;
+}
+
+export function emptyCandidateSet(): CandidateSet {
+  return {
+    candidates: [],
+    moveSensitivity: { level: "low", topMoveSpreadCp: null },
+  };
 }
 
 export type ComputeCandidates = (
@@ -137,30 +139,30 @@ export interface CandidateComputationDependencies {
 
 export type LichessCandidateData =
   | {
-      status: "available" | "no_data";
+      status: "available";
       totalGames: number;
-      moves: LichessMove[];
+      moves: readonly LichessMove[];
+    }
+  | {
+      status: "no_data";
+      totalGames: 0;
+      moves: readonly [];
     }
   | {
       status: "unavailable";
       reason: ExplorerErrorKind;
       totalGames: null;
-      moves: LichessMove[];
+      moves: readonly [];
     }
-  | { status: "disabled"; totalGames: null; moves: LichessMove[] };
+  | { status: "disabled"; totalGames: null; moves: readonly [] };
 
-export function explorerCandidateData(
-  result: ExplorerResult,
-): LichessCandidateData {
-  const totals = [result.white, result.draws, result.black] as const;
+function validateExplorerResult(result: ExplorerResult): void {
   let white = 0;
   let draws = 0;
   let black = 0;
   const ucis = new Set<string>();
   for (const move of result.moves) {
-    if (ucis.has(move.uci)) {
-      throw new RangeError("duplicate chess move");
-    }
+    if (ucis.has(move.uci)) throw new RangeError("duplicate chess move");
     ucis.add(move.uci);
     assertLichessMove(move);
     white = safeSum([white, move.white]);
@@ -170,11 +172,17 @@ export function explorerCandidateData(
   if (white > result.white || draws > result.draws || black > result.black) {
     throw new RangeError("chess move totals exceed explorer totals");
   }
-  return {
-    status: result.moves.length > 0 ? "available" : "no_data",
-    totalGames: safeSum(totals),
-    moves: result.moves,
-  };
+}
+
+export function explorerCandidateData(
+  result: ExplorerResult,
+): LichessCandidateData {
+  const totals = [result.white, result.draws, result.black] as const;
+  validateExplorerResult(result);
+  const totalGames = safeSum(totals);
+  return totalGames > 0
+    ? { status: "available", totalGames, moves: result.moves }
+    : { status: "no_data", totalGames: 0, moves: [] };
 }
 
 export function candidateSetFromData(
@@ -184,31 +192,27 @@ export function candidateSetFromData(
   maiaMoves: Maia3Move[],
   lichessResult: LichessCandidateData,
 ): CandidateSet {
-  if (
-    (lichessResult.status === "disabled" ||
-      lichessResult.status === "unavailable") &&
-    lichessResult.moves.length > 0
-  ) {
+  if (lichessResult.status === "available") {
+    if (lichessResult.totalGames < 1 && lichessResult.moves.length === 0) {
+      throw new RangeError("available explorer data must contain games");
+    }
+  } else if (lichessResult.moves.length > 0) {
     throw new RangeError(
       `${lichessResult.status} explorer data cannot contain moves`,
     );
-  }
-  if (
-    (lichessResult.status === "available") !==
-    (lichessResult.moves.length > 0)
+  } else if (
+    lichessResult.status === "no_data" &&
+    lichessResult.totalGames !== 0
   ) {
     throw new RangeError(
-      `${lichessResult.status} explorer data has inconsistent moves`,
+      "no_data explorer data cannot contain games",
     );
   }
   if (chess.isGameOver()) {
-    return {
-      candidates: [],
-      moveSensitivity: { level: "low", topMoveSpreadCp: null },
-    };
+    return emptyCandidateSet();
   }
-  const legalUcis = new Set(
-    chess.moves({ verbose: true }).map((move) => move.lan),
+  const legalMoves = new Map(
+    chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
   );
   const turn = chess.turn();
   const maiaByUci = new Map<string, number>();
@@ -219,7 +223,7 @@ export function candidateSetFromData(
     if (!Number.isFinite(move.prob) || move.prob < 0 || move.prob > 1) {
       throw new RangeError("Maia move probability must be between 0 and 1");
     }
-    if (!legalUcis.has(move.uci)) continue;
+    if (!legalMoves.has(move.uci)) continue;
     maiaByUci.set(move.uci, move.prob);
   }
   const sfByUci = new Map<
@@ -229,7 +233,7 @@ export function candidateSetFromData(
   for (const line of sfLines) {
     const uci = line.pv[0];
     const evaluation = toEval(line);
-    if (uci !== undefined && legalUcis.has(uci) && evaluation !== null) {
+    if (uci !== undefined && legalMoves.has(uci) && evaluation !== null) {
       if (sfByUci.has(uci)) throw new RangeError("duplicate Stockfish move");
       sfByUci.set(uci, { line, evaluation });
     }
@@ -247,7 +251,7 @@ export function candidateSetFromData(
     if (move.count > totalGames) {
       throw new RangeError("chess move count exceeds explorer total");
     }
-    if (!legalUcis.has(move.uci)) continue;
+    if (!legalMoves.has(move.uci)) continue;
     lichessByUci.set(move.uci, move);
   }
 
@@ -275,14 +279,7 @@ export function candidateSetFromData(
         black: lichess.black,
         averageRating: lichess.averageRating,
       };
-      opening =
-        lichessResult.status === "unavailable"
-          ? {
-              status: lichessResult.status,
-              reason: lichessResult.reason,
-              ...stats,
-            }
-          : { status: lichessResult.status, ...stats };
+      opening = { status: "available", ...stats };
     } else {
       const empty = {
         games: null,
@@ -304,7 +301,7 @@ export function candidateSetFromData(
 
     candidates.push({
       uci,
-      san: toSan(chess, uci),
+      san: legalMoves.get(uci)!,
       objective: objectiveFromLine(sf, turn, bestCp),
       human: {
         maia3Prob: maiaByUci.get(uci) ?? null,
@@ -337,10 +334,7 @@ export function createCandidateComputation(
   ) => {
     signal?.throwIfAborted();
     if (chess.isGameOver()) {
-      return {
-        candidates: [],
-        moveSensitivity: { level: "low", topMoveSpreadCp: null },
-      };
+      return emptyCandidateSet();
     }
     const controller = new AbortController();
     const workSignal = signal

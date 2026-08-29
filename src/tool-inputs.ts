@@ -26,65 +26,63 @@ const lichessRatingsSchema = z
     description: "Rating filters must be unique; duplicates are not allowed.",
   });
 
-function mastersFilterContract(
-  db: "db" | "lichess_db",
-  speeds: "speeds" | "lichess_speeds",
-  ratings: "ratings" | "lichess_ratings",
-) {
-  return {
-    description: `When ${db} is masters, ${speeds} and ${ratings} must both be empty.`,
-    allOf: [
-      {
-        if: { properties: { [db]: { const: "masters" } }, required: [db] },
-        then: {
-          properties: {
-            [speeds]: { maxItems: 0 },
-            [ratings]: { maxItems: 0 },
-          },
-        },
-      },
-    ],
-  };
-}
-
-const explorerFilterContract = mastersFilterContract("db", "speeds", "ratings");
-const candidateExplorerFilterContract = mastersFilterContract(
-  "lichess_db",
-  "lichess_speeds",
-  "lichess_ratings",
-);
-
 const explorerFilterFields = {
   db: z.enum(["lichess", "masters"]),
   speeds: lichessSpeedsSchema.default([]),
   ratings: lichessRatingsSchema.default([]),
 };
 
-type ExplorerFilterValues = {
-  db: "lichess" | "masters";
-  speeds: string[];
-  ratings: number[];
+type ExplorerFilterKeys = {
+  db: string;
+  speeds: string;
+  ratings: string;
 };
 
-function addExplorerFilterIssue(
-  filters: ExplorerFilterValues,
-  ctx: z.RefinementCtx,
-  path: "db" | "lichess_db",
-): void {
-  if (filters.db !== "masters" || (!filters.speeds.length && !filters.ratings.length)) {
-    return;
-  }
-  ctx.addIssue({
-    code: "custom",
-    message: "masters does not support speed or rating filters",
-    path: [path],
-  });
+function strictExplorerInputSchema<const Fields extends z.ZodRawShape>(
+  fields: Fields,
+  keys: ExplorerFilterKeys,
+) {
+  const { db, speeds, ratings } = keys;
+  return z
+    .strictObject(fields)
+    .superRefine((input, ctx) => {
+      const filters = input as Record<string, unknown>;
+      const selectedDb = filters[db];
+      const speedValues = filters[speeds];
+      const ratingValues = filters[ratings];
+      if (
+        selectedDb !== "masters" ||
+        (!Array.isArray(speedValues) || speedValues.length === 0) &&
+          (!Array.isArray(ratingValues) || ratingValues.length === 0)
+      ) {
+        return;
+      }
+      ctx.addIssue({
+        code: "custom",
+        message: "masters does not support speed or rating filters",
+        path: [db],
+      });
+    })
+    .meta({
+      description: `When ${db} is masters, ${speeds} and ${ratings} must both be empty.`,
+      allOf: [
+        {
+          if: { properties: { [db]: { const: "masters" } }, required: [db] },
+          then: {
+            properties: {
+              [speeds]: { maxItems: 0 },
+              [ratings]: { maxItems: 0 },
+            },
+          },
+        },
+      ],
+    });
 }
 
-export const ExplorerFiltersSchema = z
-  .object(explorerFilterFields)
-  .superRefine((filters, ctx) => addExplorerFilterIssue(filters, ctx, "db"))
-  .meta(explorerFilterContract);
+export const ExplorerFiltersSchema = strictExplorerInputSchema(
+  explorerFilterFields,
+  { db: "db", speeds: "speeds", ratings: "ratings" },
+);
 
 export type ExplorerFilters = z.output<typeof ExplorerFiltersSchema>;
 
@@ -106,30 +104,30 @@ export function candidateExplorerFilters(input: {
   });
 }
 
-export const CreateGameInputSchema = z.object({ fen: z.string().optional() });
-export const GameIdInputSchema = z.object({ game_id: z.string() });
-export const GameStateInputSchema = z.object({
+export const CreateGameInputSchema = z.strictObject({ fen: z.string().optional() });
+export const GameIdInputSchema = z.strictObject({ game_id: z.string() });
+export const GameStateInputSchema = z.strictObject({
   game_id: z.string(),
   include_ascii: z.boolean().default(false),
 });
-export const GamePlayMoveInputSchema = z.object({
+export const GamePlayMoveInputSchema = z.strictObject({
   game_id: z.string(),
   move: z.string(),
   expected_revision: z.number().int().min(0),
 });
-export const PositionAnalyzeInputSchema = z.object({
+export const PositionAnalyzeInputSchema = z.strictObject({
   game_id: z.string(),
   analysis_level: z.enum(ANALYSIS_LEVELS).default("normal"),
   depth: z.number().int().min(1).max(30).optional(),
   multipv: z.number().int().min(1).max(10).optional(),
 });
-export const HumanMoveDistributionInputSchema = z.object({
+export const HumanMoveDistributionInputSchema = z.strictObject({
   game_id: z.string(),
   elo: z.number().int().min(600).max(2600).default(1500),
   oppo_elo: z.number().int().min(600).max(2600).optional(),
   top_n: z.number().int().min(1).max(20).default(5),
 });
-export const MoveEvaluateInputSchema = z.object({
+export const MoveEvaluateInputSchema = z.strictObject({
   game_id: z.string(),
   move: z.union([
     z.string(),
@@ -149,40 +147,42 @@ const candidateFields = {
   lichess_ratings: explorerFilterFields.ratings,
 };
 
-export const MoveCandidatesInputSchema = z
-  .object({
+export const MoveCandidatesInputSchema = strictExplorerInputSchema(
+  {
     ...candidateFields,
     maia_top_n: z.number().int().min(1).max(20).default(5),
-  })
-  .superRefine((value, ctx) => {
-    addExplorerFilterIssue(candidateExplorerFilters(value), ctx, "lichess_db");
-  })
-  .meta(candidateExplorerFilterContract);
+  },
+  {
+    db: "lichess_db",
+    speeds: "lichess_speeds",
+    ratings: "lichess_ratings",
+  },
+);
 
-export const MoveCandidatesByIntentInputSchema = z
-  .object({
+export const MoveCandidatesByIntentInputSchema = strictExplorerInputSchema(
+  {
     ...candidateFields,
     intent: z.enum(INTENTS),
     maia_top_n: z.number().int().min(1).max(20).default(10),
-  })
-  .superRefine((value, ctx) => {
-    addExplorerFilterIssue(candidateExplorerFilters(value), ctx, "lichess_db");
-  })
-  .meta(candidateExplorerFilterContract);
+  },
+  {
+    db: "lichess_db",
+    speeds: "lichess_speeds",
+    ratings: "lichess_ratings",
+  },
+);
 
-export const OpeningExplorerInputSchema = z
-  .object({
+export const OpeningExplorerInputSchema = strictExplorerInputSchema(
+  {
     game_id: z.string(),
     db: explorerFilterFields.db.default("lichess"),
     speeds: explorerFilterFields.speeds,
     ratings: explorerFilterFields.ratings,
-  })
-  .superRefine((value, ctx) => {
-    addExplorerFilterIssue(explorerFilters(value), ctx, "db");
-  })
-  .meta(explorerFilterContract);
+  },
+  { db: "db", speeds: "speeds", ratings: "ratings" },
+);
 
-export const GameImportPgnInputSchema = z.object({ pgn: z.string() });
+export const GameImportPgnInputSchema = z.strictObject({ pgn: z.string() });
 
 export const TOOL_INPUT_SCHEMAS = {
   create_game: CreateGameInputSchema,

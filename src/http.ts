@@ -105,11 +105,6 @@ function isLocalHost(host: string): boolean {
   );
 }
 
-function normalizeIpv4BindHost(host: string): string {
-  const canonical = canonicalHttpHostname(host);
-  return canonical && /^\d+(?:\.\d+){3}$/.test(canonical) ? canonical : host;
-}
-
 function jsonError(
   res: ServerResponse,
   status: number,
@@ -375,7 +370,8 @@ export async function serveHttp(
 ): Promise<HttpServerHandle> {
   const appServices = services ?? defaultAppServices;
   const ownsServices = services === undefined;
-  const host = normalizeIpv4BindHost(options.host ?? DEFAULT_HTTP_HOST);
+  const host = canonicalHttpHostname(options.host ?? DEFAULT_HTTP_HOST);
+  if (host === null) throw new Error("invalid HTTP bind host");
   const listenHost = bindHttpHost(host);
   const requestedPort = options.port ?? DEFAULT_HTTP_PORT;
   const path = options.path ?? DEFAULT_HTTP_PATH;
@@ -385,7 +381,7 @@ export async function serveHttp(
   const normalizedAllowedHosts = [
     ...(options.allowedHosts ?? (isLocalHost(host) ? LOCAL_HOSTS : [host])),
   ].map(canonicalHttpHostname);
-  if (!host || !Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65_535) {
+  if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65_535) {
     throw new Error("invalid HTTP listen address");
   }
   if (canonicalHttpPath(path) === null) {
@@ -450,18 +446,18 @@ export async function serveHttp(
     session: Session | undefined,
     req: IncomingMessage,
     res: ServerResponse,
+    body: unknown,
     work: () => Promise<void>,
-    saturatedWork?: (rejection: 429 | 503) => Promise<void>,
   ): Promise<void> => {
     const admission = postAdmission.tryAcquire(session);
     if (admission === 429 || admission === 503) {
-      if (saturatedWork) {
-        const controlAdmission = session
-          ? controlPostAdmission.tryAcquire(session.controlPosts)
-          : controlPostAdmission.tryAcquire();
+      if (session && isCancellationPostBody(body)) {
+        const controlAdmission = controlPostAdmission.tryAcquire(
+          session.controlPosts,
+        );
         if (typeof controlAdmission === "object") {
           try {
-            await saturatedWork(admission);
+            await work();
           } finally {
             controlAdmission.release();
           }
@@ -504,38 +500,16 @@ export async function serveHttp(
       return;
     }
     if (req.method === "POST") {
-      await withAdmittedPost(
-        session,
-        req,
-        res,
-        () =>
-          sessions.withActive(session, () =>
-            withParsedPostBody(
-              req,
-              res,
-              (body) => session.transport.handleRequest(req, res, body),
-              session.abort.signal,
+      await sessions.withActive(session, () =>
+        withParsedPostBody(
+          req,
+          res,
+          (body) =>
+            withAdmittedPost(session, req, res, body, () =>
+              session.transport.handleRequest(req, res, body),
             ),
-          ),
-        (rejection) =>
-          sessions.withActive(session, () =>
-            withParsedPostBody(
-              req,
-              res,
-              (body) => {
-                if (isCancellationPostBody(body)) {
-                  return session.transport.handleRequest(req, res, body);
-                }
-                if (rejection === 429) {
-                  closeWithError(req, res, 429, "MCP session request limit reached", { "retry-after": "1" });
-                } else {
-                  closeWithError(req, res, 503, "server request limit reached", { "retry-after": "1" });
-                }
-                return Promise.resolve();
-              },
-              session.abort.signal,
-            ),
-          ),
+          session.abort.signal,
+        ),
       );
       return;
     }
@@ -550,8 +524,8 @@ export async function serveHttp(
       closeWithError(req, res, 400, "MCP session initialization requires POST");
       return;
     }
-    await withAdmittedPost(undefined, req, res, () =>
-      withParsedPostBody(req, res, async (body) => {
+    await withParsedPostBody(req, res, (body) =>
+      withAdmittedPost(undefined, req, res, body, async () => {
         if (!isInitializeRequest(body)) {
           closeWithError(req, res, 400, "MCP session initialization required");
           return;

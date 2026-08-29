@@ -51,6 +51,11 @@ type Session = {
   invalidators: Set<(error: Error) => void>;
 };
 
+type InitAttempt = {
+  callbackCalled: boolean;
+  session: Session;
+};
+
 type AnalysisRequest = {
   cancelled: boolean;
   cancellation: Error | null;
@@ -188,6 +193,66 @@ export class Stockfish {
     }
   }
 
+  private disposeInitEngine(engine: StockfishEngine): void {
+    if (engine !== this.session?.engine) this.terminate(engine);
+  }
+
+  private adoptInitEngine(attempt: InitAttempt, engine: StockfishEngine): boolean {
+    const { session } = attempt;
+    if (this.session !== session || session.readySettled) {
+      this.disposeInitEngine(engine);
+      return false;
+    }
+    if (this.terminations.has(engine)) {
+      this.failSession(
+        session,
+        new Error("stockfish initializer reused a terminated engine"),
+      );
+      return false;
+    }
+
+    const replacedEngine = session.engine;
+    if (replacedEngine && replacedEngine !== engine) {
+      this.terminate(replacedEngine);
+      if (
+        this.session !== session ||
+        session.readySettled ||
+        session.engine !== replacedEngine
+      ) {
+        this.disposeInitEngine(engine);
+        return false;
+      }
+    }
+    session.engine = engine;
+    engine.listener = () => {};
+    return true;
+  }
+
+  private completeInit(
+    attempt: InitAttempt,
+    error: Error | null,
+    engine: StockfishEngine,
+  ): void {
+    attempt.callbackCalled = true;
+    const { session } = attempt;
+    if (!this.adoptInitEngine(attempt, engine)) return;
+    if (error) {
+      this.failSession(session, asError(error));
+      return;
+    }
+    if (session.initTimer) clearTimeout(session.initTimer);
+    session.initTimer = null;
+    this.handshake(session).then(
+      () => {
+        if (this.session !== session || session.readySettled) return;
+        session.readySettled = true;
+        session.resolve();
+      },
+      (handshakeError: unknown) =>
+        this.failSession(session, asError(handshakeError)),
+    );
+  }
+
   private init(): Promise<void> {
     if (this.session) return this.session.ready;
 
@@ -207,89 +272,24 @@ export class Stockfish {
       invalidators: new Set(),
     };
     this.session = session;
+    const attempt: InitAttempt = { callbackCalled: false, session };
     session.initTimer = setTimeout(
       () => this.failSession(session, new Error("stockfish init timeout")),
       this.timeouts.init,
     );
 
-    let callbackCalled = false;
     try {
       const selectedFlavor = resolveStockfishFlavor(
         this.configuredFlavor ?? process.env.STOCKFISH_FLAVOR,
       );
       const engine = (this.initEngine ?? loadStockfish())(
         selectedFlavor,
-        (error, initializedEngine) => {
-          callbackCalled = true;
-          if (this.session !== session) {
-            if (initializedEngine !== this.session?.engine) {
-              this.terminate(initializedEngine);
-            }
-            return;
-          }
-          if (session.readySettled) {
-            if (initializedEngine !== session.engine) this.terminate(initializedEngine);
-            return;
-          }
-          if (this.terminations.has(initializedEngine)) {
-            this.failSession(
-              session,
-              new Error("stockfish initializer reused a terminated engine"),
-            );
-            return;
-          }
-
-          const replacedEngine = session.engine;
-          if (replacedEngine && replacedEngine !== initializedEngine) {
-            this.terminate(replacedEngine);
-            if (
-              this.session !== session ||
-              session.readySettled ||
-              session.engine !== replacedEngine
-            ) {
-              if (initializedEngine !== this.session?.engine) {
-                this.terminate(initializedEngine);
-              }
-              return;
-            }
-          }
-          session.engine = initializedEngine;
-          if (error) {
-            this.failSession(session, asError(error));
-            return;
-          }
-          initializedEngine.listener = () => {};
-          if (session.initTimer) clearTimeout(session.initTimer);
-          session.initTimer = null;
-          this.handshake(session).then(
-            () => {
-              if (this.session !== session || session.readySettled) return;
-              session.readySettled = true;
-              session.resolve();
-            },
-            (handshakeError: unknown) =>
-              this.failSession(session, asError(handshakeError)),
-          );
-        },
+        (error, initializedEngine) =>
+          this.completeInit(attempt, error, initializedEngine),
       );
 
-      if (callbackCalled) {
-        if (engine !== session.engine && engine !== this.session?.engine) {
-          this.terminate(engine);
-        }
-      } else if (this.session === session && !session.readySettled) {
-        if (this.terminations.has(engine)) {
-          this.failSession(
-            session,
-            new Error("stockfish initializer reused a terminated engine"),
-          );
-        } else {
-          session.engine = engine;
-          engine.listener = () => {};
-        }
-      } else if (engine !== this.session?.engine) {
-        this.terminate(engine);
-      }
+      if (attempt.callbackCalled) this.disposeInitEngine(engine);
+      else this.adoptInitEngine(attempt, engine);
     } catch (error) {
       this.failSession(session, asError(error));
     }

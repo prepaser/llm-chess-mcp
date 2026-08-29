@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Chess } from "chess.js";
 import * as ort from "onnxruntime-node";
+import { ChessError } from "../src/errors.js";
 import {
   assertSessionContract,
   extractMoveLogits,
   humanMoveDistribution,
+  MaiaAdmission,
   softmax,
 } from "../src/maia3/inference.js";
 import { VOCAB_SIZE } from "../src/maia3/vocab.js";
@@ -81,6 +83,54 @@ test("validates move logits type and shape", () => {
   );
 });
 
+test("bounds Maia inference and removes queued aborts immediately", async () => {
+  const admission = new MaiaAdmission(1, 1);
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started: string[] = [];
+  const first = admission.run(undefined, async () => {
+    started.push("first");
+    await blocked;
+    return 1;
+  });
+  await Promise.resolve();
+
+  const controller = new AbortController();
+  const second = admission.run(controller.signal, async () => {
+    started.push("second");
+    return 2;
+  });
+  assert.equal(admission.active, 1);
+  assert.equal(admission.pending, 1);
+  await assert.rejects(admission.run(undefined, async () => 3), (error) => {
+    return (
+      error instanceof ChessError &&
+      error.code === "SERVER_BUSY" &&
+      error.message === "Maia3 inference queue full"
+    );
+  });
+
+  const cause = new Error("queued inference cancelled");
+  controller.abort(cause);
+  await assert.rejects(second, (error: unknown) => error === cause);
+  assert.equal(admission.pending, 0);
+
+  const third = admission.run(undefined, async () => {
+    started.push("third");
+    return 3;
+  });
+  assert.equal(admission.pending, 1);
+  release();
+  assert.equal(await first, 1);
+  assert.equal(await third, 3);
+  assert.deepEqual(started, ["first", "third"]);
+
+  assert.throws(() => new MaiaAdmission(0, 0), /maxConcurrency/);
+  assert.throws(() => new MaiaAdmission(1, -1), /maxQueue/);
+});
+
 test("aborts before loading the model", async () => {
   const previous = process.env.MAIA3_MODEL;
   process.env.MAIA3_MODEL = "invalid";
@@ -120,6 +170,15 @@ test("preserves bundled model inference parity", async () => {
     if (previous === undefined) delete process.env.MAIA3_MODEL;
     else process.env.MAIA3_MODEL = previous;
   }
+});
+
+test("captures one immutable position before asynchronous inference", async () => {
+  const expected = await humanMoveDistribution(new Chess(), 1500, 1500, 5);
+  const mutable = new Chess();
+  const pending = humanMoveDistribution(mutable, 1500, 1500, 5);
+  mutable.move("e4");
+
+  assert.deepEqual(await pending, expected);
 });
 
 test("skips model loading for terminal positions with legal moves", async () => {

@@ -596,7 +596,7 @@ test("handler failures retain structured error envelopes", async (t) => {
     { game_id: gameId },
     "INTERNAL",
   );
-  assert.equal(internal.message, "fake analysis failure");
+  assert.equal(internal.message, "internal tool error");
   context.faults.analysis = false;
 
   context.faults.explorer = "rate_limited";

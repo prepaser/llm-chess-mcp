@@ -5,6 +5,7 @@ import { ExplorerError } from "./explorer.js";
 import type * as z from "zod/v4";
 
 const UNABORTABLE_SIGNAL = new AbortController().signal;
+const INTERNAL_ERROR_MESSAGE = "internal tool error";
 
 export type ToolResult<StructuredContent extends Record<string, unknown> = Record<string, unknown>> = {
   content: { type: "text"; text: string }[];
@@ -74,8 +75,7 @@ export function safeHandler<
       if (error instanceof ExplorerError) {
         return toolError(explorerErrorCode(error.kind), error.message);
       }
-      const message = error instanceof Error ? error.message : String(error);
-      return toolError("INTERNAL", message);
+      return toolError("INTERNAL", INTERNAL_ERROR_MESSAGE);
     }
   };
 }

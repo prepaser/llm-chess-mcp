@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ServerContext } from "@modelcontextprotocol/server";
 import { z } from "zod/v4";
+import { ChessError } from "../src/errors.js";
+import { ExplorerError } from "../src/explorer.js";
 import { safeHandler, toolError, toolResult } from "../src/tool-result.js";
 
 function context(signal: AbortSignal): ServerContext {
@@ -63,6 +65,41 @@ test("safeHandler parses direct calls and rejects invalid input", async () => {
   );
   assert.deepEqual(await handler({ value: "nope" }), toolError("INVALID_INPUT", "invalid tool input"));
   assert.equal(calls, 2);
+});
+
+test("safeHandler masks unexpected failures", async () => {
+  const outputSchema = z.strictObject({});
+  const handler = safeHandler(z.strictObject({}), outputSchema, async () => {
+    throw new Error("database password: exposed");
+  });
+
+  assert.deepEqual(
+    await handler({}),
+    toolError("INTERNAL", "internal tool error"),
+  );
+});
+
+test("safeHandler preserves known domain and explorer errors", async () => {
+  const outputSchema = z.strictObject({});
+  const cases = [
+    [
+      new ChessError("GAME_NOT_FOUND", "game not found: missing"),
+      "GAME_NOT_FOUND",
+      "game not found: missing",
+    ],
+    [
+      new ExplorerError("rate_limited", "Lichess rate limited the request"),
+      "LICHESS_RATE_LIMITED",
+      "Lichess rate limited the request",
+    ],
+  ] as const;
+
+  for (const [error, code, message] of cases) {
+    const handler = safeHandler(z.strictObject({}), outputSchema, async () => {
+      throw error;
+    });
+    assert.deepEqual(await handler({}), toolError(code, message));
+  }
 });
 
 test("safeHandler rejects pre-aborted requests without running the handler", async () => {

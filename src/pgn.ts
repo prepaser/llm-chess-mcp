@@ -5,10 +5,16 @@ import {
   snapshotChess,
 } from "./chess-copy.js";
 import { ChessError } from "./errors.js";
+import {
+  assertPgnPlyLimit,
+  canonicalPgnHeaderName,
+  MAX_PGN_PLIES,
+  replacePgnHeaders,
+} from "./pgn-shared.js";
 
 export const MAX_PGN_BYTES = 1024 * 1024;
 export const MAX_PGN_HEADERS = 256;
-export const MAX_PGN_PLIES = 4096;
+export { MAX_PGN_PLIES } from "./pgn-shared.js";
 export const MAX_PGN_TOKEN_BYTES = 16 * 1024;
 const MAX_PGN_ELEMENTS = MAX_PGN_PLIES * 8;
 
@@ -17,20 +23,6 @@ const PGN_RESULTS = ["1-0", "0-1", "1/2-1/2", "*"] as const;
 type PgnResult = (typeof PGN_RESULTS)[number];
 
 type PgnHeader = { name: string; value: string };
-
-const CANONICAL_HEADERS = new Map(
-  [
-    "Event",
-    "Site",
-    "Date",
-    "Round",
-    "White",
-    "Black",
-    "Result",
-    "SetUp",
-    "FEN",
-  ].map((name) => [name.toLowerCase(), name]),
-);
 
 const HEADER_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
 const TAG_LINE = /^(\s*\[\s*)([A-Za-z][A-Za-z0-9_]*)(\s+")((?:\\.|[^"\\])*)("\s*\]\s*)$/;
@@ -42,6 +34,39 @@ function assertPgnTokenSize(value: string): void {
       `PGN token exceeds the ${MAX_PGN_TOKEN_BYTES}-byte limit`,
     );
   }
+}
+
+function assertPgnSize(pgn: string): void {
+  if (Buffer.byteLength(pgn, "utf8") > MAX_PGN_BYTES) {
+    throw new ChessError(
+      "PGN_TOO_LARGE",
+      `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
+    );
+  }
+}
+
+type PgnSpan = { start: number; end: number };
+
+function scanPgnSpan(
+  pgn: string,
+  start: number,
+  boundary: (char: string) => boolean,
+): PgnSpan {
+  let end = start;
+  while (end < pgn.length && !boundary(pgn[end]!)) end += 1;
+  return { start, end };
+}
+
+function pgnLineSpan(pgn: string, start: number): PgnSpan {
+  return scanPgnSpan(pgn, start, (char) => char === "\r" || char === "\n");
+}
+
+function pgnWordSpan(
+  pgn: string,
+  start: number,
+  delimiters: RegExp,
+): PgnSpan {
+  return scanPgnSpan(pgn, start, (char) => delimiters.test(char));
 }
 
 function splitPgnWord(value: string, emit: (token: string) => void): void {
@@ -130,7 +155,7 @@ function assertPgnLexicalSizes(pgn: string): void {
     }
     if (char === ";") {
       const start = ++index;
-      while (index < pgn.length && !/[\r\n]/.test(pgn[index]!)) index += 1;
+      index = pgnLineSpan(pgn, index).end;
       assertPgnTokenSize(pgn.slice(start, index));
       continue;
     }
@@ -138,10 +163,9 @@ function assertPgnLexicalSizes(pgn: string): void {
       index += 1;
       continue;
     }
-    let end = index + 1;
-    while (end < pgn.length && !/[\s[\]{}();"]/.test(pgn[end]!)) end += 1;
-    splitPgnWord(pgn.slice(index, end), assertPgnTokenSize);
-    index = end;
+    const word = pgnWordSpan(pgn, index + 1, /[\s[\]{}();"]/);
+    splitPgnWord(pgn.slice(index, word.end), assertPgnTokenSize);
+    index = word.end;
   }
 }
 
@@ -169,6 +193,66 @@ function decodeHeaderValue(value: string): string {
 
 function encodeHeaderValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+type CommentTrie = {
+  comment?: string;
+  next: Map<string, CommentTrie>;
+};
+
+function renderUnsafePgnComments(
+  movetext: string,
+  comments: readonly string[],
+): string {
+  const root: CommentTrie = { next: new Map() };
+  for (const comment of new Set(comments.filter((value) => value.includes("}")))) {
+    let node = root;
+    const serialized = `{${comment}}`;
+    for (let index = 0; index < serialized.length; index += 1) {
+      const char = serialized[index]!;
+      let next = node.next.get(char);
+      if (!next) {
+        next = { next: new Map() };
+        node.next.set(char, next);
+      }
+      node = next;
+    }
+    node.comment = comment;
+  }
+  if (root.next.size === 0) return movetext;
+
+  const chunks: string[] = [];
+  let copied = 0;
+  let index = 0;
+  while (index < movetext.length) {
+    if (movetext[index] !== "{") {
+      index += 1;
+      continue;
+    }
+    let node: CommentTrie | undefined = root;
+    let cursor = index;
+    let match: { comment: string; end: number } | undefined;
+    while (cursor < movetext.length) {
+      node = node.next.get(movetext[cursor]!);
+      if (!node) break;
+      cursor += 1;
+      if (node.comment !== undefined) {
+        match = { comment: node.comment, end: cursor };
+      }
+    }
+    if (!match) {
+      index += 1;
+      continue;
+    }
+    chunks.push(
+      movetext.slice(copied, index),
+      `;${match.comment.replace(/[\r\n]+/g, " ")}\n`,
+    );
+    index = match.end;
+    copied = index;
+  }
+  chunks.push(movetext.slice(copied));
+  return chunks.join("");
 }
 
 function prepareHeaders(pgn: string): {
@@ -216,13 +300,9 @@ function prepareHeaders(pgn: string): {
       const value = decodeHeaderValue(raw);
       headers.push({ name, value });
       const canonical =
-        key === "setup"
-          ? "SetUp"
-          : key === "fen"
-            ? "FEN"
-            : key === "result"
-              ? "Result"
-              : null;
+        key === "setup" || key === "fen" || key === "result"
+          ? canonicalPgnHeaderName(name)
+          : null;
       loaderPgn += canonical
         ? `[${canonical} "${encodeHeaderValue(value)}"]${ending}`
         : ending;
@@ -321,6 +401,7 @@ function pgnText(chess: Chess): string {
   const comments = chess.getComments();
   for (const { comment } of comments) assertPgnTokenSize(comment);
   const raw = chess.pgn();
+  assertPgnSize(raw);
   let movetextStart = 0;
   for (let index = 0; index < headers.length; index += 1) {
     const lineEnd = raw.indexOf("\n", movetextStart);
@@ -328,19 +409,10 @@ function pgnText(chess: Chess): string {
   }
   if (headers.length > 0 && raw[movetextStart] === "\n") movetextStart += 1;
   let movetext = raw.slice(movetextStart);
-  const unsafeComments = [
-    ...new Set(
-      comments
-        .map(({ comment }) => comment)
-        .filter((comment) => comment.includes("}")),
-    ),
-  ].sort((left, right) => right.length - left.length);
-  for (const comment of unsafeComments) {
-    movetext = movetext.replaceAll(
-      `{${comment}}`,
-      () => `;${comment.replace(/[\r\n]+/g, " ")}\n`,
-    );
-  }
+  movetext = renderUnsafePgnComments(
+    movetext,
+    comments.map(({ comment }) => comment),
+  );
   const tags = headers
     .map(([name, value]) => `[${name} "${encodeHeaderValue(value)}"]`)
     .join("\n");
@@ -349,12 +421,7 @@ function pgnText(chess: Chess): string {
     : movetext
       ? `${tags}\n\n${movetext}`
       : tags;
-  if (Buffer.byteLength(pgn, "utf8") > MAX_PGN_BYTES) {
-    throw new ChessError(
-      "PGN_TOO_LARGE",
-      `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
-    );
-  }
+  assertPgnSize(pgn);
   return pgn;
 }
 
@@ -486,9 +553,7 @@ function movetextTokens(pgn: string): MovetextToken[] {
     }
     if (char === ";") {
       const start = index + 1;
-      while (index < movetext.length && !/[\r\n]/.test(movetext[index]!)) {
-        index += 1;
-      }
+      index = pgnLineSpan(movetext, index).end;
       assertPgnTokenSize(movetext.slice(start, index));
       push({ kind: "comment" });
       continue;
@@ -503,15 +568,9 @@ function movetextTokens(pgn: string): MovetextToken[] {
       index += 1;
       continue;
     }
-    let end = index + 1;
-    while (
-      end < movetext.length &&
-      !/[\s{}();]/.test(movetext[end]!)
-    ) {
-      end += 1;
-    }
-    pushWord(movetext.slice(index, end));
-    index = end;
+    const word = pgnWordSpan(movetext, index + 1, /[\s{}();]/);
+    pushWord(movetext.slice(index, word.end));
+    index = word.end;
   }
   return tokens;
 }
@@ -747,10 +806,9 @@ function withoutMainlineEnPassant(pgn: string): string {
       continue;
     }
     if (char === ";") {
-      let end = index + 1;
-      while (end < pgn.length && !/[\r\n]/.test(pgn[end]!)) end += 1;
-      result += pgn.slice(index, end);
-      index = end;
+      const line = pgnLineSpan(pgn, index + 1);
+      result += pgn.slice(index, line.end);
+      index = line.end;
       continue;
     }
     if (/\s/.test(char)) {
@@ -758,12 +816,11 @@ function withoutMainlineEnPassant(pgn: string): string {
       index += 1;
       continue;
     }
-    let end = index + 1;
-    while (end < pgn.length && !/[\s{}();"]/.test(pgn[end]!)) end += 1;
-    const word = pgn.slice(index, end);
+    const span = pgnWordSpan(pgn, index + 1, /[\s{}();"]/);
+    const word = pgn.slice(index, span.end);
     if (word.startsWith("e.p.")) result += word.slice("e.p.".length);
     else result += word;
-    index = end;
+    index = span.end;
   }
   return result;
 }
@@ -781,10 +838,9 @@ function normalizeMainlinePgn(input: string): string {
       index = end + 1;
       return value;
     }
-    let end = index + 1;
-    while (end < pgn.length && !/[\r\n]/.test(pgn[end]!)) end += 1;
-    const value = pgn.slice(index + 1, end).trim();
-    index = end;
+    const line = pgnLineSpan(pgn, index + 1);
+    const value = pgn.slice(index + 1, line.end).trim();
+    index = line.end;
     return value;
   };
   while (index < pgn.length) {
@@ -814,8 +870,7 @@ function normalizeMainlinePgn(input: string): string {
         if (pgn[index] === "{" || pgn[index] === ";") {
           comments.push(comment());
         } else {
-          let end = index;
-          while (end < pgn.length && !/[\s{}();"]/.test(pgn[end]!)) end += 1;
+          let end = pgnWordSpan(pgn, index, /[\s{}();"]/).end;
           const word = pgn.slice(index, end);
           const nag = /^(?:\$\d+)+/.exec(word)?.[0];
           if (!deferredNumber && nag) {
@@ -846,10 +901,9 @@ function normalizeMainlinePgn(input: string): string {
       index += 1;
       continue;
     }
-    let end = index + 1;
-    while (end < pgn.length && !/[\s{}();"]/.test(pgn[end]!)) end += 1;
-    result += pgn.slice(index, end);
-    index = end;
+    const word = pgnWordSpan(pgn, index + 1, /[\s{}();"]/);
+    result += pgn.slice(index, word.end);
+    index = word.end;
   }
   return result;
 }
@@ -906,36 +960,11 @@ function restoreHeaders(
   headersToRestore: PgnHeader[],
   result: PgnResult | undefined,
 ): void {
-  const names = new Map<string, string[]>();
-  const values = new Map<string, string>();
-  for (const [name, value] of Object.entries(chess.getHeaders())) {
-    const key = name.toLowerCase();
-    const existing = names.get(key);
-    if (existing) existing.push(name);
-    else names.set(key, [name]);
-    values.set(key, value);
-  }
-  const setCanonical = (name: string, value: string): void => {
-    const key = name.toLowerCase();
-    for (const existing of names.get(key) ?? []) {
-      if (existing !== name) chess.removeHeader(existing);
-    }
-    chess.setHeader(name, value);
-    names.set(key, [name]);
-    values.set(key, value);
-  };
-  for (const { name, value } of headersToRestore) {
-    const canonical = CANONICAL_HEADERS.get(name.toLowerCase()) ?? name;
-    setCanonical(canonical, value);
-  }
-  for (const canonical of ["SetUp", "FEN", "Result"] as const) {
-    if (canonical === "Result" && result !== undefined) {
-      setCanonical(canonical, result);
-    } else {
-      const value = values.get(canonical.toLowerCase());
-      if (value !== undefined) setCanonical(canonical, value);
-    }
-  }
+  replacePgnHeaders(
+    chess,
+    headersToRestore.map(({ name, value }) => [name, value]),
+    { overrides: result === undefined ? [] : [["Result", result]] },
+  );
 }
 
 function validateResultForPosition(chess: Chess, result: PgnResult | undefined): void {
@@ -956,6 +985,7 @@ function validateResultForPosition(chess: Chess, result: PgnResult | undefined):
 }
 
 export function pgnOf(chess: Chess): string {
+  assertPgnPlyLimit(chess.history().length);
   const result = chess.isCheckmate()
     ? (chess.turn() === "w" ? "0-1" : "1-0")
     : chess.isDraw()
@@ -970,12 +1000,7 @@ export function pgnOf(chess: Chess): string {
 }
 
 export function parseImportedPgn(pgn: string): Chess {
-  if (Buffer.byteLength(pgn, "utf8") > MAX_PGN_BYTES) {
-    throw new ChessError(
-      "PGN_TOO_LARGE",
-      `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
-    );
-  }
+  assertPgnSize(pgn);
   const normalizedPgn = withoutPgnEscapeLines(stripBom(pgn));
   assertPgnLexicalSizes(normalizedPgn);
   const { headers, loaderPgn, movetextPgn } = prepareHeaders(normalizedPgn);
@@ -996,12 +1021,7 @@ export function parseImportedPgn(pgn: string): Chess {
   restoreHeaders(chess, headers, result);
   assertSafeFenCounters(chess.fen());
   assertLegalPosition(chess);
-  if (chess.history().length > MAX_PGN_PLIES) {
-    throw new ChessError(
-      "PGN_TOO_MANY_MOVES",
-      `PGN exceeds the ${MAX_PGN_PLIES}-ply limit`,
-    );
-  }
+  assertPgnPlyLimit(chess.history().length);
   validateResultForPosition(chess, result);
   pgnOf(chess);
   return chess;

@@ -671,8 +671,13 @@ test("pgnOf safely exports repeated delimiter-bearing comments", () => {
   );
 });
 
-test("pgnOf preserves replacement patterns in unsafe comments", () => {
-  const comments = ["literal $& }", "literal $` }", "literal $' }", "literal $$ }"];
+test("pgnOf preserves Unicode and replacement patterns in unsafe comments", () => {
+  const comments = [
+    "emoji 😀 and literal $& }",
+    "literal $` }",
+    "literal $' }",
+    "literal $$ }",
+  ];
   const chess = parseImportedPgn(
     [
       `;${comments[0]}`,
@@ -913,6 +918,41 @@ test("pgnOf bounds aggregate headers and bytes", () => {
     () => pgnOf(exactBytes),
     (error) => error instanceof ChessError && error.code === "PGN_TOO_LARGE",
   );
+});
+
+test("programmatic snapshots and exports enforce the ply limit", () => {
+  const chess = new Chess();
+  const cycle = ["Nf3", "Nf6", "Ng1", "Ng8"];
+  for (let index = 0; index < MAX_PGN_PLIES; index += 1) {
+    chess.move(cycle[index % cycle.length]!);
+  }
+  assert.doesNotThrow(() => pgnOf(chess));
+  const exactStore = new GameStore({ createId: () => "exact-game" });
+  const exactId = exactStore.createGameFromChess(chess);
+  const overflowingMove = parseMove(chess, cycle[0]!);
+  assert.throws(
+    () => exactStore.applyMove(exactId, 0, overflowingMove),
+    (error) =>
+      error instanceof ChessError && error.code === "PGN_TOO_MANY_MOVES",
+  );
+  assert.throws(
+    () => exactStore.applyMove(exactId, 1, overflowingMove),
+    (error) => error instanceof ChessError && error.code === "STALE_POSITION",
+  );
+
+  chess.move(cycle[0]!);
+  const store = new GameStore({ createId: () => "oversized-game" });
+  for (const operation of [
+    () => snapshotChess(chess),
+    () => pgnOf(chess),
+    () => store.createGameFromChess(chess),
+  ]) {
+    assert.throws(
+      operation,
+      (error) =>
+        error instanceof ChessError && error.code === "PGN_TOO_MANY_MOVES",
+    );
+  }
 });
 
 test("parseImportedPgn accounts for canonical header expansion", () => {

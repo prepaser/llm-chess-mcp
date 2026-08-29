@@ -52,6 +52,10 @@ export function parseCli(args: string[]): CliOptions {
   let hasHttpOption = false;
   const allowedHosts: string[] = [];
 
+  if (args.includes("-h") || args.includes("--help")) {
+    return { transport, host, port, path, allowedHosts, help: true };
+  }
+
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === undefined) continue;
@@ -113,8 +117,12 @@ export function parseCli(args: string[]): CliOptions {
   if (!isCanonicalHttpPath(path)) {
     throw new Error("--path must be an absolute URL path without query or fragment");
   }
+  const canonicalHost = canonicalHttpHostname(host);
   const canonicalAllowedHosts = allowedHosts.map(canonicalHttpHostname);
-  if (!host || canonicalAllowedHosts.some((value) => value === null)) {
+  if (
+    canonicalHost === null ||
+    canonicalAllowedHosts.some((value) => value === null)
+  ) {
     throw new Error("HTTP hostnames must be non-empty hostnames");
   }
   if (transport === "stdio" && hasHttpOption) {
@@ -122,7 +130,7 @@ export function parseCli(args: string[]): CliOptions {
   }
   if (
     transport === "http" &&
-    isWildcardHttpBindHost(host) &&
+    isWildcardHttpBindHost(canonicalHost) &&
     canonicalAllowedHosts.length === 0
   ) {
     throw new Error("wildcard HTTP binding requires at least one --allowed-host");
@@ -130,7 +138,7 @@ export function parseCli(args: string[]): CliOptions {
 
   return {
     transport,
-    host,
+    host: canonicalHost,
     port,
     path,
     allowedHosts: canonicalAllowedHosts as string[],

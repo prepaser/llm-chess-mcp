@@ -68,6 +68,12 @@ const server = await serveHttp({ port: 3000, bodyTimeoutMs: 15_000 });
 await server.close();
 ```
 
+The root API also exports `buildServer`, `GameStore`, `ChessError`,
+`ExplorerError`, the service/domain types needed to provide custom
+`AppServices`, and safe chess helpers including `parseImportedPgn`, `pgnOf`,
+and `snapshotChess`. New integrations should use the package root. Legacy
+`dist/` subpath imports remain available for compatibility.
+
 `bodyTimeoutMs` limits HTTP body upload time; it is not a whole-tool deadline.
 The deprecated `requestTimeoutMs` alias remains supported when `bodyTimeoutMs`
 is omitted.
@@ -264,20 +270,23 @@ rejected:
 
 - Up to 1,000 games are retained per process; idle games expire after one hour.
 - `move_evaluate` accepts at most 10 moves per call.
-- Imported PGNs are limited to 1 MiB, 256 headers, and 4,096 plies across the
-  mainline and variations, plus 32,768 structural elements and 16 KiB per
-  lexical token. Every variation is legality-checked; game state retains the
-  mainline. UTF-8 BOMs and standard escaped header values are supported.
+- Imported and exported PGNs are limited to 1 MiB, 256 headers, and 4,096
+  plies; stored game histories use the same ply limit. Imports also cap the
+  mainline and variations together at 32,768 structural elements and 16 KiB
+  per lexical token. Every variation is legality-checked; game state retains
+  the mainline. UTF-8 BOMs and standard escaped header values are supported.
 - Custom FENs reject inconsistent castling/en-passant metadata and impossible
   pawn or promotion material.
-- Stockfish accepts up to 32 active or queued analyses.
+- Stockfish accepts up to 32 active or queued analyses. Maia runs at most two
+  inferences concurrently and queues up to 32 more.
 - Lichess Explorer requests run one at a time and share 429 cooldowns.
 - HTTP retains at most 64 MCP sessions; sessions with no active request expire
   after 30 minutes. An open GET/SSE stream keeps its session active.
-- HTTP accepts bodies up to 2 MiB. It permits 16 concurrent POSTs and downstream
-  compute/network jobs process-wide, with two of each per session. A separately
-  bounded control lane keeps MCP cancellation available when normal POST slots
-  are full. Work keeps its slot after a raw disconnect until it settles. HTTP
+- HTTP accepts bodies up to 2 MiB. After body parsing, it permits 16 concurrent
+  POST dispatches and downstream compute/network jobs process-wide, with two of
+  each per session. A separate bounded control lane keeps MCP cancellation
+  available when normal POST slots are full. Work keeps its slot after a raw
+  disconnect until it settles. HTTP
   also caps connections at 128 and applies a 15-second body upload deadline
   plus bounded header, socket, and keep-alive timeouts.
 

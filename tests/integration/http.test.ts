@@ -492,6 +492,13 @@ test("Streamable HTTP rejects invalid routing, sessions, and browser headers", a
 
 test("Streamable HTTP validates resource limits before listening", async () => {
   await assert.rejects(
+    serveHttp(
+      { host: "evil.com/path", port: 0, allowedHosts: ["localhost"] },
+      fakeServices(new GameStore()),
+    ),
+    /invalid HTTP bind host/,
+  );
+  await assert.rejects(
     serveHttp({ port: 0, maxSessions: 0 }, fakeServices(new GameStore())),
     /maxSessions must be a positive integer/,
   );
@@ -897,7 +904,7 @@ test("Streamable HTTP accepts bracketed IPv6 bind hosts", async (t) => {
     400,
   );
 
-  assert.match(mapped.url, /^http:\/\/\[::ffff:127\.0\.0\.1\]:\d+\/mcp$/);
+  assert.match(mapped.url, /^http:\/\/\[::ffff:7f00:1\]:\d+\/mcp$/);
   assert.equal((await httpRequest(mapped.url)).status, 400);
 
   assert.equal(wildcard.host, "[::]");
@@ -1216,12 +1223,17 @@ test("Streamable HTTP reserves bounded capacity for cancellation", async (t) => 
       },
     }),
   );
-  const { client } = await connectClient(http, "http-saturated-cancel-tests");
+  const { client, transport } = await connectClient(
+    http,
+    "http-saturated-cancel-tests",
+  );
   const firstAbort = new AbortController();
   const secondAbort = new AbortController();
+  const uploads: Awaited<ReturnType<typeof partialSessionPost>>[] = [];
   t.after(async () => {
     firstAbort.abort();
     secondAbort.abort();
+    for (const upload of uploads) upload.destroy();
     await client.close();
     await http.close();
   });
@@ -1242,6 +1254,12 @@ test("Streamable HTTP reserves bounded capacity for cancellation", async (t) => 
     { signal: secondAbort.signal },
   ).catch((error: unknown) => error);
   await bothStarted;
+  assert.ok(transport.sessionId);
+  uploads.push(
+    await partialSessionPost(http.url, transport.sessionId),
+    await partialSessionPost(http.url, transport.sessionId),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
 
   firstAbort.abort(new Error("cancel first saturated request"));
   secondAbort.abort(new Error("cancel second saturated request"));
@@ -1300,7 +1318,7 @@ test("Streamable HTTP session deletion cancels active tools", async (t) => {
   await waitFor(() => http.sessionCount() === 0);
 });
 
-test("Streamable HTTP session deletion aborts partial session uploads", async (t) => {
+test("Streamable HTTP session deletion aborts partial uploads without consuming dispatch", async (t) => {
   const http = await serveHttp(
     {
       port: 0,
@@ -1326,12 +1344,12 @@ test("Streamable HTTP session deletion aborts partial session uploads", async (t
   upload = await partialSessionPost(http.url, initialized.sessionId);
   await new Promise((resolve) => setTimeout(resolve, 20));
 
-  const saturated = await httpRequest(http.url, {
+  const admitted = await httpRequest(http.url, {
     method: "POST",
     headers: INIT_HEADERS,
     body: initializeBody(2),
   });
-  assert.equal(saturated.status, 503);
+  assert.equal(admitted.status, 200);
 
   const terminated = await httpRequest(http.url, {
     method: "DELETE",
@@ -1348,12 +1366,12 @@ test("Streamable HTTP session deletion aborts partial session uploads", async (t
     ),
   ]);
 
-  const admitted = await httpRequest(http.url, {
+  const next = await httpRequest(http.url, {
     method: "POST",
     headers: INIT_HEADERS,
     body: initializeBody(3),
   });
-  assert.equal(admitted.status, 200);
+  assert.equal(next.status, 200);
 });
 
 test("Streamable HTTP does not reap a session during an active POST", async (t) => {

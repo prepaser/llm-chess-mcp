@@ -6,6 +6,50 @@ import { buildServer } from "../src/server.js";
 import type { AppServices } from "../src/services.js";
 import { MoveEvaluateOutputSchema } from "../src/tool-schemas.js";
 
+test("move_evaluate rejects terminal games before engine analysis", async (t) => {
+  const games = new GameStore({ createId: () => "terminal-game" });
+  const gameId = games.createGame("7k/6Q1/7K/8/8/8/8/8 b - - 0 1");
+  let analysisCalls = 0;
+  const services: AppServices = {
+    games,
+    analyze: async () => {
+      analysisCalls += 1;
+      throw new Error("engine must not be called");
+    },
+    quit: async () => undefined,
+    humanMoveDistribution: async () => [],
+    explorerEnabled: () => false,
+    openingExplorer: async () => {
+      throw new Error("unused");
+    },
+    computeCandidates: async () => ({
+      candidates: [],
+      moveSensitivity: { level: "low", topMoveSpreadCp: null },
+    }),
+    rankByIntent: (candidates) => candidates,
+  };
+  const server = buildServer(services);
+  const client = new Client({ name: "analysis-tests", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const response = await client.callTool({
+    name: "move_evaluate",
+    arguments: { game_id: gameId, move: "Kh7", depth: 5 },
+  });
+
+  assert.equal(response.isError, true);
+  assert.deepEqual(response.structuredContent, {
+    error: { code: "GAME_OVER", message: "game is already over" },
+  });
+  assert.equal(analysisCalls, 0);
+});
+
 test("move_evaluate classifies terminal draws from the mover's prior score", async (t) => {
   const games = new GameStore({ createId: () => "draw-game" });
   const gameId = games.createGame("k7/2Q5/2K5/8/8/8/8/8 w - - 0 1");

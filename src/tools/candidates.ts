@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import type * as z from "zod/v4";
 import { ANALYSIS_PRESETS } from "../eval.js";
+import { emptyCandidateSet } from "../intents.js";
 import type { Candidate } from "../domain.js";
 import type { AppServices } from "../services.js";
 import {
@@ -52,8 +53,7 @@ async function candidatePayload(
       turn,
       elo,
       analysis_level,
-      moveSensitivity: { level: "low", topMoveSpreadCp: null },
-      candidates: [],
+      ...emptyCandidateSet(),
     };
   }
   const { candidates, moveSensitivity } = await services.computeCandidates(

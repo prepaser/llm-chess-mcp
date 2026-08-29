@@ -1,6 +1,7 @@
 import { Chess } from "chess.js";
 import type { Color, Move, PieceSymbol, Square } from "chess.js";
 import { ChessError } from "./errors.js";
+import { assertPgnPlyLimit, replacePgnHeaders } from "./pgn-shared.js";
 
 type MoveDescriptor = {
   from: Square;
@@ -13,45 +14,6 @@ const ORIGINAL_PIECES = {
   r: 2,
   n: 2,
 } as const;
-
-const CANONICAL_PGN_HEADERS = new Map(
-  [
-    "Event",
-    "Site",
-    "Date",
-    "Round",
-    "White",
-    "Black",
-    "Result",
-    "SetUp",
-    "FEN",
-  ].map((name) => [name.toLowerCase(), name]),
-);
-
-function restoreHeaders(
-  chess: Chess,
-  sourceHeaders: [string, string][],
-): void {
-  const sourceNames = new Set(sourceHeaders.map(([key]) => key.toLowerCase()));
-  for (const key of Object.keys(chess.getHeaders())) {
-    if (!sourceNames.has(key.toLowerCase())) chess.removeHeader(key);
-  }
-  const names = new Map<string, string[]>();
-  for (const key of Object.keys(chess.getHeaders())) {
-    const existing = names.get(key.toLowerCase());
-    if (existing) existing.push(key);
-    else names.set(key.toLowerCase(), [key]);
-  }
-  for (const [key, value] of sourceHeaders) {
-    const lower = key.toLowerCase();
-    const canonical = CANONICAL_PGN_HEADERS.get(lower) ?? key;
-    for (const existing of names.get(lower) ?? []) {
-      if (existing !== canonical) chess.removeHeader(existing);
-    }
-    chess.setHeader(canonical, value);
-    names.set(lower, [canonical]);
-  }
-}
 
 function squareColor(square: Square): 0 | 1 {
   return ((square.charCodeAt(0) - 97 + Number(square[1])) % 2) as 0 | 1;
@@ -268,6 +230,7 @@ export function assertLegalPosition(chess: Chess): void {
 export function snapshotChess(chess: Chess): Chess {
   assertLegalPosition(chess);
   const history = chess.history({ verbose: true });
+  assertPgnPlyLimit(history.length);
   const initialFen = history[0]?.before ?? chess.fen();
   assertSafeFenCounters(initialFen);
   const snapshot = new Chess(initialFen);
@@ -304,7 +267,7 @@ export function snapshotChess(chess: Chess): Chess {
   }
   assertSafeFenCounters(snapshot.fen());
   if (!unsafeComments) {
-    restoreHeaders(snapshot, sourceHeaders);
+    replacePgnHeaders(snapshot, sourceHeaders, { removeMissing: true });
     return snapshot;
   }
 
@@ -328,7 +291,7 @@ export function snapshotChess(chess: Chess): Chess {
     restored.move(moveDescriptor(move));
     restoreSafeComment();
   }
-  restoreHeaders(restored, sourceHeaders);
+  replacePgnHeaders(restored, sourceHeaders, { removeMissing: true });
   assertSafeFenCounters(restored.fen());
   return restored;
 }

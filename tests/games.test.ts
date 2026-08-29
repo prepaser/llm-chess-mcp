@@ -78,6 +78,28 @@ test("GameStore accepts deterministic clocks and IDs", () => {
   assert.equal(store.cleanupGames(), 1);
 });
 
+test("GameStore rejects invalid or backward clock values without mutating games", () => {
+  for (const value of [
+    Number.NaN,
+    Infinity,
+    -Infinity,
+    Number.MAX_VALUE,
+    -Number.MAX_VALUE,
+  ]) {
+    const store = new GameStore({ clock: () => value });
+    assert.throws(() => store.createGame(), RangeError);
+  }
+
+  let now = 100.5;
+  const store = new GameStore({ clock: () => now, idleTtlMs: 10 });
+  const id = store.createGame();
+  now = 99.5;
+  assert.throws(() => store.getSnapshot(id), RangeError);
+
+  now = 100.5;
+  assert.equal(store.getSnapshot(id).revision, 0);
+});
+
 test("GameStore isolates game collections", () => {
   const left = new GameStore({ createId: () => "left" });
   const right = new GameStore({ createId: () => "right" });
@@ -167,6 +189,34 @@ test("GameStore applies parsed moves atomically at the expected revision", () =>
   const updated = store.applyMove(id, 0, parsed);
   assert.deepEqual(updated.chess.history(), ["e4"]);
   assert.equal(updated.revision, 1);
+  updated.chess.move("e5");
   expectChessError("STALE_POSITION", () => store.applyMove(id, 0, parsed));
   assert.deepEqual(store.getSnapshot(id).chess.history(), ["e4"]);
+});
+
+test("GameStore rolls back a move that exceeds safe FEN counters", () => {
+  const store = new GameStore({ createId: () => "game" });
+  const id = store.createGame(
+    "8/8/8/8/8/8/K7/7k b - - 0 9007199254740991",
+  );
+  const snapshot = store.getSnapshot(id);
+  const move = parseMove(snapshot.chess, "Kh2");
+
+  expectChessError("INVALID_FEN", () => store.applyMove(id, 0, move));
+  const unchanged = store.getSnapshot(id);
+  assert.equal(unchanged.revision, 0);
+  assert.deepEqual(unchanged.chess.history(), []);
+  assert.equal(unchanged.chess.fen(), snapshot.chess.fen());
+});
+
+test("GameStore preserves repetition history while applying moves", () => {
+  const store = new GameStore({ createId: () => "game" });
+  const id = store.createGame();
+
+  for (const san of ["Nf3", "Nf6", "Ng1", "Ng8", "Nf3", "Nf6", "Ng1", "Ng8"]) {
+    const snapshot = store.getSnapshot(id);
+    store.applyMove(id, snapshot.revision, parseMove(snapshot.chess, san));
+  }
+
+  assert.equal(store.getSnapshot(id).chess.isThreefoldRepetition(), true);
 });

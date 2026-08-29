@@ -32,6 +32,7 @@ export class GameStore {
   private readonly games = new Map<string, GameRecord>();
   private readonly clock: () => number;
   private readonly createId: () => string;
+  private lastClockTime: number | undefined;
 
   constructor(options: GameStoreOptions = {}) {
     this.maxGames = options.maxGames ?? MAX_GAMES;
@@ -47,10 +48,11 @@ export class GameStore {
     }
   }
 
-  cleanupGames(now = this.clock()): number {
+  cleanupGames(now?: number): number {
+    const current = this.validateClockTime(now ?? this.clock());
     let removed = 0;
     for (const [id, game] of this.games) {
-      if (!this.isExpired(game, now)) continue;
+      if (!this.isExpired(game, current)) continue;
       this.games.delete(id);
       removed += 1;
     }
@@ -65,7 +67,7 @@ export class GameStore {
 
   createGameFromChess(chess: Chess): string {
     assertLegalPosition(chess);
-    const now = this.clock();
+    const now = this.clockTime();
     this.cleanupGames(now);
     if (this.games.size >= this.maxGames) {
       throw new ChessError(
@@ -100,19 +102,25 @@ export class GameStore {
         `position changed: expected revision ${expectedRevision}, current ${game.revision}`,
       );
     }
-    const chess = snapshotChess(game.chess);
-    playParsedMove(chess, move);
-    assertSafeFenCounters(chess.fen());
-    game.chess = chess;
-    game.revision += 1;
-    return { chess: snapshotChess(chess), revision: game.revision };
+    let applied = false;
+    try {
+      playParsedMove(game.chess, move);
+      applied = true;
+      assertSafeFenCounters(game.chess.fen());
+      const chess = snapshotChess(game.chess);
+      game.revision += 1;
+      return { chess, revision: game.revision };
+    } catch (error) {
+      if (applied) game.chess.undo();
+      throw error;
+    }
   }
 
   private getLiveGame(id: string): GameRecord {
     const game = this.games.get(id);
     if (!game) throw new ChessError("GAME_NOT_FOUND", `game not found: ${id}`);
 
-    const now = this.clock();
+    const now = this.clockTime();
     if (this.isExpired(game, now)) {
       this.games.delete(id);
       throw new ChessError("GAME_EXPIRED", `game expired: ${id}`);
@@ -138,6 +146,22 @@ export class GameStore {
 
   private isExpired(game: GameRecord, now: number): boolean {
     return now - game.lastAccessedAt >= this.idleTtlMs;
+  }
+
+  private clockTime(): number {
+    return this.validateClockTime(this.clock());
+  }
+
+  private validateClockTime(now: number): number {
+    if (
+      !Number.isFinite(now) ||
+      Math.abs(now) > Number.MAX_SAFE_INTEGER ||
+      (this.lastClockTime !== undefined && now < this.lastClockTime)
+    ) {
+      throw new RangeError("clock must return finite, safe, monotonic time");
+    }
+    this.lastClockTime = now;
+    return now;
   }
 }
 

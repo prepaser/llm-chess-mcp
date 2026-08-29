@@ -9,7 +9,28 @@ import { buildServer } from "./server.js";
 
 export { buildServer } from "./server.js";
 export { serveHttp } from "./http.js";
+export { ChessError } from "./errors.js";
+export { GAME_TTL_MS, GameStore, MAX_GAMES } from "./games.js";
+export { ExplorerError } from "./explorer.js";
 export type { HttpServerHandle, HttpServerOptions } from "./http.js";
+export type { ExplorerResult } from "./explorer.js";
+export type { GameSnapshot, GameStoreOptions } from "./games.js";
+export type { CandidateSet, LichessOpts } from "./intents.js";
+export type {
+  Candidate,
+  ChessState,
+  DrawResult,
+  ExplorerErrorKind,
+  HumanModel,
+  Intent,
+  LichessMove,
+  Maia3Move,
+  MoveSensitivity,
+  Objective,
+  OpeningStats,
+  SfLine,
+  Wdl,
+} from "./domain.js";
 export type {
   AnalysisServices,
   AppServices,
@@ -26,6 +47,7 @@ export {
   MAX_PGN_PLIES,
   MAX_PGN_TOKEN_BYTES,
   parseImportedPgn,
+  pgnOf,
   snapshotChess,
 } from "./chess.js";
 

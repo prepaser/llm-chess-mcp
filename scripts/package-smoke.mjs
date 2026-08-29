@@ -188,7 +188,7 @@ async function verifyPackageApi(install) {
     [
       "--input-type=module",
       "--eval",
-      'const token = process.env.LICHESS_TOKEN; const dlopen = process.dlopen; let nativeLoads = 0; process.dlopen = (...args) => { nativeLoads += 1; return dlopen(...args); }; const api = await import("llm-chess-mcp"); if (typeof api.buildServer !== "function" || typeof api.serveHttp !== "function") throw new Error("root API is incomplete"); const custom = api.buildServer({}); await custom.close(); if (process.env.LICHESS_TOKEN !== token) throw new Error("root import loaded .env"); if (nativeLoads !== 0) throw new Error("root API loaded a native addon");',
+      'const token = process.env.LICHESS_TOKEN; const dlopen = process.dlopen; let nativeLoads = 0; process.dlopen = (...args) => { nativeLoads += 1; return dlopen(...args); }; const api = await import("llm-chess-mcp"); for (const name of ["buildServer", "serveHttp", "ChessError", "ExplorerError", "GameStore", "parseImportedPgn", "pgnOf", "snapshotChess"]) if (typeof api[name] !== "function") throw new Error(`root API is missing ${name}`); const custom = api.buildServer({}); await custom.close(); const chess = api.parseImportedPgn("1.e4 *"); if (!api.pgnOf(chess).includes("e4")) throw new Error("root PGN API is incomplete"); if (process.env.LICHESS_TOKEN !== token) throw new Error("root import loaded .env"); if (nativeLoads !== 0) throw new Error("root API loaded a native addon");',
       missingEntry,
     ],
     install,

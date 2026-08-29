@@ -90,6 +90,45 @@ test("marks an empty explorer result as no data", () => {
     }),
     { status: "no_data", totalGames: 0, moves: [] },
   );
+  assert.deepEqual(
+    explorerCandidateData({
+      db: "masters",
+      white: 1,
+      draws: 1,
+      black: 0,
+      moves: [],
+      opening: null,
+    }),
+    { status: "available", totalGames: 2, moves: [] },
+  );
+});
+
+test("keeps positive game totals available when no next moves are returned", () => {
+  const result = explorerCandidateData({
+    db: "masters",
+    white: 1,
+    draws: 1,
+    black: 0,
+    moves: [],
+    opening: null,
+  });
+  const { candidates } = candidateSetFromData(
+    new Chess(),
+    1500,
+    [sfLine("e2e4", 30)],
+    [],
+    result,
+  );
+
+  assert.deepEqual(candidates[0]?.opening, {
+    status: "available",
+    games: null,
+    frequency: null,
+    white: null,
+    draws: null,
+    black: null,
+    averageRating: null,
+  });
 });
 
 test("rejects explorer moves that exceed aggregate result counts", () => {
@@ -462,6 +501,28 @@ test("merges engine, Maia, and opening data without dropping unique moves", () =
   assert.deepEqual(moveSensitivity, { level: "low", topMoveSpreadCp: 60 });
 });
 
+test("builds the legal move and SAN lookup once per candidate set", () => {
+  const chess = new Chess();
+  const legal = chess.moves({ verbose: true });
+  const moves = chess.moves.bind(chess);
+  let calls = 0;
+  chess.moves = ((options?: Parameters<typeof chess.moves>[0]) => {
+    calls += 1;
+    return moves(options as never);
+  }) as typeof chess.moves;
+
+  const { candidates } = candidateSetFromData(
+    chess,
+    1500,
+    [],
+    legal.map((move) => ({ uci: move.lan, san: move.san, prob: 0.05 })),
+    { status: "disabled", totalGames: null, moves: [] },
+  );
+
+  assert.equal(candidates.length, legal.length);
+  assert.equal(calls, 1);
+});
+
 test("converts black-to-move evaluations to White POV and preserves mate", () => {
   const chess = new Chess();
   chess.move("e4");
@@ -676,17 +737,32 @@ test("rejects malformed and duplicate candidate dependency data", () => {
     },
   ]) {
     assert.throws(
-      () => candidateSetFromData(new Chess(), 1500, [], [], data),
+      () =>
+        candidateSetFromData(
+          new Chess(),
+          1500,
+          [],
+          [],
+          data as unknown as LichessCandidateData,
+        ),
       /explorer data cannot contain moves/,
     );
   }
   for (const data of [
-    { status: "available" as const, totalGames: 1, moves: [] },
-    { status: "no_data" as const, totalGames: 1, moves: [move] },
+    { status: "available" as const, totalGames: 0, moves: [] },
+    { status: "no_data" as const, totalGames: 1, moves: [] },
+    { status: "no_data" as const, totalGames: 0, moves: [move] },
   ]) {
     assert.throws(
-      () => candidateSetFromData(new Chess(), 1500, [], [], data),
-      /explorer data has inconsistent moves/,
+      () =>
+        candidateSetFromData(
+          new Chess(),
+          1500,
+          [],
+          [],
+          data as unknown as LichessCandidateData,
+        ),
+      /explorer data|available explorer data/,
     );
   }
 });

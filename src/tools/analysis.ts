@@ -14,6 +14,7 @@ import {
   negateEval,
   toEval,
 } from "../eval.js";
+import { ChessError } from "../errors.js";
 import type { AppServices } from "../services.js";
 import { TOOL_INPUT_SCHEMAS } from "../tool-inputs.js";
 import { TOOL_META } from "../tool-meta.js";
@@ -127,6 +128,9 @@ export function registerAnalysisTools(
       TOOL_OUTPUT_SCHEMAS.move_evaluate,
       async ({ game_id, move, depth }, signal) => {
         const { chess, revision } = services.games.getSnapshot(game_id);
+        if (chess.isGameOver()) {
+          throw new ChessError("GAME_OVER", "game is already over");
+        }
         const moves = Array.isArray(move) ? move : [move];
         const beforeLines = await services.analyze(chess.fen(), depth, 1, signal);
         signal.throwIfAborted();

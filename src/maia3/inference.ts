@@ -7,10 +7,91 @@ import { buildInput } from "./tokenize.js";
 import { VOCAB_SIZE, vocabIndex } from "./vocab.js";
 import { mirrorMove } from "./mirror.js";
 import type { Maia3Move } from "../domain.js";
+import { ChessError } from "../errors.js";
 
 let session: ort.InferenceSession | null = null;
 let sessionPromise: Promise<ort.InferenceSession> | null = null;
 const MODEL_KEYS = new Set(["3m", "5m", "23m", "79m"]);
+const DEFAULT_MAX_CONCURRENCY = 2;
+const DEFAULT_MAX_QUEUE = 32;
+
+type AdmissionWaiter = {
+  onAbort: () => void;
+  signal: AbortSignal | undefined;
+  start: () => void;
+};
+
+export class MaiaAdmission {
+  readonly maxConcurrency: number;
+  readonly maxQueue: number;
+  #active = 0;
+  #queue: AdmissionWaiter[] = [];
+
+  constructor(maxConcurrency = DEFAULT_MAX_CONCURRENCY, maxQueue = DEFAULT_MAX_QUEUE) {
+    if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) {
+      throw new Error("Maia3 maxConcurrency must be a positive safe integer");
+    }
+    if (!Number.isSafeInteger(maxQueue) || maxQueue < 0) {
+      throw new Error("Maia3 maxQueue must be a non-negative safe integer");
+    }
+    this.maxConcurrency = maxConcurrency;
+    this.maxQueue = maxQueue;
+  }
+
+  get active(): number {
+    return this.#active;
+  }
+
+  get pending(): number {
+    return this.#queue.length;
+  }
+
+  run<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
+    if (signal?.aborted) signal.throwIfAborted();
+    if (this.#active < this.maxConcurrency) return this.#start(work);
+    if (this.#queue.length >= this.maxQueue) {
+      return Promise.reject(
+        new ChessError("SERVER_BUSY", "Maia3 inference queue full"),
+      );
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      let waiter!: AdmissionWaiter;
+      const remove = () => {
+        const index = this.#queue.indexOf(waiter);
+        if (index < 0) return;
+        this.#queue.splice(index, 1);
+        waiter.signal?.removeEventListener("abort", waiter.onAbort);
+        reject(waiter.signal?.reason);
+      };
+      waiter = {
+        onAbort: remove,
+        signal,
+        start: () => {
+          void this.#start(work).then(resolve, reject);
+        },
+      };
+      this.#queue.push(waiter);
+      signal?.addEventListener("abort", remove, { once: true });
+      if (signal?.aborted) remove();
+    });
+  }
+
+  #start<T>(work: () => Promise<T>): Promise<T> {
+    this.#active += 1;
+    return Promise.resolve()
+      .then(work)
+      .finally(() => {
+        this.#active -= 1;
+        const next = this.#queue.shift();
+        if (!next) return;
+        next.signal?.removeEventListener("abort", next.onAbort);
+        next.start();
+      });
+  }
+}
+
+const admission = new MaiaAdmission();
 
 function modelPath(): string {
   const modelKey = process.env.MAIA3_MODEL || "5m";
@@ -114,36 +195,40 @@ export async function humanMoveDistribution(
   if (chess.isGameOver()) return [];
   const legal = chess.moves({ verbose: true });
   if (legal.length === 0) return [];
-  const s = await getSession();
-  signal?.throwIfAborted();
-
   const input = buildInput(chess);
-  const tokens = new ort.Tensor("float32", input, [1, 64, 96]);
-  const selfElo = new ort.Tensor("int64", BigInt64Array.from([BigInt(elo)]), [1]);
-  const oppoEloTensor = new ort.Tensor("int64", BigInt64Array.from([BigInt(oppoElo)]), [1]);
-
-  const feeds = { tokens, self_elo: selfElo, oppo_elo: oppoEloTensor };
-  const results = await s.run(feeds);
-  signal?.throwIfAborted();
-  const logits = extractMoveLogits(results);
-
-  signal?.throwIfAborted();
   const turn = chess.turn();
-  const legalMask = new Float32Array(logits.length).fill(-Infinity);
-  for (const m of legal) {
-    const uci = turn === "w" ? m.lan : mirrorMove(m.lan);
-    const idx = vocabIndex(uci);
-    legalMask[idx] = valueAt(logits, idx);
-  }
+  const indexedLegal = legal.map((move) => {
+    const uci = turn === "w" ? move.lan : mirrorMove(move.lan);
+    return { move, index: vocabIndex(uci) };
+  });
 
-  const probs = softmax(legalMask);
-  const ranked = legal
-    .map((m) => {
-      const uci = turn === "w" ? m.lan : mirrorMove(m.lan);
-      return { uci: m.lan, san: m.san, prob: valueAt(probs, vocabIndex(uci)) };
-    })
-    .sort((a, b) => b.prob - a.prob);
+  return admission.run(signal, async () => {
+    signal?.throwIfAborted();
+    const s = await getSession();
+    signal?.throwIfAborted();
+    const tokens = new ort.Tensor("float32", input, [1, 64, 96]);
+    const selfElo = new ort.Tensor("int64", BigInt64Array.from([BigInt(elo)]), [1]);
+    const oppoEloTensor = new ort.Tensor(
+      "int64",
+      BigInt64Array.from([BigInt(oppoElo)]),
+      [1],
+    );
+    const feeds = { tokens, self_elo: selfElo, oppo_elo: oppoEloTensor };
+    const results = await s.run(feeds);
+    signal?.throwIfAborted();
+    const logits = extractMoveLogits(results);
 
-  signal?.throwIfAborted();
-  return ranked.slice(0, topN);
+    signal?.throwIfAborted();
+    const legalMask = new Float32Array(logits.length).fill(-Infinity);
+    for (const { index } of indexedLegal) legalMask[index] = valueAt(logits, index);
+    const probs = softmax(legalMask);
+    const ranked = indexedLegal
+      .map(({ move, index }) => {
+        return { uci: move.lan, san: move.san, prob: valueAt(probs, index) };
+      })
+      .sort((a, b) => b.prob - a.prob);
+
+    signal?.throwIfAborted();
+    return ranked.slice(0, topN);
+  });
 }

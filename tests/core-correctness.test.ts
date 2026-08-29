@@ -2,17 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Chess } from "chess.js";
 import * as z from "zod/v4";
-import type { Candidate } from "../src/types.js";
-import { ChessError } from "../src/errors.js";
 import {
+  ChessError,
   drawResult,
+  GameStore,
   MAX_EVALUATED_MOVES,
   MAX_PGN_BYTES,
   MAX_PGN_HEADERS,
   MAX_PGN_PLIES,
   MAX_PGN_TOKEN_BYTES,
+  pgnOf,
   parseImportedPgn,
   snapshotChess,
+  type Candidate,
+  type ExplorerResult,
 } from "../src/index.js";
 import { rankByIntent } from "../src/intents.js";
 import { TOOL_INPUT_SCHEMAS } from "../src/tool-inputs.js";
@@ -42,6 +45,14 @@ function candidate(uci: string, moverCp: number, maia3Prob: number): Candidate {
     },
   };
 }
+
+test("root API exposes its public chess and service types", () => {
+  const chess = parseImportedPgn("1.e4 *");
+  assert.match(pgnOf(chess), /e4/);
+  assert.ok(new GameStore());
+  const explorer = null as ExplorerResult | null;
+  assert.equal(explorer, null);
+});
 
 test("position snapshots preserve move and repetition history", () => {
   const chess = new Chess();

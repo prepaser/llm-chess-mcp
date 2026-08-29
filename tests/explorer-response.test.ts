@@ -2,6 +2,25 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { normalizeExplorerResponse } from "../src/explorer-response.js";
 
+test("returns normalized Explorer response data", async () => {
+  const result = await normalizeExplorerResponse(
+    new Response(
+      JSON.stringify({ white: 0, draws: 0, black: 0, moves: [] }),
+    ),
+    new AbortController().signal,
+    { callerSignal: undefined, db: "masters", legalMoves: new Map() },
+  );
+
+  assert.deepEqual(Object.keys(result), [
+    "db",
+    "white",
+    "draws",
+    "black",
+    "moves",
+    "opening",
+  ]);
+});
+
 test("preserves caller cancellation while consuming a successful body", async () => {
   const controller = new AbortController();
   const cause = new Error("caller cancelled while reading explorer body");

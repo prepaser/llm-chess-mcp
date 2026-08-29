@@ -55,10 +55,31 @@ test("parseCli canonicalizes allowed hostnames", () => {
   );
 });
 
+test("parseCli canonicalizes and validates the bind host", () => {
+  assert.equal(parseCli(["--http", "--host", "127.1"]).host, "127.0.0.1");
+  assert.equal(
+    parseCli(["--http", "--host", "0:0:0:0:0:0:0:1"]).host,
+    "[::1]",
+  );
+  for (const host of [
+    "example.com:3000",
+    "user@example.com",
+    "[::1]:3000",
+    "evil.com/path",
+    " ",
+  ]) {
+    assert.throws(
+      () => parseCli(["--http", "--host", host]),
+      /HTTP hostnames must be non-empty hostnames/,
+    );
+  }
+});
+
 test("parseCli exposes help", () => {
   assert.match(HELP, /Usage: llm-chess-mcp/);
   assert.equal(parseCli(["--help"]).help, true);
   assert.equal(parseCli(["-h"]).help, true);
+  assert.equal(parseCli(["--unknown", "--help", "--port", "bad"]).help, true);
 });
 
 test("parseCli rejects unknown and valueless options", () => {
