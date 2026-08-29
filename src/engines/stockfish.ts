@@ -181,6 +181,8 @@ function loadStockfish(): StockfishInit {
         (listener) => process.removeListener("uncaughtException", listener),
         (listener) => process.on("uncaughtException", listener),
         (listener) =>
+          process.rawListeners("uncaughtException").includes(listener),
+        (listener) =>
           function ownedUncaughtException(
             this: NodeJS.Process,
             error,
@@ -206,6 +208,8 @@ function loadStockfish(): StockfishInit {
         (listener) => process.removeListener("unhandledRejection", listener),
         (listener) => process.on("unhandledRejection", listener),
         (listener) =>
+          process.rawListeners("unhandledRejection").includes(listener),
+        (listener) =>
           function ownedUnhandledRejection(
             this: NodeJS.Process,
             reason,
@@ -225,12 +229,27 @@ function loadStockfish(): StockfishInit {
           return registration;
         },
       );
-      let cleaned = false;
+      let uncaughtCleaned = false;
+      let unhandledCleaned = false;
       const cleanup = () => {
-        if (cleaned) return;
-        cleaned = true;
-        cleanupUncaught();
-        cleanupUnhandled();
+        let failure: unknown;
+        if (!uncaughtCleaned) {
+          try {
+            cleanupUncaught();
+            uncaughtCleaned = true;
+          } catch (error) {
+            failure = error;
+          }
+        }
+        if (!unhandledCleaned) {
+          try {
+            cleanupUnhandled();
+            unhandledCleaned = true;
+          } catch (error) {
+            failure ??= error;
+          }
+        }
+        if (failure) throw failure;
       };
       processListenerCleanups.set(engine, cleanup);
       owner = engine;
@@ -271,6 +290,7 @@ function ownAddedListeners<T>(
   after: T[],
   remove: (listener: T) => void,
   add: (listener: T) => void,
+  has: (listener: T) => boolean,
   wrap: (listener: T) => T,
   register: (listener: T) => T,
 ): () => void {
@@ -280,8 +300,24 @@ function ownAddedListeners<T>(
   }
   const owned = added.map(wrap).map(register);
   for (const registration of owned) add(registration);
+  const pending = new Set(owned);
   return () => {
-    for (const registration of owned) remove(registration);
+    let failure: unknown;
+    for (let attempt = 0; attempt < 2 && pending.size !== 0; attempt++) {
+      failure = undefined;
+      for (const registration of pending) {
+        try {
+          remove(registration);
+        } catch (error) {
+          failure ??= error;
+        } finally {
+          if (!has(registration)) pending.delete(registration);
+        }
+      }
+    }
+    if (pending.size !== 0) {
+      throw failure ?? new Error("stockfish process listener cleanup failed");
+    }
   };
 }
 
@@ -838,15 +874,21 @@ export class Stockfish {
       if (terminateScheduled) return;
       terminateScheduled = true;
       setImmediate(() => {
-        engine.listener = () => {};
         try {
-          engine.terminate();
-        } catch {} finally {
+          try {
+            engine.listener = () => {};
+            engine.terminate();
+          } catch {}
           const cleanup = processListenerCleanups.get(engine);
-          processListenerCleanups.delete(engine);
-          cleanup?.();
+          if (cleanup) {
+            try {
+              cleanup();
+              processListenerCleanups.delete(engine);
+            } catch {}
+          }
+        } finally {
+          finish();
         }
-        finish();
       });
     };
     const termination: EngineTermination = {

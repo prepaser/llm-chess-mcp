@@ -142,12 +142,26 @@ function parseHttpDate(value: string, wallNow: number): number | undefined {
   );
 }
 
-function parseRetryAfterMs(value: string, wallNow: number): number | undefined {
+function parseRetryAfterMs(
+  value: string,
+  wallNow: number,
+  elapsed = 0,
+): number | undefined {
   const trimmed = value.trim();
   if (/^\d+$/.test(trimmed)) {
+    if (
+      !Number.isFinite(elapsed) ||
+      elapsed < 0 ||
+      elapsed > Number.MAX_SAFE_INTEGER
+    ) {
+      return;
+    }
     const seconds = Number(trimmed);
     const delay = seconds * 1_000;
-    return Number.isSafeInteger(delay) ? delay : undefined;
+    const remaining = Math.ceil(delay - elapsed);
+    return Number.isSafeInteger(delay) && Number.isSafeInteger(remaining)
+      ? Math.max(0, remaining)
+      : undefined;
   }
   if (
     !Number.isSafeInteger(wallNow) ||
@@ -161,16 +175,25 @@ function parseRetryAfterMs(value: string, wallNow: number): number | undefined {
   return Number.isSafeInteger(delay) ? Math.max(0, delay) : undefined;
 }
 
-export function retryAfterMs(value: string | null, now: number): number {
+export function retryAfterMs(
+  value: string | null,
+  now: number,
+  elapsed = 0,
+): number {
   if (!value) return EXPLORER_DEFAULT_RETRY_DELAY_MS;
-  return parseRetryAfterMs(value, now) ?? EXPLORER_DEFAULT_RETRY_DELAY_MS;
+  return parseRetryAfterMs(value, now, elapsed) ?? EXPLORER_DEFAULT_RETRY_DELAY_MS;
 }
 
-export function rateLimitCooldownMs(value: string | null, now: number): number {
+export function rateLimitCooldownMs(
+  value: string | null,
+  now: number,
+  elapsed = 0,
+): number {
   const delay =
     value === null || value.trim() === ""
       ? EXPLORER_RATE_LIMIT_COOLDOWN_MS
-      : (parseRetryAfterMs(value, now) ?? EXPLORER_RATE_LIMIT_COOLDOWN_MS);
+      : (parseRetryAfterMs(value, now, elapsed) ??
+        EXPLORER_RATE_LIMIT_COOLDOWN_MS);
   return Math.min(delay, EXPLORER_MAX_COOLDOWN_MS);
 }
 

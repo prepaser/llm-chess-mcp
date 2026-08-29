@@ -17,28 +17,54 @@ const ORIGINAL_PIECES = {
 
 const CHESS_STATE_KEYS = Reflect.ownKeys(new Chess());
 
+type PawnRequirement =
+  | { kind: "pawn"; file: number; advances: number }
+  | { kind: "bishop"; color: 0 | 1 }
+  | { kind: "promotion" };
+
 function squareColor(square: Square): 0 | 1 {
   return ((square.charCodeAt(0) - 97 + Number(square[1])) % 2) as 0 | 1;
 }
 
-function minimumPawnCaptures(chess: Chess, color: Color): number {
-  const pawns = chess
+function minimumPawnCaptures(
+  chess: Chess,
+  color: Color,
+  promotedPieces: number,
+  promotedBishops: readonly [number, number],
+): number {
+  const requirements: PawnRequirement[] = chess
     .findPiece({ type: "p", color })
     .map((square) => ({
+      kind: "pawn" as const,
       advances:
         color === "w" ? Number(square[1]) - 2 : 7 - Number(square[1]),
       file: square.charCodeAt(0) - 97,
-    }))
-    .sort((left, right) => left.file - right.file);
+    }));
+  for (const bishopColor of [0, 1] as const) {
+    for (let count = 0; count < promotedBishops[bishopColor]; count += 1) {
+      requirements.push({ kind: "bishop", color: bishopColor });
+    }
+  }
+  for (let count = 0; count < promotedPieces; count += 1) {
+    requirements.push({ kind: "promotion" });
+  }
+
   let costs = new Map<number, number>([[0, 0]]);
-  for (const pawn of pawns) {
+  for (const requirement of requirements) {
     const next = new Map<number, number>();
     for (const [mask, cost] of costs) {
       for (let original = 0; original < 8; original += 1) {
         const bit = 1 << original;
         if (mask & bit) continue;
-        const captures = Math.abs(original - pawn.file);
-        if (captures > pawn.advances) continue;
+        let captures = 0;
+        if (requirement.kind === "pawn") {
+          captures = Math.abs(original - requirement.file);
+          if (captures > requirement.advances) continue;
+        } else if (requirement.kind === "bishop") {
+          const promotionRank = color === "w" ? 8 : 1;
+          const promotionColor = ((original + promotionRank) % 2) as 0 | 1;
+          captures = promotionColor === requirement.color ? 0 : 1;
+        }
         const nextMask = mask | bit;
         next.set(nextMask, Math.min(next.get(nextMask) ?? Infinity, cost + captures));
       }
@@ -208,19 +234,16 @@ export function assertLegalPosition(chess: Chess): void {
         ),
       0,
     );
-    const promotedBishops = [0, 1].reduce(
-      (total, squareColorValue) =>
-        total +
-        Math.max(
-          0,
-          chess
-            .findPiece({ type: "b", color })
-            .filter((square) => squareColor(square) === squareColorValue)
-            .length - 1,
-        ),
-      0,
-    );
-    const promoted = promotedPieces + promotedBishops;
+    const promotedBishops = [0, 1].map((squareColorValue) =>
+      Math.max(
+        0,
+        chess
+          .findPiece({ type: "b", color })
+          .filter((square) => squareColor(square) === squareColorValue)
+          .length - 1,
+      ),
+    ) as [number, number];
+    const promoted = promotedPieces + promotedBishops[0] + promotedBishops[1];
     if (promoted > 8 - pawns.length) {
       throw new ChessError(
         "INVALID_FEN",
@@ -231,7 +254,14 @@ export function assertLegalPosition(chess: Chess): void {
 
     const opponent: Color = color === "w" ? "b" : "w";
     const missingOpponentMaterial = 15 - nonKingMaterial(chess, opponent);
-    if (minimumPawnCaptures(chess, color) > missingOpponentMaterial) {
+    if (
+      minimumPawnCaptures(
+        chess,
+        color,
+        promotedPieces,
+        promotedBishops,
+      ) > missingOpponentMaterial
+    ) {
       throw new ChessError(
         "INVALID_FEN",
         "FEN pawn files require more captures than opposing material allows",

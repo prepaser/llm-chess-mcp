@@ -333,7 +333,7 @@ test("all tools expose contracts and execute with isolated fake services", async
   assert.equal(object(wdlAlternatives[0]).maxItems, 3);
 
   const created = await success(context.client, "create_game", {});
-  assert.deepEqual(created, { game_id: "game-1", revision: 0 });
+  assert.deepEqual(created, { game_id: "0:game-1", revision: 0 });
   const gameId = String(created.game_id);
 
   const state = await success(context.client, "game_state", {
@@ -467,7 +467,7 @@ test("all tools expose contracts and execute with isolated fake services", async
   const imported = await success(context.client, "game_import_pgn", {
     pgn: String(pgn.pgn).replace("e4", "e4 {king pawn}"),
   });
-  assert.equal(imported.game_id, "game-2");
+  assert.equal(imported.game_id, "1:game-2");
   assert.deepEqual(imported.history, ["e4"]);
   const roundTrip = await success(context.client, "game_pgn", {
     game_id: imported.game_id,
@@ -476,7 +476,7 @@ test("all tools expose contracts and execute with isolated fake services", async
   const deleted = await success(context.client, "delete_game", {
     game_id: imported.game_id,
   });
-  assert.deepEqual(deleted, { game_id: "game-2", deleted: true });
+  assert.deepEqual(deleted, { game_id: "1:game-2", deleted: true });
 
   assert.equal(context.calls.quit, 0);
 });

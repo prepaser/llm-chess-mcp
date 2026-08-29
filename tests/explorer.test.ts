@@ -19,7 +19,10 @@ import {
   type ExplorerLimiter,
   type ExplorerRequestOptions,
 } from "../src/explorer.js";
-import { rateLimitCooldownMs } from "../src/explorer-retry.js";
+import {
+  rateLimitCooldownMs,
+  retryAfterMs,
+} from "../src/explorer-retry.js";
 
 const validBody = {
   white: 10,
@@ -994,6 +997,55 @@ test("bounds stalled non-OK body cancellation by the attempt timeout", async () 
   assert.equal(calls, 2);
 });
 
+test("subtracts stalled response cleanup from numeric Retry-After", async () => {
+  for (const status of [429, 503]) {
+    let now = 0;
+    let calls = 0;
+    const delays: number[] = [];
+    const attempt = new AbortController();
+    let beginCancel: (() => void) | undefined;
+    const cancellationStarted = new Promise<void>((resolve) => {
+      beginCancel = resolve;
+    });
+    const fetch: ExplorerFetch = async () => {
+      calls += 1;
+      if (calls > 1) return response();
+      return new Response(
+        new ReadableStream({
+          cancel() {
+            beginCancel?.();
+            return new Promise<void>(() => {});
+          },
+        }),
+        { status, headers: { "Retry-After": "8" } },
+      );
+    };
+    const pending = openingExplorer(
+      new Chess(),
+      "lichess",
+      [],
+      [],
+      options(fetch, {
+        now: () => now,
+        sleep: async (ms) => {
+          delays.push(ms);
+          now += ms;
+        },
+        timeout: () =>
+          calls === 0 ? attempt.signal : AbortSignal.timeout(1_000),
+      }),
+    );
+
+    await cancellationStarted;
+    now = 5_000;
+    attempt.abort();
+
+    await pending;
+    assert.equal(calls, 2);
+    assert.deepEqual(delays, [3_000]);
+  }
+});
+
 test("preserves a 429 cooldown when response cleanup times out", async () => {
   const limiter = createExplorerLimiter();
   const attempt = new AbortController();
@@ -1754,6 +1806,14 @@ test("uses a wall clock for HTTP-date Retry-After", async () => {
     ),
   );
   assert.deepEqual(delays, [1_000]);
+});
+
+test("does not subtract monotonic cleanup from HTTP-date Retry-After", () => {
+  const wallNow = Date.parse("2026-08-21T00:00:00Z");
+  const retryAfter = "Fri, 21 Aug 2026 00:00:01 GMT";
+
+  assert.equal(retryAfterMs(retryAfter, wallNow, 5_000), 1_000);
+  assert.equal(rateLimitCooldownMs(retryAfter, wallNow, 5_000), 1_000);
 });
 
 test("keeps the default wall clock independent from a custom request clock", async (t) => {

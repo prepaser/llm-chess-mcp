@@ -349,6 +349,25 @@ test("pawn capture budgets count missing units exactly once", () => {
   );
 });
 
+test("promoted bishop colors contribute to pawn capture budgets", () => {
+  assert.throws(
+    () =>
+      assertLegalPosition(
+        new Chess(
+          "rnbqkbnr/pppppppp/8/8/8/1B1B1B1B/B1B1B1B1/K7 w - - 0 100",
+        ),
+      ),
+    (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+  );
+
+  for (const fen of [
+    "rnbqkbnr/pppppppp/8/8/8/1BBB4/1PPPPPPP/K7 w - - 0 100",
+    "k7/1ppppppp/1b1b4/8/8/8/PPPPPPPP/RNBQKBNR b - - 0 100",
+  ]) {
+    assert.doesNotThrow(() => assertLegalPosition(new Chess(fen)));
+  }
+});
+
 test("custom positions reject impossible check topology conservatively", () => {
   for (const fen of [
     "4r2k/8/8/8/1b6/5n2/8/4K3 w - - 0 1",

@@ -66,7 +66,7 @@ test("GameStore accepts deterministic clocks and IDs", () => {
   });
 
   const first = store.createGame();
-  assert.equal(first, "game-0");
+  assert.equal(first, "0:game-0");
   assert.deepEqual(store.listGames(), [first]);
   assert.equal(store.getSnapshot(first).revision, 0);
 
@@ -152,21 +152,21 @@ test("GameStore isolates game collections", () => {
   left.createGame();
   right.createGame();
 
-  assert.deepEqual(left.listGames(), ["left"]);
-  assert.deepEqual(right.listGames(), ["right"]);
+  assert.deepEqual(left.listGames(), ["0:left"]);
+  assert.deepEqual(right.listGames(), ["0:right"]);
 });
 
-test("GameStore validates limits and rejects duplicate IDs", () => {
+test("GameStore validates limits and generations distinguish repeated ID sources", () => {
   assert.throws(() => new GameStore({ maxGames: 0 }), RangeError);
   assert.throws(() => new GameStore({ idleTtlMs: -1 }), RangeError);
 
   const store = new GameStore({ maxGames: 2, createId: () => "same" });
-  store.createGame();
-  expectChessError("GAME_ID_COLLISION", () => store.createGame());
+  assert.equal(store.createGame(), "0:same");
+  assert.equal(store.createGame(), "1:same");
 });
 
 test("GameStore rejects invalid generated IDs without consuming capacity", () => {
-  for (const id of [42, null, {}, "", "x".repeat(257)]) {
+  for (const id of [42, null, {}, "", "x".repeat(255)]) {
     const store = new GameStore({
       maxGames: 1,
       clock: () => 0,
@@ -192,10 +192,27 @@ test("GameStore rejects invalid generated IDs without consuming capacity", () =>
   assert.deepEqual(store.listGames(), [valid]);
 
   nextId = "second";
-  assert.equal(store.createGame(), "second");
+  assert.equal(store.createGame(), "1:second");
   nextId = "unused";
   expectChessError("GAME_LIMIT_REACHED", () => store.createGame());
   assert.equal(calls, 3);
+});
+
+test("GameStore bounds generated IDs and fails closed on generation exhaustion", () => {
+  const bounded = new GameStore({
+    clock: () => 0,
+    createId: () => "x".repeat(254),
+  });
+  assert.equal(bounded.createGame().length, 256);
+
+  const exhausted = new GameStore({ clock: () => 0, createId: () => "game" });
+  (exhausted as unknown as { nextIdGeneration: number | null })
+    .nextIdGeneration = Number.MAX_SAFE_INTEGER;
+  const last = exhausted.createGame();
+  assert.match(last, /^[0-9a-z]+:game$/);
+  assert.equal(exhausted.deleteGame(last), true);
+  expectChessError("GAME_ID_GENERATION_FAILED", () => exhausted.createGame());
+  assert.equal(exhausted.gameCount(), 0);
 });
 
 test("GameStore preserves capacity under reentrant ID generation", () => {
@@ -207,7 +224,7 @@ test("GameStore preserves capacity under reentrant ID generation", () => {
     createId: () => {
       if (!reentered) {
         reentered = true;
-        assert.equal(store.createGame(), "nested");
+        assert.equal(store.createGame(), "0:nested");
         return "outer";
       }
       return "nested";
@@ -215,10 +232,10 @@ test("GameStore preserves capacity under reentrant ID generation", () => {
   });
 
   expectChessError("GAME_LIMIT_REACHED", () => store.createGame());
-  assert.deepEqual(store.listGames(), ["nested"]);
+  assert.deepEqual(store.listGames(), ["0:nested"]);
 });
 
-test("GameStore rechecks capacity and collisions after snapshot callbacks", () => {
+test("GameStore rechecks capacity and preserves unique IDs after snapshot callbacks", () => {
   let callback = () => {};
   class ReentrantCommentChess extends Chess {
     override getComments() {
@@ -235,12 +252,12 @@ test("GameStore rechecks capacity and collisions after snapshot callbacks", () =
   });
   callback = () => {
     callback = () => {};
-    assert.equal(limited.createGame(), "game-1");
+    assert.equal(limited.createGame(), "1:game-1");
   };
   expectChessError("GAME_LIMIT_REACHED", () =>
     limited.createGameFromChess(new ReentrantCommentChess()),
   );
-  assert.deepEqual(limited.listGames(), ["game-1"]);
+  assert.deepEqual(limited.listGames(), ["1:game-1"]);
 
   const colliding = new GameStore({
     maxGames: 2,
@@ -249,12 +266,39 @@ test("GameStore rechecks capacity and collisions after snapshot callbacks", () =
   });
   callback = () => {
     callback = () => {};
-    assert.equal(colliding.createGame(), "same");
+    assert.equal(colliding.createGame(), "1:same");
   };
-  expectChessError("GAME_ID_COLLISION", () =>
+  assert.equal(
     colliding.createGameFromChess(new ReentrantCommentChess()),
+    "0:same",
   );
-  assert.deepEqual(colliding.listGames(), ["same"]);
+  assert.deepEqual(colliding.listGames(), ["1:same", "0:same"]);
+});
+
+test("GameStore never reuses IDs after deletion or expiry", () => {
+  const deleted = new GameStore({ clock: () => 0, createId: () => "same" });
+  const first = deleted.createGame();
+  const staleMove = parseMove(deleted.getSnapshot(first).chess, "e4");
+  assert.equal(deleted.deleteGame(first), true);
+  const replacement = deleted.createGame();
+  assert.notEqual(replacement, first);
+  expectChessError("GAME_NOT_FOUND", () =>
+    deleted.applyMove(first, 0, staleMove),
+  );
+  assert.equal(deleted.getSnapshot(replacement).revision, 0);
+
+  let now = 0;
+  const expired = new GameStore({
+    clock: () => now,
+    idleTtlMs: 10,
+    createId: () => "same",
+  });
+  const oldId = expired.createGame();
+  now = 10;
+  expectChessError("GAME_EXPIRED", () => expired.getSnapshot(oldId));
+  const newId = expired.createGame();
+  assert.notEqual(newId, oldId);
+  expectChessError("GAME_NOT_FOUND", () => expired.getSnapshot(oldId));
 });
 
 test("GameStore rejects unsafe FEN counters before creating a game", () => {

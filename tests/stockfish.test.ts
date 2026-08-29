@@ -1469,6 +1469,108 @@ test("owned listener tokens survive public wrapper removal and prepending", asyn
   });
 });
 
+test("throwing process removal observers cannot strand engine teardown", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const removeListener = process.removeListener;
+    const swallow = () => {};
+    const uncaught = () => {};
+    const unhandled = () => {};
+    process.prependListener("uncaughtException", swallow);
+    const engine = {
+      listener: null,
+      sendCommand(command) {
+        if (command === "uci") queueMicrotask(() => this.listener?.("uciok"));
+        else if (command === "isready") queueMicrotask(() => this.listener?.("readyok"));
+        else if (command.startsWith("go depth ")) {
+          queueMicrotask(() => this.listener?.("bestmove e2e4"));
+        }
+      },
+      terminate() {},
+    };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          process.on("uncaughtException", uncaught);
+          process.on("uncaughtException", uncaught);
+          process.on("unhandledRejection", unhandled);
+          process.on("unhandledRejection", unhandled);
+          queueMicrotask(() => callback(null, engine));
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    let active = true;
+    let observerThrows = 0;
+    let preRemovalThrows = 0;
+    const observer = (event) => {
+      if (
+        active &&
+        (event === "uncaughtException" || event === "unhandledRejection")
+      ) {
+        observerThrows++;
+        throw new Error("removal observer failed");
+      }
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      await stockfish.analyze("fen", 1, 1);
+      process.on("removeListener", observer);
+      process.removeListener = function(event, listener) {
+        if (
+          active &&
+          event === "uncaughtException" &&
+          preRemovalThrows++ === 0
+        ) {
+          throw new Error("pre-removal failure");
+        }
+        return removeListener.call(this, event, listener);
+      };
+      const result = await Promise.race([
+        stockfish.quit().then(() => "resolved", () => "rejected"),
+        new Promise((resolve) => setTimeout(() => resolve("timeout"), 100)),
+      ]);
+      active = false;
+      process.stdout.write(JSON.stringify({
+        result,
+        observerThrows,
+        preRemovalThrows,
+        teardownPending: stockfish.teardownPending,
+        uncaught: process.listenerCount("uncaughtException"),
+        unhandled: process.listenerCount("unhandledRejection"),
+      }));
+    } finally {
+      active = false;
+      Module._load = load;
+      process.removeListener = removeListener;
+      process.removeListener("removeListener", observer);
+      process.removeAllListeners("uncaughtException");
+      process.removeAllListeners("unhandledRejection");
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    result: "resolved",
+    observerThrows: 4,
+    preRemovalThrows: 3,
+    teardownPending: 0,
+    uncaught: 1,
+    unhandled: 0,
+  });
+});
+
 test(
   "real lite-single quit stops active search without leaking stdout",
   { timeout: 15_000 },

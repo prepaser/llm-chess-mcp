@@ -94,7 +94,6 @@ export function safeHandler<
       if (signal.aborted) {
         signal.throwIfAborted();
       }
-      if (error instanceof Error && error.name === "AbortError") throw error;
       if (error instanceof ChessError) return toolError(error.code, error.message);
       if (error instanceof ExplorerError) {
         return toolError(explorerErrorCode(error.kind), error.message);

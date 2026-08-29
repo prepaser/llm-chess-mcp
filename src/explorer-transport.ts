@@ -23,7 +23,12 @@ export type ExplorerTransportResult =
       signal: AbortSignal;
       cleanupSignal: AbortSignal;
     }
-  | { type: "failure"; error: ExplorerError; retryAfter: string | null };
+  | {
+      type: "failure";
+      error: ExplorerError;
+      retryAfter: string | null;
+      retryAfterReceivedAt: number | null;
+    };
 
 async function discardResponse(
   response: Response,
@@ -81,6 +86,7 @@ export async function requestExplorerTransport(
       type: "failure",
       error: explorerError(signal.aborted ? "timeout" : "network"),
       retryAfter: null,
+      retryAfterReceivedAt: null,
     };
   }
 
@@ -94,11 +100,22 @@ export async function requestExplorerTransport(
 
   const kind = errorKindForStatus(response.status);
   const retryAfter = response.headers.get("retry-after");
+  let retryAfterReceivedAt: number | null = null;
+  if (kind === "rate_limited" || kind === "upstream") {
+    try {
+      retryAfterReceivedAt = now();
+    } catch (cause) {
+      await discardResponse(response, attemptSignal);
+      throwIfAborted(callerSignal);
+      throw cause;
+    }
+  }
   await discardResponse(response, attemptSignal);
   throwIfAborted(callerSignal);
   return {
     type: "failure",
     error: explorerError(kind, response.status),
     retryAfter,
+    retryAfterReceivedAt,
   };
 }

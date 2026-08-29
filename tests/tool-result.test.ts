@@ -238,10 +238,41 @@ test("safeHandler rethrows when cancellation races a handler error", async () =>
   await assert.rejects(handler({}, context(controller.signal)), /cancelled/);
 });
 
-test("safeHandler does not convert downstream aborts into tool errors", async () => {
+test("safeHandler masks uncorrelated AbortError failures", async () => {
   const handler = safeHandler(z.object({}), z.object({}), async () => {
-    throw new DOMException("session closed", "AbortError");
+    throw new DOMException("secret upstream URL timed out", "AbortError");
   });
 
-  await assert.rejects(handler({}), { name: "AbortError" });
+  assert.deepEqual(
+    await handler({}),
+    toolError("INTERNAL", "internal tool error"),
+  );
+});
+
+test("wire masks uncorrelated AbortError failures", async (t) => {
+  const inputSchema = z.strictObject({});
+  const outputSchema = z.strictObject({});
+  const server = new McpServer({ name: "abort-error-test", version: "1" });
+  server.registerTool(
+    "abort_error",
+    { inputSchema, outputSchema },
+    safeHandler(inputSchema, outputSchema, async () => {
+      throw new DOMException("secret upstream URL timed out", "AbortError");
+    }),
+  );
+  const client = new Client({ name: "abort-error-client", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const result = await client.callTool({ name: "abort_error", arguments: {} });
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent, {
+    error: { code: "INTERNAL", message: "internal tool error" },
+  });
+  assert.equal(JSON.stringify(result).includes("secret upstream URL"), false);
 });

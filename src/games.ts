@@ -40,6 +40,7 @@ export class GameStore {
   private readonly clock: () => number;
   private readonly createId: () => string;
   private lastClockTime: number | undefined;
+  private nextIdGeneration: number | null = 0;
 
   constructor(options: GameStoreOptions = {}) {
     this.maxGames = options.maxGames ?? MAX_GAMES;
@@ -95,17 +96,32 @@ export class GameStore {
       );
     }
 
-    const id = this.createId();
+    const rawId = this.createId();
     if (
-      typeof id !== "string" ||
-      id.length === 0 ||
-      id.length > MAX_GAME_ID_LENGTH
+      typeof rawId !== "string" ||
+      rawId.length === 0
     ) {
       throw new ChessError(
         "GAME_ID_GENERATION_FAILED",
-        `game ID must be a non-empty string of at most ${MAX_GAME_ID_LENGTH} characters`,
+        "game ID source must return a non-empty string",
       );
     }
+    const generation = this.nextIdGeneration;
+    if (generation === null) {
+      throw new ChessError(
+        "GAME_ID_GENERATION_FAILED",
+        "game ID generation exhausted",
+      );
+    }
+    const id = `${generation.toString(36)}:${rawId}`;
+    if (id.length > MAX_GAME_ID_LENGTH) {
+      throw new ChessError(
+        "GAME_ID_GENERATION_FAILED",
+        `game ID must be at most ${MAX_GAME_ID_LENGTH} characters`,
+      );
+    }
+    this.nextIdGeneration =
+      generation === Number.MAX_SAFE_INTEGER ? null : generation + 1;
     if (this.games.has(id)) {
       throw new ChessError("GAME_ID_COLLISION", `game ID already exists: ${id}`);
     }

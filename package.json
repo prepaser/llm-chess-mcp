@@ -53,7 +53,7 @@
     "test": "pnpm test:unit && pnpm test:integration && pnpm test:e2e",
     "check": "pnpm build && pnpm typecheck && pnpm typecheck:test && pnpm test:unit && pnpm test:integration && pnpm test:e2e:built && pnpm test:coverage && pnpm contract:check:built",
     "release:check": "pnpm check && pnpm test:package && pnpm audit --prod && npm pack --dry-run --ignore-scripts",
-    "prepublishOnly": "pnpm check",
+    "prepublishOnly": "pnpm release:check",
     "export:maia3": "python scripts/export_maia3.py"
   },
   "dependencies": {

@@ -213,15 +213,14 @@ function failureFor(
   setup: ExplorerSetup,
   error: ExplorerError,
   retryAfter: string | null = null,
-  rateLimitDelay?: number,
+  retryDelay?: number,
 ): ExplorerRetryOutcome<ExplorerResult> {
   if (error.kind === "rate_limited") {
     return {
       type: "failure",
       error,
       retry: "limiter",
-      delay:
-        rateLimitDelay ?? rateLimitCooldownMs(retryAfter, setup.wallNow()),
+      delay: retryDelay ?? rateLimitCooldownMs(retryAfter, setup.wallNow()),
     };
   }
   if (error.kind === "timeout" || error.kind === "network") {
@@ -237,7 +236,7 @@ function failureFor(
       type: "failure",
       error,
       retry: "backoff",
-      delay: retryAfterMs(retryAfter, setup.wallNow()),
+      delay: retryDelay ?? retryAfterMs(retryAfter, setup.wallNow()),
     };
   }
   return { type: "failure", error, retry: "stop" };
@@ -250,12 +249,31 @@ async function attemptRequest(
     return await setup.limiter.run(setup, async () => {
       const transport = await requestExplorerTransport(setup);
       if (transport.type === "failure") {
-        if (transport.error.kind === "rate_limited") {
-          const delay = rateLimitCooldownMs(
-            transport.retryAfter,
-            setup.wallNow(),
-          );
-          setup.limiter.cooldown(delay, setup.now());
+        if (
+          (transport.error.kind === "rate_limited" ||
+            transport.error.kind === "upstream") &&
+          transport.retryAfterReceivedAt !== null
+        ) {
+          const failedAt = setup.now();
+          const elapsed = failedAt - transport.retryAfterReceivedAt;
+          if (
+            !Number.isFinite(elapsed) ||
+            elapsed < 0 ||
+            elapsed > Number.MAX_SAFE_INTEGER
+          ) {
+            throw explorerError("invalid_input");
+          }
+          const delay =
+            transport.error.kind === "rate_limited"
+              ? rateLimitCooldownMs(
+                  transport.retryAfter,
+                  setup.wallNow(),
+                  elapsed,
+                )
+              : retryAfterMs(transport.retryAfter, setup.wallNow(), elapsed);
+          if (transport.error.kind === "rate_limited") {
+            setup.limiter.cooldown(delay, failedAt);
+          }
           return failureFor(
             setup,
             transport.error,
