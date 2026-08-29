@@ -83,6 +83,24 @@ test("GameStore snapshots preserve delimiter-bearing comments exactly", () => {
   );
 });
 
+test("snapshotChess restores many unsafe comments in one carrier pass", () => {
+  const count = 128;
+  const moves = ["Nf3", "Nf6", "Ng1", "Ng8"];
+  const pgn = `${Array.from({ length: count }, (_, index) => {
+    const number = Math.floor(index / 2) + 1;
+    const prefix = index % 2 === 0 ? `${number}.` : `${number}...`;
+    return `${prefix} ${moves[index % moves.length]} ;comment ${index} }\n`;
+  }).join("")}*`;
+  const chess = new Chess();
+  chess.loadPgn(pgn);
+
+  const snapshot = snapshotChess(chess);
+
+  assert.equal(snapshot.history().length, count);
+  assert.equal(snapshot.getComments().length, count);
+  assert.equal(snapshot.getComments().at(-1)?.comment, `comment ${count - 1} }`);
+});
+
 test("snapshotChess rejects malformed en passant without mutating its source", () => {
   const chess = new Chess(
     "4k3/8/8/3P4/8/8/P7/4K3 w - e6 0 1",
@@ -788,6 +806,37 @@ test("pgnOf enforces programmatic header contracts", () => {
   assert.throws(
     () => pgnOf(lowercaseSetup),
     (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+  );
+});
+
+test("terminal PGN snapshots isolate unsafe comments from custom headers", () => {
+  const fen = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1";
+  const imported = parseImportedPgn(
+    `[Event "A \\"quote\\""]\n[X0 "digit"]\n[Valid_Name "underscore"]\n[SetUp "1"]\n[FEN "${fen}"]\n[Result "1/2-1/2"]\n\n;same } comment\n1/2-1/2`,
+  );
+  const roundTrip = parseImportedPgn(pgnOf(imported));
+
+  assert.equal(roundTrip.getHeaders().Event, 'A "quote"');
+  assert.equal(roundTrip.getHeaders().X0, "digit");
+  assert.equal(roundTrip.getHeaders().Valid_Name, "underscore");
+  assert.equal(roundTrip.getComments()[0]?.comment, "same } comment");
+});
+
+test("pgnOf preserves zero-ply root comments", () => {
+  const fen = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1";
+  const safe = new Chess(fen);
+  safe.setComment("safe root comment");
+  assert.equal(
+    parseImportedPgn(pgnOf(safe)).getComments()[0]?.comment,
+    "safe root comment",
+  );
+
+  const unsafe = parseImportedPgn(
+    `[SetUp "1"]\n[FEN "${fen}"]\n[Result "1/2-1/2"]\n\n;unsafe } root\n1/2-1/2`,
+  );
+  assert.equal(
+    parseImportedPgn(pgnOf(unsafe)).getComments()[0]?.comment,
+    "unsafe } root",
   );
 });
 

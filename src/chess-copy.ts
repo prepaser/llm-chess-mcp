@@ -28,6 +28,31 @@ const CANONICAL_PGN_HEADERS = new Map(
   ].map((name) => [name.toLowerCase(), name]),
 );
 
+function restoreHeaders(
+  chess: Chess,
+  sourceHeaders: [string, string][],
+): void {
+  const sourceNames = new Set(sourceHeaders.map(([key]) => key.toLowerCase()));
+  for (const key of Object.keys(chess.getHeaders())) {
+    if (!sourceNames.has(key.toLowerCase())) chess.removeHeader(key);
+  }
+  const names = new Map<string, string[]>();
+  for (const key of Object.keys(chess.getHeaders())) {
+    const existing = names.get(key.toLowerCase());
+    if (existing) existing.push(key);
+    else names.set(key.toLowerCase(), [key]);
+  }
+  for (const [key, value] of sourceHeaders) {
+    const lower = key.toLowerCase();
+    const canonical = CANONICAL_PGN_HEADERS.get(lower) ?? key;
+    for (const existing of names.get(lower) ?? []) {
+      if (existing !== canonical) chess.removeHeader(existing);
+    }
+    chess.setHeader(canonical, value);
+    names.set(lower, [canonical]);
+  }
+}
+
 function squareColor(square: Square): 0 | 1 {
   return ((square.charCodeAt(0) - 97 + Number(square[1])) % 2) as 0 | 1;
 }
@@ -254,33 +279,13 @@ export function snapshotChess(chess: Chess): Chess {
     ]),
   );
   const sourceHeaders = Object.entries(chess.getHeaders());
-  const sourceNames = new Set(sourceHeaders.map(([key]) => key.toLowerCase()));
-  for (const key of Object.keys(snapshot.getHeaders())) {
-    if (!sourceNames.has(key.toLowerCase())) snapshot.removeHeader(key);
-  }
-  const snapshotNames = new Map<string, string[]>();
-  for (const key of Object.keys(snapshot.getHeaders())) {
-    const names = snapshotNames.get(key.toLowerCase());
-    if (names) names.push(key);
-    else snapshotNames.set(key.toLowerCase(), [key]);
-  }
-  for (const [key, value] of sourceHeaders) {
-    const lower = key.toLowerCase();
-    const canonical = CANONICAL_PGN_HEADERS.get(lower) ?? key;
-    for (const existing of snapshotNames.get(lower) ?? []) {
-      if (existing !== canonical) snapshot.removeHeader(existing);
-    }
-    snapshot.setHeader(canonical, value);
-    snapshotNames.set(lower, [canonical]);
-  }
   const unsafeComments = [...comments.values()].some((comment) => /[{}]/.test(comment));
   let markerPrefix = "\uE000";
   if (unsafeComments) {
     const occupied = [...sourceHeaders.flat(), ...comments.values()].join("\u0000");
     while (occupied.includes(markerPrefix)) markerPrefix += "\uE001";
   }
-  const markers = new Map<string, string>();
-  let markerIndex = 0;
+  const markerComments: string[] = [];
   const restoreComment = () => {
     const comment = comments.get(snapshot.fen());
     if (comment === undefined) return;
@@ -288,9 +293,8 @@ export function snapshotChess(chess: Chess): Chess {
       snapshot.setComment(comment);
       return;
     }
-    const marker = `${markerPrefix}${markerIndex}${markerPrefix}`;
-    markerIndex += 1;
-    markers.set(marker, comment);
+    const marker = `${markerPrefix}${markerComments.length}${markerPrefix}`;
+    markerComments.push(comment);
     snapshot.setComment(marker);
   };
   restoreComment();
@@ -299,12 +303,16 @@ export function snapshotChess(chess: Chess): Chess {
     restoreComment();
   }
   assertSafeFenCounters(snapshot.fen());
-  if (!unsafeComments) return snapshot;
-
-  let pgn = snapshot.pgn();
-  for (const [marker, comment] of markers) {
-    pgn = pgn.replaceAll(`{${marker}}`, () => `;${comment}\n`);
+  if (!unsafeComments) {
+    restoreHeaders(snapshot, sourceHeaders);
+    return snapshot;
   }
+
+  const escapedPrefix = markerPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const marker = new RegExp(`\\{${escapedPrefix}(\\d+)${escapedPrefix}\\}`, "g");
+  const pgn = snapshot.pgn().replace(marker, (_match, index: string) => {
+    return `;${markerComments[Number(index)]}\n`;
+  });
   const restored = new Chess();
   restored.loadPgn(pgn);
   const restoredHistory = restored.history({ verbose: true });
@@ -320,6 +328,7 @@ export function snapshotChess(chess: Chess): Chess {
     restored.move(moveDescriptor(move));
     restoreSafeComment();
   }
+  restoreHeaders(restored, sourceHeaders);
   assertSafeFenCounters(restored.fen());
   return restored;
 }

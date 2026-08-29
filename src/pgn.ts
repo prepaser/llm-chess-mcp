@@ -321,13 +321,13 @@ function pgnText(chess: Chess): string {
   const comments = chess.getComments();
   for (const { comment } of comments) assertPgnTokenSize(comment);
   const raw = chess.pgn();
-  const separator = raw.indexOf("\n\n");
-  let movetext =
-    headers.length === 0
-      ? raw
-      : separator < 0
-        ? ""
-        : raw.slice(separator + 2);
+  let movetextStart = 0;
+  for (let index = 0; index < headers.length; index += 1) {
+    const lineEnd = raw.indexOf("\n", movetextStart);
+    movetextStart = lineEnd < 0 ? raw.length : lineEnd + 1;
+  }
+  if (headers.length > 0 && raw[movetextStart] === "\n") movetextStart += 1;
+  let movetext = raw.slice(movetextStart);
   const unsafeComments = [
     ...new Set(
       comments
