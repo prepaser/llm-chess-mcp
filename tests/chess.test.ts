@@ -644,6 +644,41 @@ test("pgnOf rejects line breaks in programmatic headers", () => {
   }
 });
 
+test("pgnOf rejects invalid programmatic header names", () => {
+  for (const name of ["1Bad", "_Bad"]) {
+    assert.throws(
+      () => parseImportedPgn(`[${name} "value"]\n\n1.e4 *`),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+  for (const name of [
+    "",
+    "1Bad",
+    "_Bad",
+    "Bad Name",
+    "Bad]Name",
+    "Bad\\Name",
+    'Bad"Name',
+    "Bad\nName",
+  ]) {
+    const chess = new Chess();
+    chess.setHeader(name, "value");
+    chess.move("e4");
+    assert.throws(
+      () => pgnOf(chess),
+      (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+    );
+  }
+
+  const valid = new Chess();
+  valid.setHeader("Valid_Name0", "value");
+  valid.move("e4");
+  assert.equal(
+    parseImportedPgn(pgnOf(valid)).getHeaders().Valid_Name0,
+    "value",
+  );
+});
+
 test("pgnOf bounds programmatic headers and comments", () => {
   const maximum = "a".repeat(MAX_PGN_TOKEN_BYTES);
 

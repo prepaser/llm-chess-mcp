@@ -638,6 +638,48 @@ test("initialization callback replaces the returned engine", async () => {
   assert.equal(initialized.terminations, 0);
 });
 
+test("callback replacement survives reentrant old-engine teardown", async () => {
+  for (const reentry of ["invalidate", "adopt"] as const) {
+    let callback!: (error: Error | null, current: StockfishEngine) => void;
+    let replacement!: ReturnType<typeof respondingEngine>;
+    let reentered = false;
+    const returned = engine((_current, command) => {
+      if (command !== "quit" || reentered) return;
+      reentered = true;
+      callback(null, reentry === "invalidate" ? returned : replacement);
+    });
+    replacement = respondingEngine(true);
+    const stockfish = new Stockfish({
+      init: (_flavor, initCallback) => {
+        callback = initCallback;
+        return returned;
+      },
+      timeouts: { init: 50, handshake: 50, analyze: 50, stopGrace: 5 },
+    });
+
+    const analysis = stockfish.analyze("fen", 1, 1);
+    await nextImmediate();
+    callback(null, replacement);
+
+    if (reentry === "invalidate") {
+      await assert.rejects(analysis, /initializer reused a terminated engine/);
+      await stockfish.quit();
+      assert.equal(replacement.terminations, 1);
+      assert.deepEqual(replacement.commands, ["quit"]);
+    } else {
+      assert.equal((await analysis)[0]?.scoreCp, 42);
+      assert.equal(replacement.terminations, 0);
+      await stockfish.quit();
+      assert.equal(replacement.terminations, 1);
+    }
+    assert.equal(returned.terminations, 1);
+    assert.equal(
+      returned.commands.filter((command) => command === "quit").length,
+      1,
+    );
+  }
+});
+
 test("analyze timeout resets the engine and queued work reinitializes", async () => {
   const first = respondingEngine(false);
   const second = respondingEngine(true);

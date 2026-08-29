@@ -36,6 +36,9 @@ function safeSum(values: readonly number[]): number {
 }
 
 function assertLichessMove(move: LichessMove): void {
+  if (move.count < 1) {
+    throw new RangeError("chess move count must be positive");
+  }
   if (move.count !== safeSum([move.white, move.draws, move.black])) {
     throw new RangeError("derived chess move count is inconsistent");
   }
@@ -181,6 +184,23 @@ export function candidateSetFromData(
   maiaMoves: Maia3Move[],
   lichessResult: LichessCandidateData,
 ): CandidateSet {
+  if (
+    (lichessResult.status === "disabled" ||
+      lichessResult.status === "unavailable") &&
+    lichessResult.moves.length > 0
+  ) {
+    throw new RangeError(
+      `${lichessResult.status} explorer data cannot contain moves`,
+    );
+  }
+  if (
+    (lichessResult.status === "available") !==
+    (lichessResult.moves.length > 0)
+  ) {
+    throw new RangeError(
+      `${lichessResult.status} explorer data has inconsistent moves`,
+    );
+  }
   if (chess.isGameOver()) {
     return {
       candidates: [],
@@ -210,6 +230,7 @@ export function candidateSetFromData(
     const uci = line.pv[0];
     const evaluation = toEval(line);
     if (uci !== undefined && legalUcis.has(uci) && evaluation !== null) {
+      if (sfByUci.has(uci)) throw new RangeError("duplicate Stockfish move");
       sfByUci.set(uci, { line, evaluation });
     }
   }
@@ -330,6 +351,7 @@ export function createCandidateComputation(
         workSignal.throwIfAborted();
         return await work();
       } catch (error) {
+        workSignal.throwIfAborted();
         controller.abort(error);
         throw error;
       }

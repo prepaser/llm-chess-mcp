@@ -239,8 +239,19 @@ export class Stockfish {
             return;
           }
 
-          if (session.engine && session.engine !== initializedEngine) {
-            this.terminate(session.engine);
+          const replacedEngine = session.engine;
+          if (replacedEngine && replacedEngine !== initializedEngine) {
+            this.terminate(replacedEngine);
+            if (
+              this.session !== session ||
+              session.readySettled ||
+              session.engine !== replacedEngine
+            ) {
+              if (initializedEngine !== this.session?.engine) {
+                this.terminate(initializedEngine);
+              }
+              return;
+            }
           }
           session.engine = initializedEngine;
           if (error) {

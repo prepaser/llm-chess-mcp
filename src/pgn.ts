@@ -32,7 +32,8 @@ const CANONICAL_HEADERS = new Map(
   ].map((name) => [name.toLowerCase(), name]),
 );
 
-const TAG_LINE = /^(\s*\[\s*)([A-Za-z0-9_]+)(\s+")((?:\\.|[^"\\])*)("\s*\]\s*)$/;
+const HEADER_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
+const TAG_LINE = /^(\s*\[\s*)([A-Za-z][A-Za-z0-9_]*)(\s+")((?:\\.|[^"\\])*)("\s*\]\s*)$/;
 
 function assertPgnTokenSize(value: string): void {
   if (Buffer.byteLength(value, "utf8") > MAX_PGN_TOKEN_BYTES) {
@@ -194,6 +195,9 @@ function pgnText(chess: Chess): string {
   for (const [name, value] of headers) {
     assertPgnTokenSize(name);
     assertPgnTokenSize(encodeHeaderValue(value));
+    if (!HEADER_NAME.test(name)) {
+      throw new ChessError("INVALID_PGN", "invalid PGN header name");
+    }
   }
   const comments = chess.getComments();
   for (const { comment } of comments) assertPgnTokenSize(comment);

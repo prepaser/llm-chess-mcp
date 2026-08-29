@@ -784,7 +784,7 @@
                 "uci": {
                   "maxLength": 256,
                   "minLength": 1,
-                  "pattern": "^[a-h][1-8][a-h][1-8][qrbn]?$",
+                  "pattern": "^(?!([a-h][1-8])\\1)(?:[a-h][1-8][a-h][1-8]|(?:[a-h]7[a-h]8|[a-h]2[a-h]1)[qrbn])$",
                   "type": "string"
                 }
               },
@@ -1030,6 +1030,7 @@
                     "wdl": {
                       "anyOf": [
                         {
+                          "description": "[wins, draws, losses]; the three counts must sum to 1000.",
                           "prefixItems": [
                             {
                               "maximum": 1000,
@@ -1052,7 +1053,8 @@
                         {
                           "type": "null"
                         }
-                      ]
+                      ],
+                      "description": "[wins, draws, losses]; the three counts must sum to 1000."
                     },
                     "whiteCp": {
                       "anyOf": [
@@ -1087,6 +1089,7 @@
                   "type": "object"
                 },
                 "opening": {
+                  "description": "games, white, draws, and black must be all null or all present; games must equal white + draws + black",
                   "oneOf": [
                     {
                       "additionalProperties": false,
@@ -1477,7 +1480,7 @@
                 "uci": {
                   "maxLength": 256,
                   "minLength": 1,
-                  "pattern": "^[a-h][1-8][a-h][1-8][qrbn]?$",
+                  "pattern": "^(?!([a-h][1-8])\\1)(?:[a-h][1-8][a-h][1-8]|(?:[a-h]7[a-h]8|[a-h]2[a-h]1)[qrbn])$",
                   "type": "string"
                 }
               },
@@ -1781,6 +1784,7 @@
                     "wdl": {
                       "anyOf": [
                         {
+                          "description": "[wins, draws, losses]; the three counts must sum to 1000.",
                           "prefixItems": [
                             {
                               "maximum": 1000,
@@ -1803,7 +1807,8 @@
                         {
                           "type": "null"
                         }
-                      ]
+                      ],
+                      "description": "[wins, draws, losses]; the three counts must sum to 1000."
                     },
                     "whiteCp": {
                       "anyOf": [
@@ -1838,6 +1843,7 @@
                   "type": "object"
                 },
                 "opening": {
+                  "description": "games, white, draws, and black must be all null or all present; games must equal white + draws + black",
                   "oneOf": [
                     {
                       "additionalProperties": false,
@@ -2228,7 +2234,7 @@
                 "uci": {
                   "maxLength": 256,
                   "minLength": 1,
-                  "pattern": "^[a-h][1-8][a-h][1-8][qrbn]?$",
+                  "pattern": "^(?!([a-h][1-8])\\1)(?:[a-h][1-8][a-h][1-8]|(?:[a-h]7[a-h]8|[a-h]2[a-h]1)[qrbn])$",
                   "type": "string"
                 }
               },
@@ -2586,6 +2592,7 @@
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
+        "description": "The top-level counts must sum to a safe integer; summed move white, draws, and black counts must not exceed their corresponding top-level counts",
         "properties": {
           "black": {
             "maximum": 9007199254740991,
@@ -2610,6 +2617,7 @@
           "moves": {
             "items": {
               "additionalProperties": false,
+              "description": "count must equal white + draws + black",
               "properties": {
                 "averageRating": {
                   "anyOf": [
@@ -2630,7 +2638,7 @@
                 },
                 "count": {
                   "maximum": 9007199254740991,
-                  "minimum": 0,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 "draws": {
@@ -2646,7 +2654,7 @@
                 "uci": {
                   "maxLength": 256,
                   "minLength": 1,
-                  "pattern": "^[a-h][1-8][a-h][1-8][qrbn]?$",
+                  "pattern": "^(?!([a-h][1-8])\\1)(?:[a-h][1-8][a-h][1-8]|(?:[a-h]7[a-h]8|[a-h]2[a-h]1)[qrbn])$",
                   "type": "string"
                 },
                 "white": {
@@ -2822,6 +2830,7 @@
                 "wdl": {
                   "anyOf": [
                     {
+                      "description": "[wins, draws, losses]; the three counts must sum to 1000.",
                       "prefixItems": [
                         {
                           "maximum": 1000,
@@ -2844,7 +2853,8 @@
                     {
                       "type": "null"
                     }
-                  ]
+                  ],
+                  "description": "[wins, draws, losses]; the three counts must sum to 1000."
                 }
               },
               "required": [

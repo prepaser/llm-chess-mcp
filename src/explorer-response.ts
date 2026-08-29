@@ -151,6 +151,9 @@ export async function normalizeExplorerResponse(
     if (ucis.has(move.uci) || options.legalMoves.get(move.uci) !== move.san) {
       throw explorerError("invalid_response");
     }
+    if (sumCounts(move.white, move.draws, move.black) === 0) {
+      throw explorerError("invalid_response");
+    }
     ucis.add(move.uci);
     white = sumCounts(white, move.white);
     draws = sumCounts(draws, move.draws);

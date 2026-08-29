@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as z from "zod/v4";
 import { EXPLORER_MAX_MOVES, EXPLORER_MAX_STRING_LENGTH } from "../src/explorer-core.js";
 import {
   CandidateSchema,
@@ -8,6 +9,13 @@ import {
   OpeningExplorerOutputSchema,
   OpeningStatsSchema,
 } from "../src/tool-schemas.js";
+
+type JsonSchema = {
+  description?: string;
+  items?: JsonSchema;
+  pattern?: string;
+  properties?: Record<string, JsonSchema>;
+};
 
 const values = {
   games: null,
@@ -95,6 +103,7 @@ test("explorer output enforces bounded strings and consistent safe counts", () =
 
   for (const move of [
     { ...lichessMove, count: 8 },
+    { ...lichessMove, white: 0, draws: 0, black: 0, count: 0 },
     { ...lichessMove, white: -1 },
     { ...lichessMove, draws: 0.5 },
     { ...lichessMove, averageRating: -1 },
@@ -175,4 +184,25 @@ test("candidate output enforces move, probability, evaluation, and opening bound
     Maia3MoveSchema.safeParse({ uci: "g1f3", san: "Nf3", prob: -0.01 }).success,
     false,
   );
+});
+
+test("wire schemas expose UCI and cross-field constraints", () => {
+  const candidateSchema = z.toJSONSchema(CandidateSchema) as JsonSchema;
+  const explorerSchema = z.toJSONSchema(OpeningExplorerOutputSchema) as JsonSchema;
+  const uciSchema = candidateSchema.properties?.uci;
+  const objectiveSchema = candidateSchema.properties?.objective;
+  const wdlSchema = objectiveSchema?.properties?.wdl;
+  const openingSchema = candidateSchema.properties?.opening;
+  const moveSchema = explorerSchema.properties?.moves?.items;
+
+  assert.ok(uciSchema?.pattern);
+  const uciPattern = new RegExp(uciSchema.pattern);
+  assert.equal(uciPattern.test("e2e2"), false);
+  assert.equal(uciPattern.test("e7e8q"), true);
+  assert.equal(uciPattern.test("e2e1n"), true);
+  assert.equal(uciPattern.test("e2e4q"), false);
+  assert.match(wdlSchema?.description ?? "", /sum to 1000/);
+  assert.match(openingSchema?.description ?? "", /all null or all present/);
+  assert.match(explorerSchema.description ?? "", /must not exceed/);
+  assert.match(moveSchema?.description ?? "", /count must equal/);
 });

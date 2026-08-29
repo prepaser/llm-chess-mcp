@@ -178,6 +178,39 @@ test("rechecks caller cancellation after candidate sources finish", async () => 
   );
 });
 
+test("preserves caller cancellation over a later dependency failure", async () => {
+  const controller = new AbortController();
+  const cause = new Error("caller cancelled before rejection");
+  const failure = new Error("late dependency failure");
+  let rejectAnalysis!: (error: unknown) => void;
+  const computeCandidates = createCandidateComputation({
+    analyze: async () =>
+      await new Promise((_resolve, reject) => {
+        rejectAnalysis = reject;
+      }),
+    humanMoveDistribution: async () => [],
+    explorerEnabled: () => false,
+    openingExplorer: async () => {
+      throw new Error("unreachable");
+    },
+    explorerFailureReason: () => "upstream",
+  });
+  const pending = computeCandidates(
+    new Chess(),
+    1500,
+    1,
+    1,
+    1,
+    null,
+    controller.signal,
+  );
+  await Promise.resolve();
+  controller.abort(cause);
+  rejectAnalysis(failure);
+
+  await assert.rejects(pending, (error: unknown) => error === cause);
+});
+
 test("aborts sibling candidate sources after a fatal source failure", async () => {
   const failure = new Error("Maia failed");
   let engineAbort: unknown;
@@ -473,6 +506,35 @@ test("uses only legal scored root lines for engine candidate metrics", () => {
   assert.deepEqual(moveSensitivity, { level: "medium", topMoveSpreadCp: 80 });
 });
 
+test("rejects duplicate legal scored Stockfish root moves", () => {
+  const disabled: LichessCandidateData = {
+    status: "disabled",
+    totalGames: null,
+    moves: [],
+  };
+  assert.throws(
+    () =>
+      candidateSetFromData(
+        new Chess(),
+        1500,
+        [sfLine("e2e4", 100, 1), sfLine("e2e4", -300, 2)],
+        [],
+        disabled,
+      ),
+    /duplicate Stockfish move/,
+  );
+  assert.equal(
+    candidateSetFromData(
+      new Chess(),
+      1500,
+      [sfLine("e2e4", null, 1), sfLine("e2e4", 100, 2)],
+      [],
+      disabled,
+    ).candidates.length,
+    1,
+  );
+});
+
 test("filters illegal dependency moves and handles explorer failures", () => {
   const { candidates, moveSensitivity } = candidateSetFromData(
     new Chess(),
@@ -563,6 +625,25 @@ test("rejects malformed and duplicate candidate dependency data", () => {
       }),
     /move count exceeds explorer total/,
   );
+  assert.throws(
+    () =>
+      candidateSetFromData(new Chess(), 1500, [], [], {
+        status: "available",
+        totalGames: 0,
+        moves: [
+          {
+            uci: "e2e4",
+            san: "e4",
+            white: 0,
+            draws: 0,
+            black: 0,
+            count: 0,
+            averageRating: null,
+          },
+        ],
+      }),
+    /move count must be positive/,
+  );
   const move = {
     uci: "e2e4",
     san: "e4",
@@ -581,6 +662,33 @@ test("rejects malformed and duplicate candidate dependency data", () => {
       }),
     /duplicate explorer move/,
   );
+  for (const data of [
+    {
+      status: "disabled" as const,
+      totalGames: null,
+      moves: [{ ...move, white: 0, count: 0 }],
+    },
+    {
+      status: "unavailable" as const,
+      reason: "upstream" as const,
+      totalGames: null,
+      moves: [{ ...move, white: 0, count: 0 }],
+    },
+  ]) {
+    assert.throws(
+      () => candidateSetFromData(new Chess(), 1500, [], [], data),
+      /explorer data cannot contain moves/,
+    );
+  }
+  for (const data of [
+    { status: "available" as const, totalGames: 1, moves: [] },
+    { status: "no_data" as const, totalGames: 1, moves: [move] },
+  ]) {
+    assert.throws(
+      () => candidateSetFromData(new Chess(), 1500, [], [], data),
+      /explorer data has inconsistent moves/,
+    );
+  }
 });
 
 test("classifies move sensitivity at exact spread boundaries", () => {

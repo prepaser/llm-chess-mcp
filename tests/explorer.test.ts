@@ -1963,6 +1963,31 @@ test("rejects invalid JSON and impossible aggregate counts", async () => {
     ),
     expectKind("invalid_response"),
   );
+  await assert.rejects(
+    openingExplorer(
+      new Chess(),
+      "lichess",
+      [],
+      [],
+      options(async () =>
+        response(200, {
+          white: 0,
+          draws: 0,
+          black: 0,
+          moves: [
+            {
+              uci: "e2e4",
+              san: "e4",
+              white: 0,
+              draws: 0,
+              black: 0,
+            },
+          ],
+        }),
+      ),
+    ),
+    expectKind("invalid_response"),
+  );
 });
 
 test("rejects unsafe derived explorer count sums", async () => {
