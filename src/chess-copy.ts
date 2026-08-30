@@ -172,6 +172,45 @@ function assertEnPassantPosition(chess: Chess): void {
       "FEN en passant target does not match a double pawn move",
     );
   }
+
+  const fullmove = fields[5] ?? "";
+  if (!isSafeDecimal(fullmove, 1)) {
+    throw new ChessError(
+      "INVALID_FEN",
+      "FEN fullmove number must be a positive safe decimal integer",
+    );
+  }
+  const setup = new Chess(fields.join(" "));
+  setup.remove(pawnSquare);
+  setup.put({ type: "p", color: pawnColor }, originSquare);
+  const priorFullmove =
+    turn === "w" ? Number(fullmove) - 1 : Number(fullmove);
+  const priorFen = [
+    setup.fen().split(" ")[0],
+    pawnColor,
+    fields[2],
+    "-",
+    "0",
+    String(priorFullmove),
+  ].join(" ");
+  const prior = new Chess(priorFen);
+  assertLegalPosition(prior);
+  try {
+    prior.move({ from: originSquare, to: pawnSquare });
+  } catch {
+    throw new ChessError(
+      "INVALID_FEN",
+      "FEN en passant target does not follow a legal double pawn move",
+    );
+  }
+  const transitioned = exactFen(prior).split(" ");
+  transitioned[3] = target;
+  if (transitioned.join(" ") !== fields.join(" ")) {
+    throw new ChessError(
+      "INVALID_FEN",
+      "FEN en passant target does not match the previous position",
+    );
+  }
 }
 
 function moveDescriptor(move: Move): MoveDescriptor {

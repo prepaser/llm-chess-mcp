@@ -291,7 +291,11 @@ test("position_analyze rejects invalid injected MultiPV sets", async (t) => {
     pv: ["e2e4"],
   };
   const server = buildServer(
-    analysisServices(games, async () => [], async () => [line, { ...line }]),
+    analysisServices(
+      games,
+      async () => [],
+      (async () => [line, { ...line }]) as unknown as AppServices["analyze"],
+    ),
   );
   const client = new Client({ name: "analysis-tests", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

@@ -1,4 +1,5 @@
 import type { Chess } from "chess.js";
+import { snapshotChess } from "./chess.js";
 import { stockfish } from "./engines/stockfish.js";
 import {
   ExplorerError,
@@ -89,11 +90,12 @@ const humanMoveDistribution: AppServices["humanMoveDistribution"] = async (
 ) => {
   const beforeLoad = shutdownError();
   if (beforeLoad) throw beforeLoad;
+  const position = snapshotChess(chess);
   const maia = await loadMaia();
   const afterLoad = shutdownError();
   if (afterLoad) throw afterLoad;
   return maia.humanMoveDistribution(
-    chess,
+    position,
     elo,
     opponentElo,
     topN,

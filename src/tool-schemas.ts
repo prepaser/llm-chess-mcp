@@ -113,7 +113,7 @@ function addScoreIssue(
 
 export const SfLineSchema = z
   .strictObject(sfLineShape)
-  .superRefine(addScoreIssue) satisfies z.ZodType<SfLine>;
+  .superRefine(addScoreIssue) as z.ZodType<SfLine>;
 
 export const AnalysisLineSchema = z
   .strictObject({

@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from "node:async_hooks";
+import { AsyncLocalStorage, createHook } from "node:async_hooks";
 import { createRequire } from "node:module";
 import { dirname, sep } from "node:path";
 import type { SfLine } from "../domain.js";
@@ -24,7 +24,40 @@ export type StockfishEngine = {
   terminate: () => void;
 };
 
-const processListenerCleanups = new WeakMap<StockfishEngine, () => void>();
+type ProcessListenerCleanup = () => void;
+
+const pendingProcessListenerCleanups = new WeakMap<
+  StockfishEngine,
+  Set<ProcessListenerCleanup>
+>();
+
+function addPendingProcessListenerCleanup(
+  engine: StockfishEngine,
+  cleanup: ProcessListenerCleanup,
+): void {
+  const cleanups = pendingProcessListenerCleanups.get(engine);
+  if (cleanups) cleanups.add(cleanup);
+  else pendingProcessListenerCleanups.set(engine, new Set([cleanup]));
+}
+
+function movePendingProcessListenerCleanup(
+  from: StockfishEngine,
+  to: StockfishEngine,
+  cleanup: ProcessListenerCleanup,
+): void {
+  const cleanups = pendingProcessListenerCleanups.get(from);
+  if (!cleanups?.delete(cleanup)) return;
+  if (cleanups.size === 0) pendingProcessListenerCleanups.delete(from);
+  addPendingProcessListenerCleanup(to, cleanup);
+}
+
+function takePendingProcessListenerCleanups(
+  engine: StockfishEngine,
+): Set<ProcessListenerCleanup> | undefined {
+  const cleanups = pendingProcessListenerCleanups.get(engine);
+  if (cleanups) pendingProcessListenerCleanups.delete(engine);
+  return cleanups;
+}
 
 export type StockfishInit = (
   flavor: string,
@@ -148,10 +181,12 @@ function loadStockfish(): StockfishInit {
       ) => {
         if (!callbackDelivered) {
           callbackDelivered = true;
-          const cleanup = processListenerCleanups.get(owner);
-          if (cleanup && initializedEngine !== owner) {
-            processListenerCleanups.delete(owner);
-            processListenerCleanups.set(initializedEngine, cleanup);
+          if (initializedEngine !== owner) {
+            movePendingProcessListenerCleanup(
+              owner,
+              initializedEngine,
+              hooks.cleanup,
+            );
             owner = initializedEngine;
           }
         }
@@ -181,7 +216,7 @@ function loadStockfish(): StockfishInit {
         throw error;
       }
 
-      processListenerCleanups.set(engine, hooks.cleanup);
+      addPendingProcessListenerCleanup(engine, hooks.cleanup);
       owner = engine;
       phase = "active";
       for (const [error, initializedEngine] of pendingCallbacks) {
@@ -228,6 +263,8 @@ type HookCapture = {
   pending: Record<HookEvent, Set<HookListener>>;
   registering: boolean;
   remove: typeof process.removeListener;
+  resources: Set<number>;
+  terminal: boolean;
 };
 
 const hookMethodNames: HookMethodName[] = [
@@ -239,12 +276,37 @@ const hookMethodNames: HookMethodName[] = [
 ];
 const hookStorage = new AsyncLocalStorage<HookCapture>();
 const activeHookCaptures = new Set<HookCapture>();
+const hookResources = new Map<number, HookCapture>();
 let hookMethods:
   | {
       descriptors: Record<HookMethodName, PropertyDescriptor | undefined>;
       original: Record<HookMethodName, HookMethod>;
     }
   | undefined;
+
+function releaseHookResource(asyncId: number): void {
+  const capture = hookResources.get(asyncId);
+  if (!capture) return;
+  hookResources.delete(asyncId);
+  capture.resources.delete(asyncId);
+  if (!capture.terminal || capture.resources.size !== 0) return;
+  capture.terminal = false;
+  activeHookCaptures.delete(capture);
+  try {
+    restoreHookMethods();
+  } catch {}
+}
+
+const hookTracker = createHook({
+  init(asyncId) {
+    const capture = hookStorage.getStore();
+    if (!capture || (!capture.active && !capture.terminal)) return;
+    capture.resources.add(asyncId);
+    hookResources.set(asyncId, capture);
+  },
+  destroy: releaseHookResource,
+  promiseResolve: releaseHookResource,
+});
 
 function hookRaw(event: HookEvent): HookListener[] {
   return process.rawListeners(event) as HookListener[];
@@ -265,6 +327,8 @@ function restoreHookMethods(): void {
     }
   }
   hookMethods = undefined;
+  hookTracker.disable();
+  hookResources.clear();
   if (failure) throw failure;
 }
 
@@ -281,6 +345,7 @@ function installHookMethods(): void {
     ]),
   ) as Record<HookMethodName, PropertyDescriptor | undefined>;
   hookMethods = { descriptors, original };
+  hookTracker.enable();
 
   const isHookEvent = (event: string | symbol): event is HookEvent =>
     event === "uncaughtException" || event === "unhandledRejection";
@@ -291,6 +356,14 @@ function installHookMethods(): void {
       listener,
     ) {
       const capture = hookStorage.getStore();
+      if (
+        this === process &&
+        capture?.terminal &&
+        isHookEvent(event) &&
+        typeof listener === "function"
+      ) {
+        return this;
+      }
       if (
         this !== process ||
         !capture?.active ||
@@ -362,10 +435,21 @@ function captureProcessHooks(): {
     },
     registering: false,
     remove: process.removeListener,
+    resources: new Set(),
+    terminal: false,
   };
   const release = () => {
     if (!capture.active) return;
     capture.active = false;
+    activeHookCaptures.delete(capture);
+    restoreHookMethods();
+  };
+  const retire = () => {
+    if (!capture.active) return;
+    capture.active = false;
+    capture.terminal = true;
+    if (capture.resources.size !== 0) return;
+    capture.terminal = false;
     activeHookCaptures.delete(capture);
     restoreHookMethods();
   };
@@ -392,7 +476,7 @@ function captureProcessHooks(): {
   const cleanup = () => {
     let failure: unknown;
     try {
-      release();
+      retire();
     } catch (error) {
       failure = error;
     }
@@ -467,6 +551,10 @@ export class Stockfish {
   private teardownPending = 0;
   private readonly drainWaiters = new Set<() => void>();
   private readonly terminations = new WeakMap<StockfishEngine, EngineTermination>();
+  private readonly processListenerCleanups = new WeakMap<
+    StockfishEngine,
+    Set<ProcessListenerCleanup>
+  >();
   private readonly initEngine: StockfishInit | undefined;
   private readonly configuredFlavor: string | undefined;
   private readonly maxQueue: number;
@@ -495,10 +583,38 @@ export class Stockfish {
   }
 
   private disposeInitEngine(engine: StockfishEngine): void {
+    this.claimProcessListenerCleanups(engine);
     if (engine !== this.session?.engine) this.terminate(engine);
   }
 
+  private claimProcessListenerCleanups(engine: StockfishEngine): void {
+    const pending = takePendingProcessListenerCleanups(engine);
+    if (!pending) return;
+    const owned = this.processListenerCleanups.get(engine);
+    if (owned) {
+      for (const cleanup of pending) owned.add(cleanup);
+    } else {
+      this.processListenerCleanups.set(engine, pending);
+    }
+  }
+
+  private moveProcessListenerCleanups(
+    from: StockfishEngine,
+    to: StockfishEngine,
+  ): void {
+    const cleanups = this.processListenerCleanups.get(from);
+    if (!cleanups) return;
+    this.processListenerCleanups.delete(from);
+    const target = this.processListenerCleanups.get(to);
+    if (target) {
+      for (const cleanup of cleanups) target.add(cleanup);
+    } else {
+      this.processListenerCleanups.set(to, cleanups);
+    }
+  }
+
   private adoptInitEngine(attempt: InitAttempt, engine: StockfishEngine): boolean {
+    this.claimProcessListenerCleanups(engine);
     const { session } = attempt;
     if (this.session !== session || session.readySettled) {
       this.disposeInitEngine(engine);
@@ -514,6 +630,7 @@ export class Stockfish {
 
     const replacedEngine = session.engine;
     if (replacedEngine && replacedEngine !== engine) {
+      this.moveProcessListenerCleanups(replacedEngine, engine);
       this.terminate(replacedEngine);
       if (
         this.session !== session ||
@@ -984,12 +1101,14 @@ export class Stockfish {
             engine.listener = () => {};
             engine.terminate();
           } catch {}
-          const cleanup = processListenerCleanups.get(engine);
-          if (cleanup) {
-            try {
-              cleanup();
-              processListenerCleanups.delete(engine);
-            } catch {}
+          const cleanups = this.processListenerCleanups.get(engine);
+          if (cleanups) {
+            this.processListenerCleanups.delete(engine);
+            for (const cleanup of cleanups) {
+              try {
+                cleanup();
+              } catch {}
+            }
           }
         } finally {
           finish();

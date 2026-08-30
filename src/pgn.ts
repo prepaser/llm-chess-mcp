@@ -725,6 +725,7 @@ function validatePgnMoves(pgn: string, initialFen: string): void {
     } catch {
       throw new ChessError("INVALID_PGN", `illegal PGN move: ${token}`);
     }
+    assertSafeFenCounters(frame.chess.fen());
     frame.moves += 1;
     frame.phase = nag >= 0 ? "after-nag" : "after-move";
   }

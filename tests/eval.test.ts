@@ -11,7 +11,8 @@ import {
 import type { SfLine } from "../src/types.js";
 
 function line(scoreCp: number | null, scoreMate: number | null): SfLine {
-  return { multipv: 1, scoreCp, scoreMate, wdl: null, pv: ["e2e4"] };
+  const value = { multipv: 1, scoreCp, scoreMate, wdl: null, pv: ["e2e4"] };
+  return value as SfLine;
 }
 
 test("converts Stockfish scores and gives mate precedence", () => {

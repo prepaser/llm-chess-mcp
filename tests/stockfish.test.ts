@@ -2330,6 +2330,126 @@ test("callback timeout releases hook capture and restores process methods", asyn
   });
 });
 
+test("late terminal initializer hooks cannot escape cleanup ownership", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const names = ["on", "addListener", "prependListener", "once", "prependOnceListener"];
+    const methods = names.map((name) => process[name]);
+    let start;
+    const started = new Promise((resolve) => start = resolve);
+    const hook = () => {};
+    let returnedTerm = 0;
+    let lateTerm = 0;
+    const returned = { listener: null, sendCommand() {}, terminate() { returnedTerm++; } };
+    const late = { listener: null, sendCommand() {}, terminate() { lateTerm++; } };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          setTimeout(() => {
+            process.on("uncaughtException", hook);
+            callback(null, late);
+          }, 30);
+          start();
+          return returned;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      const analysis = stockfish.analyze("fen", 1, 1);
+      const outcome = analysis.then(() => "resolved", (error) => String(error));
+      await started;
+      await stockfish.quit();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      process.stdout.write(JSON.stringify({
+        outcome: await outcome,
+        returnedTerm,
+        lateTerm,
+        leaked: process.listeners("uncaughtException").includes(hook),
+        restored: names.every((name, index) => process[name] === methods[index]),
+      }));
+    } finally {
+      Module._load = load;
+      process.removeListener("uncaughtException", hook);
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    outcome: "Error: stockfish quit",
+    returnedTerm: 1,
+    lateTerm: 1,
+    leaked: false,
+    restored: true,
+  });
+});
+
+test("shared initializer engines retain every process-hook cleanup", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const names = ["on", "addListener", "prependListener", "once", "prependOnceListener"];
+    const methods = names.map((name) => process[name]);
+    const hooks = [() => {}, () => {}];
+    let calls = 0;
+    const engine = { listener: null, sendCommand() {}, terminate() {} };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return () => {
+          process.on("uncaughtException", hooks[calls++]);
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const options = {
+        timeouts: { init: 20, handshake: 100, analyze: 100, stopGrace: 5 },
+      };
+      const first = new Stockfish(options);
+      const second = new Stockfish(options);
+      const results = await Promise.allSettled([
+        first.analyze("first", 1, 1),
+        second.analyze("second", 1, 1),
+      ]);
+      await Promise.all([first.quit(), second.quit()]);
+      process.stdout.write(JSON.stringify({
+        results: results.map((result) => result.status),
+        hooks: hooks.map((hook) => process.listeners("uncaughtException").includes(hook)),
+        restored: names.every((name, index) => process[name] === methods[index]),
+      }));
+    } finally {
+      Module._load = load;
+      for (const hook of hooks) process.removeListener("uncaughtException", hook);
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    results: ["rejected", "rejected"],
+    hooks: [false, false],
+    restored: true,
+  });
+});
+
 test(
   "real lite-single quit stops active search without leaking stdout",
   { timeout: 15_000 },

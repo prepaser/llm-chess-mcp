@@ -88,10 +88,16 @@ export function mergeAnalysisInfo(
   previous: SfLine | undefined,
   info: AnalysisInfo,
 ): SfLine {
+  const scoreCp = info.score ? info.score.cp : (previous?.scoreCp ?? null);
+  const scoreMate = info.score ? info.score.mate : (previous?.scoreMate ?? null);
+  const scoreFields = scoreCp !== null
+    ? { scoreCp, scoreMate: null }
+    : scoreMate !== null
+      ? { scoreCp: null, scoreMate }
+      : { scoreCp: null, scoreMate: null };
   return {
     multipv: info.multipv,
-    scoreCp: info.score ? info.score.cp : (previous?.scoreCp ?? null),
-    scoreMate: info.score ? info.score.mate : (previous?.scoreMate ?? null),
+    ...scoreFields,
     wdl: info.wdl ?? previous?.wdl ?? null,
     pv: info.pv ?? previous?.pv ?? [],
   };

@@ -16,6 +16,7 @@ import {
   snapshotChess,
   type Candidate,
   type ExplorerResult,
+  type SfLine,
 } from "../src/index.js";
 import { rankByIntent } from "../src/intents.js";
 import { TOOL_INPUT_SCHEMAS } from "../src/tool-inputs.js";
@@ -52,6 +53,26 @@ test("root API exposes its public chess and service types", () => {
   assert.ok(new GameStore());
   const explorer = null as ExplorerResult | null;
   assert.equal(explorer, null);
+});
+
+test("SfLine score variants are mutually exclusive", () => {
+  const lines = [
+    { multipv: 1, scoreCp: 10, scoreMate: null, wdl: null, pv: [] },
+    { multipv: 1, scoreCp: null, scoreMate: 3, wdl: null, pv: [] },
+    { multipv: 1, scoreCp: null, scoreMate: null, wdl: null, pv: [] },
+  ] satisfies SfLine[];
+
+  // @ts-expect-error A line cannot have centipawn and mate scores together.
+  const invalid: SfLine = {
+    multipv: 1,
+    scoreCp: 10,
+    scoreMate: 3,
+    wdl: null,
+    pv: [],
+  };
+
+  assert.equal(lines.length, 3);
+  assert.equal(invalid.scoreCp, 10);
 });
 
 test("position snapshots preserve move and repetition history", () => {

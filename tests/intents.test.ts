@@ -18,7 +18,12 @@ function sfLine(
   wdl: [number, number, number] | null = null,
   scoreMate: number | null = null,
 ): SfLine {
-  return { multipv, scoreCp, scoreMate, wdl, pv: [uci] };
+  const score = scoreCp !== null
+    ? { scoreCp, scoreMate: null }
+    : scoreMate !== null
+      ? { scoreCp: null, scoreMate }
+      : { scoreCp: null, scoreMate: null };
+  return { multipv, ...score, wdl, pv: [uci] };
 }
 
 function candidate(

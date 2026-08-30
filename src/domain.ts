@@ -96,13 +96,16 @@ export interface ChessState {
 
 export type Wdl = [number, number, number];
 
-export interface SfLine {
+type SfScore =
+  | { scoreCp: number; scoreMate: null }
+  | { scoreCp: null; scoreMate: number }
+  | { scoreCp: null; scoreMate: null };
+
+export type SfLine = {
   multipv: number;
-  scoreCp: number | null;
-  scoreMate: number | null;
   wdl: Wdl | null;
   pv: string[];
-}
+} & SfScore;
 
 export interface Maia3Move {
   uci: string;

@@ -108,6 +108,32 @@ test("non-last lease releases remain immediately idempotent", async () => {
   assert.equal(quitCalls, 1);
 });
 
+test("cold default Maia calls snapshot positions before loading", async () => {
+  const moduleUrl = new URL(
+    `../src/services.ts?cold-snapshot=${Date.now()}`,
+    import.meta.url,
+  ).href;
+  const { defaultAppServices: services } = (await import(
+    moduleUrl
+  )) as typeof import("../src/services.js");
+  const chess = new Chess();
+  const pending = services.humanMoveDistribution(chess, 1500, 1500, 1);
+  chess.move("e4");
+
+  try {
+    const actual = await pending;
+    const expected = await services.humanMoveDistribution(
+      new Chess(),
+      1500,
+      1500,
+      1,
+    );
+    assert.deepEqual(actual, expected);
+  } finally {
+    await services.quit();
+  }
+});
+
 test("cold default shutdown fences same-tick Maia work and permits restart", async () => {
   const shuttingDown = defaultAppServices.quit();
   assert.equal(defaultAppServices.quit(), shuttingDown);

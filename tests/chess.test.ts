@@ -292,6 +292,7 @@ test("custom positions validate castling and en passant metadata", () => {
     "4k3/4p3/8/3Pp3/8/8/P7/4K3 w - e6 0 1",
     "4k3/8/8/3Pp3/8/8/P7/4K3 w - e6 1 1",
     "4k3/8/8/3Pp3/8/8/P7/4K3 w - e6 0 1",
+    "k6r/8/8/3Pp3/8/8/8/7K w - e6 0 2",
   ]) {
     assert.throws(
       () => assertLegalPosition(new Chess(fen)),
@@ -307,6 +308,16 @@ test("custom positions validate castling and en passant metadata", () => {
   assert.doesNotThrow(() =>
     assertLegalPosition(
       new Chess("4k3/8/8/3Pp3/8/8/P7/4K3 w - e6 0 2"),
+    ),
+  );
+  assert.doesNotThrow(() =>
+    assertLegalPosition(
+      new Chess("4k3/8/8/4p3/3K4/8/8/8 w - e6 0 2"),
+    ),
+  );
+  assert.doesNotThrow(() =>
+    assertLegalPosition(
+      new Chess("8/8/8/R3p2k/8/8/8/K7 w - e6 0 2"),
     ),
   );
 });
@@ -1362,6 +1373,17 @@ test("parseImportedPgn rejects counter overflow while replaying moves", () => {
       ),
     (error) => error instanceof ChessError && error.code === "INVALID_FEN",
   );
+});
+
+test("parseImportedPgn rejects counter overflow in variations", () => {
+  const setup =
+    '[SetUp "1"]\n[FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 9007199254740991 1"]\n\n';
+
+  assert.throws(
+    () => parseImportedPgn(`${setup}1.e4 (1.Nf3) *`),
+    (error) => error instanceof ChessError && error.code === "INVALID_FEN",
+  );
+  assert.deepEqual(parseImportedPgn(`${setup}1.e4 *`).history(), ["e4"]);
 });
 
 test("pgnOf records terminal draws and preserves non-terminal declarations", () => {
