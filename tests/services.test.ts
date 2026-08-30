@@ -242,6 +242,61 @@ test("default shutdown aborts and isolates active Explorer work", async () => {
   }
 });
 
+test("default shutdown rejects and drains active candidate computation", async () => {
+  const previousToken = process.env.LICHESS_TOKEN;
+  const previousFetch = globalThis.fetch;
+  process.env.LICHESS_TOKEN = "token";
+  const chess = new Chess();
+  await Promise.all([
+    defaultAppServices.analyze(chess.fen(), 1, 1),
+    defaultAppServices.humanMoveDistribution(chess, 1500, 1500, 1),
+  ]);
+  let resolveExplorer: ((response: Response) => void) | undefined;
+  let resolveStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    resolveStarted = resolve;
+  });
+  globalThis.fetch = async () => {
+    resolveStarted?.();
+    return await new Promise<Response>((resolve) => {
+      resolveExplorer = resolve;
+    });
+  };
+
+  try {
+    const active = defaultAppServices.computeCandidates(
+      new Chess(),
+      1500,
+      1,
+      1,
+      1,
+      { db: "lichess", speeds: [], ratings: [] },
+    );
+    let settled = false;
+    const outcome = active.then(
+      () => null,
+      (error: unknown) => error,
+    ).finally(() => {
+      settled = true;
+    });
+    await started;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const shuttingDown = defaultAppServices.quit();
+    await shuttingDown;
+
+    assert.equal(settled, true);
+    assert.match(String(await outcome), /application services are shutting down/);
+    resolveExplorer?.(
+      new Response(JSON.stringify({ white: 0, draws: 0, black: 0, moves: [] })),
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousToken === undefined) delete process.env.LICHESS_TOKEN;
+    else process.env.LICHESS_TOKEN = previousToken;
+    await defaultAppServices.quit();
+  }
+});
+
 test("default shutdown awaits Maia teardown before preserving a Stockfish failure", async () => {
   const active = defaultAppServices.humanMoveDistribution(
     new Chess(),

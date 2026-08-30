@@ -83,6 +83,18 @@ const createExplorerGeneration = (): ExplorerGeneration => ({
   limiter: createExplorerLimiter(),
 });
 let explorerGeneration = createExplorerGeneration();
+function trackGeneration<T>(
+  generation: ExplorerGeneration,
+  operation: Promise<T>,
+): Promise<T> {
+  const settled = operation.then(
+    () => {},
+    () => {},
+  );
+  generation.active.add(settled);
+  void settled.then(() => generation.active.delete(settled));
+  return operation;
+}
 const shutdownError = (): Error | null =>
   defaultShutdown ? new Error("application services are shutting down") : null;
 const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) => {
@@ -127,20 +139,13 @@ const openExplorer: AppServices["openingExplorer"] = (
   const workSignal = signal
     ? AbortSignal.any([signal, generation.controller.signal])
     : generation.controller.signal;
-  const operation = openingExplorer(
-    chess,
-    db,
-    speeds,
-    ratings,
-    { limiter: generation.limiter, signal: workSignal },
+  return trackGeneration(
+    generation,
+    openingExplorer(chess, db, speeds, ratings, {
+      limiter: generation.limiter,
+      signal: workSignal,
+    }),
   );
-  const settled = operation.then(
-    () => {},
-    () => {},
-  );
-  generation.active.add(settled);
-  void settled.then(() => generation.active.delete(settled));
-  return operation;
 };
 const computeCandidateSet = createCandidateComputation({
   analyze,
@@ -150,9 +155,33 @@ const computeCandidateSet = createCandidateComputation({
   explorerFailureReason: (error) =>
     error instanceof ExplorerError ? error.reason : "upstream",
 });
-const computeCandidates: AppServices["computeCandidates"] = (...args) => {
+const computeCandidates: AppServices["computeCandidates"] = (
+  chess,
+  elo,
+  sfDepth,
+  sfMultipv,
+  maiaTopN,
+  lichess,
+  signal,
+) => {
   const error = shutdownError();
-  return error ? Promise.reject(error) : computeCandidateSet(...args);
+  if (error) return Promise.reject(error);
+  const generation = explorerGeneration;
+  const workSignal = signal
+    ? AbortSignal.any([signal, generation.controller.signal])
+    : generation.controller.signal;
+  return trackGeneration(
+    generation,
+    computeCandidateSet(
+      chess,
+      elo,
+      sfDepth,
+      sfMultipv,
+      maiaTopN,
+      lichess,
+      workSignal,
+    ),
+  );
 };
 
 function quitDefaultServices(): Promise<void> {

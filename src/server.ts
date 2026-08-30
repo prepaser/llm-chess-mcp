@@ -30,8 +30,33 @@ function buildServerWithLease(
   const closeServer = server.close.bind(server);
   let shutdown: Promise<void> | undefined;
   server.close = (): Promise<void> =>
-    (shutdown ??= closeServer().finally(() => lease.release()));
+    (shutdown ??= closeServerWithLease(closeServer, lease));
   return server;
+}
+
+async function closeServerWithLease(
+  closeServer: () => Promise<void>,
+  lease: DefaultAppServicesLease,
+): Promise<void> {
+  const closeResult = await settle(closeServer);
+  const releaseResult = await settle(() => lease.release());
+  if (closeResult.status === "rejected" && releaseResult.status === "rejected") {
+    throw new AggregateError(
+      [closeResult.reason, releaseResult.reason],
+      "MCP server close and service release failed",
+    );
+  }
+  if (closeResult.status === "rejected") throw closeResult.reason;
+  if (releaseResult.status === "rejected") throw releaseResult.reason;
+}
+
+async function settle(work: () => Promise<void>): Promise<PromiseSettledResult<void>> {
+  try {
+    await work();
+    return { status: "fulfilled", value: undefined };
+  } catch (reason) {
+    return { status: "rejected", reason };
+  }
 }
 
 export function buildServer(services?: AppServices): McpServer {
