@@ -1,6 +1,6 @@
 {
   "name": "llm-chess-mcp",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "MCP server that lets an LLM analyze, judge, and choose chess moves (Stockfish + Maia3 + Lichess)",
   "type": "module",
   "license": "AGPL-3.0",
