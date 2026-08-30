@@ -43,6 +43,10 @@ test("parseCli accepts HTTP settings and repeated allowed hosts", () => {
   );
 });
 
+test("parseCli accepts port zero for an ephemeral HTTP listener", () => {
+  assert.equal(parseCli(["--http", "--port", "0"]).port, 0);
+});
+
 test("parseCli canonicalizes allowed hostnames", () => {
   assert.deepEqual(
     parseCli([
@@ -104,7 +108,7 @@ test("parseCli rejects unknown and valueless options", () => {
 });
 
 test("parseCli rejects invalid ports and paths", () => {
-  for (const port of ["abc", "0", "65536"]) {
+  for (const port of ["abc", "65536"]) {
     assert.throws(() => parseCli(["--http", "--port", port]), /--port must be/);
   }
 

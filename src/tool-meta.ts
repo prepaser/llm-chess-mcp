@@ -27,7 +27,7 @@ export const TOOL_META = {
   },
   delete_game: {
     title: "Delete Chess Game",
-    description: "Delete a game and free its session.",
+    description: "Delete a process-shared game and free game capacity.",
     annotations: {
       readOnlyHint: false,
       destructiveHint: true,

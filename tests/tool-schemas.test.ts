@@ -11,6 +11,7 @@ import {
   HumanMoveDistributionOutputSchema,
   LichessMoveSchema,
   Maia3MoveSchema,
+  MoveCandidatesOutputSchema,
   MoveEvaluateOutputSchema,
   OpeningExplorerOutputSchema,
   OpeningStatsSchema,
@@ -257,6 +258,23 @@ test("candidate output enforces move, probability, evaluation, and opening bound
   );
   assert.equal(
     Maia3MoveSchema.safeParse({ uci: "g1f3", san: "Nf3", prob: -0.01 }).success,
+    false,
+  );
+
+  assert.equal(
+    MoveCandidatesOutputSchema.safeParse({
+      game_id: "game",
+      revision: 0,
+      fen: "fen",
+      turn: "w",
+      elo: 1_800,
+      analysis_level: "normal",
+      moveSensitivity: { level: "low", topMoveSpreadCp: null },
+      candidates: [
+        candidate,
+        { ...candidate, uci: "d2d4", san: "d4" },
+      ],
+    }).success,
     false,
   );
 });

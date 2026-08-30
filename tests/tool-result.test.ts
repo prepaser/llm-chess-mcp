@@ -69,6 +69,33 @@ test("safeHandler forwards the MCP cancellation signal", async () => {
   assert.equal(received, controller.signal);
 });
 
+test("safeHandler validates context calls before invoking the handler", async () => {
+  const controller = new AbortController();
+  const inputSchema = z.strictObject({
+    value: z.coerce.number().int().min(1).default(3),
+  });
+  const outputSchema = z.strictObject({ value: z.number() });
+  let received: number | undefined;
+  const handler = safeHandler(inputSchema, outputSchema, async ({ value }) => {
+    received = value;
+    return toolResult({ value }, "ok");
+  });
+
+  assert.deepEqual(
+    await handler({}, context(controller.signal)),
+    toolResult({ value: 3 }, "ok"),
+  );
+  assert.equal(received, 3);
+  assert.deepEqual(
+    await handler({ value: 0 }, context(controller.signal)),
+    toolError("INVALID_INPUT", "invalid tool input"),
+  );
+  assert.deepEqual(
+    await handler({ unexpected: true } as never, context(controller.signal)),
+    toolError("INVALID_INPUT", "invalid tool input"),
+  );
+});
+
 test("safeHandler parses direct calls and rejects invalid input", async () => {
   let calls = 0;
   const inputSchema = z.object({ value: z.coerce.number().default(3) });
@@ -179,10 +206,40 @@ test("safeHandler preserves error results without output validation", async () =
   const handler = safeHandler(
     z.strictObject({}),
     outputSchema,
-    async () => expected as never,
+    async () => expected,
   );
 
   assert.deepEqual(await handler({}), expected);
+});
+
+test("safeHandler accepts handlers that return success or tool errors", async () => {
+  let fail = false;
+  const handler = safeHandler(
+    z.strictObject({}),
+    z.strictObject({ value: z.number() }),
+    async () =>
+      fail ? toolError("EXPECTED", "expected failure") : toolResult({ value: 1 }, "ok"),
+  );
+
+  assert.deepEqual(await handler({}), toolResult({ value: 1 }, "ok"));
+  fail = true;
+  assert.deepEqual(
+    await handler({}),
+    toolError("EXPECTED", "expected failure"),
+  );
+});
+
+test("safeHandler rejects non-object output schemas before tool registration", () => {
+  assert.throws(
+    () =>
+      safeHandler(
+        z.strictObject({}),
+        // @ts-expect-error MCP tool structured content must be an object.
+        z.string(),
+        async () => toolResult({}, "unreachable"),
+      ),
+    /MCP output schema must be representable as JSON Schema/,
+  );
 });
 
 test("safeHandler preserves known domain and explorer errors", async () => {

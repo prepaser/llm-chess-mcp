@@ -13,6 +13,15 @@ export type ToolResult<StructuredContent extends Record<string, unknown> = Recor
   isError?: boolean;
 };
 
+type ToolSuccessResult<StructuredContent extends Record<string, unknown>> =
+  ToolResult<StructuredContent> & { isError?: false | undefined };
+
+export type ToolErrorResult = ToolResult & { isError: true };
+
+type ToolHandlerResult<StructuredContent extends Record<string, unknown>> =
+  | ToolSuccessResult<StructuredContent>
+  | ToolErrorResult;
+
 type SchemaOutput<Schema extends z.ZodType> = z.output<Schema> extends Record<
   string,
   unknown
@@ -20,23 +29,21 @@ type SchemaOutput<Schema extends z.ZodType> = z.output<Schema> extends Record<
   ? z.output<Schema>
   : never;
 
-export function toolResult<
-  StructuredContent extends Record<string, unknown>,
->(
+export function toolResult<StructuredContent extends Record<string, unknown>>(
   structuredContent: StructuredContent,
   summary: string,
-): ToolResult<StructuredContent>;
+): ToolSuccessResult<StructuredContent>;
 /** @deprecated Pass structuredContent and summary without a schema. */
 export function toolResult<Schema extends z.ZodType>(
   schema: Schema,
   structuredContent: SchemaOutput<Schema>,
   summary: string,
-): ToolResult<SchemaOutput<Schema>>;
+): ToolSuccessResult<SchemaOutput<Schema>>;
 export function toolResult(
   schemaOrContent: z.ZodType | Record<string, unknown>,
   contentOrSummary: Record<string, unknown> | string,
   legacySummary?: string,
-): ToolResult {
+): ToolSuccessResult<Record<string, unknown>> {
   const legacy = arguments.length === 3;
   const structuredContent = legacy
     ? contentOrSummary as Record<string, unknown>
@@ -51,7 +58,7 @@ export function toolResult(
   };
 }
 
-export function toolError(code: string, message: string): ToolResult {
+export function toolError(code: string, message: string): ToolErrorResult {
   return {
     content: [{ type: "text", text: `${code}: ${message}` }],
     structuredContent: { error: { code, message } },
@@ -65,7 +72,15 @@ function explorerErrorCode(kind: ExplorerErrorKind): string {
 
 function assertWireSchema(schema: z.ZodType, kind: "input" | "output"): void {
   try {
-    z.toJSONSchema(schema);
+    const wireSchema = z.toJSONSchema(schema);
+    if (
+      kind === "output" &&
+      (typeof wireSchema !== "object" ||
+        wireSchema === null ||
+        wireSchema.type !== "object")
+    ) {
+      throw new TypeError("MCP tool output schema must have an object root");
+    }
   } catch (cause) {
     throw new TypeError(
       `MCP ${kind} schema must be representable as JSON Schema`,
@@ -76,14 +91,56 @@ function assertWireSchema(schema: z.ZodType, kind: "input" | "output"): void {
 
 export function safeHandler<
   InputSchema extends z.ZodType,
-  OutputSchema extends z.ZodType,
+  OutputSchema extends z.ZodType<Record<string, unknown>>,
 >(
   inputSchema: InputSchema,
   outputSchema: OutputSchema,
   handler: (
     args: z.output<InputSchema>,
     signal: AbortSignal,
-  ) => Promise<ToolResult<SchemaOutput<OutputSchema>>>,
+  ) => Promise<ToolSuccessResult<SchemaOutput<OutputSchema>>>,
+): (
+  args: z.input<InputSchema>,
+  context?: ServerContext,
+) => Promise<ToolResult>;
+export function safeHandler<
+  InputSchema extends z.ZodType,
+  OutputSchema extends z.ZodType<Record<string, unknown>>,
+>(
+  inputSchema: InputSchema,
+  outputSchema: OutputSchema,
+  handler: (
+    args: z.output<InputSchema>,
+    signal: AbortSignal,
+  ) => Promise<ToolErrorResult>,
+): (
+  args: z.input<InputSchema>,
+  context?: ServerContext,
+) => Promise<ToolResult>;
+export function safeHandler<
+  InputSchema extends z.ZodType,
+  OutputSchema extends z.ZodType<Record<string, unknown>>,
+>(
+  inputSchema: InputSchema,
+  outputSchema: OutputSchema,
+  handler: (
+    args: z.output<InputSchema>,
+    signal: AbortSignal,
+  ) => Promise<ToolHandlerResult<SchemaOutput<OutputSchema>>>,
+): (
+  args: z.input<InputSchema>,
+  context?: ServerContext,
+) => Promise<ToolResult>;
+export function safeHandler<
+  InputSchema extends z.ZodType,
+  OutputSchema extends z.ZodType<Record<string, unknown>>,
+>(
+  inputSchema: InputSchema,
+  outputSchema: OutputSchema,
+  handler: (
+    args: z.output<InputSchema>,
+    signal: AbortSignal,
+  ) => Promise<ToolHandlerResult<SchemaOutput<OutputSchema>>>,
 ): (
   args: z.input<InputSchema>,
   context?: ServerContext,
@@ -94,16 +151,12 @@ export function safeHandler<
     const signal = context?.mcpReq.signal ?? UNABORTABLE_SIGNAL;
     try {
       signal.throwIfAborted();
-      let result: ToolResult<SchemaOutput<OutputSchema>>;
-      if (context) {
-        result = await handler(args as z.output<InputSchema>, signal);
-      } else {
-        const parsed = inputSchema.safeParse(args);
-        if (!parsed.success) {
-          return toolError("INVALID_INPUT", "invalid tool input");
-        }
-        result = await handler(parsed.data, signal);
+      const parsedInput = await inputSchema.safeParseAsync(args);
+      signal.throwIfAborted();
+      if (!parsedInput.success) {
+        return toolError("INVALID_INPUT", "invalid tool input");
       }
+      const result = await handler(parsedInput.data, signal);
       signal.throwIfAborted();
       if (result.isError) return result;
       const parsed = await outputSchema.safeParseAsync(result.structuredContent);

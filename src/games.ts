@@ -116,10 +116,19 @@ export class GameStore {
         `game ID must be at most ${MAX_GAME_ID_LENGTH} characters`,
       );
     }
-    this.nextIdGeneration =
+    const nextGeneration =
       generation === Number.MAX_SAFE_INTEGER ? null : generation + 1;
+    this.nextIdGeneration = nextGeneration;
     this.assertUnique(id);
-    const snapshot = snapshotChess(chess);
+    let snapshot: Chess;
+    try {
+      snapshot = snapshotChess(chess);
+    } catch (error) {
+      if (this.nextIdGeneration === nextGeneration) {
+        this.nextIdGeneration = generation;
+      }
+      throw error;
+    }
     this.assertCapacity();
     this.assertUnique(id);
     this.games.set(id, {
@@ -214,7 +223,7 @@ export class GameStore {
     if (this.games.size >= this.maxGames) {
       throw new ChessError(
         "GAME_LIMIT_REACHED",
-        `game session limit reached: ${this.maxGames}`,
+        `game limit reached: ${this.maxGames}`,
       );
     }
   }

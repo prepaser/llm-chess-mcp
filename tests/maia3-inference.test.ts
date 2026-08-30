@@ -213,6 +213,43 @@ test("child pool times out, rejects failures and malformed responses, and restar
   await pool.close(new Error("closed"));
 });
 
+test("child pool rejects every run failure asynchronously", async () => {
+  const pool = new MaiaWorkerPool(1, 2_000, testChildUrl);
+  const active = pool.run(poolRequest("hang"));
+  try {
+    const unavailable = pool.run(poolRequest("ok"));
+    assert.ok(unavailable instanceof Promise);
+    await assert.rejects(unavailable, {
+      name: "ChessError",
+      message: "Maia3 worker pool unavailable",
+    });
+
+    const closing = pool.close(new Error("closed"));
+    const closed = pool.run(poolRequest("ok"));
+    assert.ok(closed instanceof Promise);
+    await assert.rejects(closed, /shutting down/);
+    await assert.rejects(active, /closed/);
+    await closing;
+  } finally {
+    await pool.close(new Error("closed"));
+  }
+});
+
+test("validates child pool configuration", () => {
+  for (const size of [0, -1, Number.NaN, Infinity]) {
+    assert.throws(
+      () => new MaiaWorkerPool(size, 1, testChildUrl),
+      /worker pool size/,
+    );
+  }
+  for (const timeout of [0, -1, Number.NaN, Infinity, 2_147_483_648]) {
+    assert.throws(
+      () => new MaiaWorkerPool(1, timeout, testChildUrl),
+      /worker timeout/,
+    );
+  }
+});
+
 test("inference children do not inherit the Lichess credential", async () => {
   const previous = process.env.LICHESS_TOKEN;
   process.env.LICHESS_TOKEN = "secret";

@@ -334,6 +334,40 @@ test("GameStore rechecks capacity and preserves unique IDs after snapshot callba
   assert.deepEqual(colliding.listGames(), ["1:same", "0:same"]);
 });
 
+test("GameStore rolls back only an unobserved failed snapshot generation", () => {
+  class FailingCommentChess extends Chess {
+    override getComments(): ReturnType<Chess["getComments"]> {
+      throw new Error("snapshot failed");
+    }
+  }
+
+  const restored = new GameStore({ clock: () => 0, createId: () => "same" });
+  assert.throws(
+    () => restored.createGameFromChess(new FailingCommentChess()),
+    /snapshot failed/,
+  );
+  assert.equal(restored.createGame(), "0:same");
+
+  let reentered = false;
+  let store: GameStore;
+  class ReentrantFailingCommentChess extends Chess {
+    override getComments(): ReturnType<Chess["getComments"]> {
+      if (!reentered) {
+        reentered = true;
+        assert.equal(store.createGame(), "1:same");
+      }
+      throw new Error("snapshot failed");
+    }
+  }
+  store = new GameStore({ clock: () => 0, createId: () => "same" });
+  assert.throws(
+    () => store.createGameFromChess(new ReentrantFailingCommentChess()),
+    /snapshot failed/,
+  );
+  assert.deepEqual(store.listGames(), ["1:same"]);
+  assert.equal(store.createGame(), "2:same");
+});
+
 test("GameStore never reuses IDs after deletion or expiry", () => {
   const deleted = new GameStore({ clock: () => 0, createId: () => "same" });
   const first = deleted.createGame();

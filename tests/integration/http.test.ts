@@ -149,7 +149,7 @@ function abandonedPost(
   return { destroy: () => req.destroy() };
 }
 
-function partialPost(url: string): Promise<{ destroy(): void }> {
+function partialPost(url: string): Promise<{ closed: Promise<void>; destroy(): void }> {
   return new Promise((resolve, reject) => {
     const endpoint = new URL(url);
     const socket = connect(Number(endpoint.port), endpoint.hostname, () => {
@@ -162,7 +162,11 @@ function partialPost(url: string): Promise<{ destroy(): void }> {
           "",
           "{",
         ].join("\r\n"),
-        () => resolve({ destroy: () => socket.destroy() }),
+        () =>
+          resolve({
+            closed: new Promise((done) => socket.once("close", done)),
+            destroy: () => socket.destroy(),
+          }),
       );
     });
     socket.once("error", reject);
@@ -848,6 +852,38 @@ test("Streamable HTTP bounds declared and chunked request bodies", async (t) => 
   assert.match(encoded.body, /Content-Encoding must be identity/);
 });
 
+test("Streamable HTTP bounds concurrent body parsing while retaining a control lane", async (t) => {
+  const http = await serveHttp(
+    { port: 0, maxConcurrentPosts: 1, maxConcurrentPostsPerSession: 1 },
+    fakeServices(new GameStore()),
+  );
+  const uploads: Awaited<ReturnType<typeof partialPost>>[] = [];
+  t.after(async () => {
+    for (const upload of uploads) upload.destroy();
+    await Promise.all(uploads.map((upload) => upload.closed));
+    await http.close();
+  });
+
+  uploads.push(await partialPost(http.url), await partialPost(http.url));
+  const rejected = await httpRequest(http.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: initializeBody(),
+  });
+  assert.equal(rejected.status, 503);
+  assert.equal(rejected.retryAfter, "1");
+  assert.match(rejected.body, /server request body limit reached/);
+
+  for (const upload of uploads) upload.destroy();
+  await Promise.all(uploads.map((upload) => upload.closed));
+  const admitted = await httpRequest(http.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: initializeBody(),
+  });
+  assert.equal(admitted.status, 200);
+});
+
 test("Streamable HTTP closes slow header and body uploads", async (t) => {
   const http = await serveHttp(
     {
@@ -1152,17 +1188,17 @@ test("Streamable HTTP rejects excess global POSTs", async (t) => {
   assert.equal((await first).status, 200);
 });
 
-test("Streamable HTTP retains work capacity after a raw disconnect", async (t) => {
-  const analysis = blockingAnalysis();
+test("Streamable HTTP cancels work and reclaims capacity after a raw disconnect", async (t) => {
+  const analysis = abortableAnalysis();
   let calls = 0;
   const games = new GameStore();
   const http = await serveHttp(
     { port: 0, maxConcurrentPosts: 1, maxConcurrentPostsPerSession: 1 },
     fakeServices(games, {
-      analyze: async () => {
+      analyze: async (...args) => {
         calls += 1;
         if (calls === 1) {
-          return analysis.analyze();
+          return analysis.analyze(...args);
         }
         return [];
       },
@@ -1174,9 +1210,8 @@ test("Streamable HTTP retains work capacity after a raw disconnect", async (t) =
   );
   const { client: secondClient } = await connectClient(http, "http-disconnect-second");
   t.after(async () => {
-    analysis.release();
-    await firstClient.close();
-    await secondClient.close();
+    await firstClient.close().catch(() => {});
+    await secondClient.close().catch(() => {});
     await http.close();
   });
 
@@ -1193,17 +1228,9 @@ test("Streamable HTTP retains work capacity after a raw disconnect", async (t) =
   );
   await analysis.started;
   abandoned.destroy();
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await analysis.aborted;
+  await waitFor(() => http.sessionCount() === 1);
 
-  const capped = await secondClient.callTool({
-    name: "position_analyze",
-    arguments: { game_id: gameId, analysis_level: "fast" },
-  });
-  assert.equal(capped.isError, true);
-  assert.equal(object(object(capped.structuredContent).error).code, "SERVER_BUSY");
-  assert.equal(calls, 1);
-
-  analysis.release();
   const admitted = await secondClient.callTool({
     name: "position_analyze",
     arguments: { game_id: gameId, analysis_level: "fast" },

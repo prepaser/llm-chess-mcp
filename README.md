@@ -173,7 +173,7 @@ codex mcp add llm-chess-mcp --command npx --args -y llm-chess-mcp --env LICHESS_
 | Tool | Description |
 |---|---|
 | `create_game` | Create a game (optionally from a FEN), returns `game_id` |
-| `delete_game` | Delete a game and free its session |
+| `delete_game` | Delete a process-shared game and free game capacity |
 | `game_state` | Authoritative state: FEN, turn, revision, check/mate/draw flags, history, last move, castling (optional ASCII) |
 | `game_play_move` | Play a move (SAN or UCI) — the only mutating tool, with stale-position guard |
 | `game_legal_moves` | All legal moves with metadata |

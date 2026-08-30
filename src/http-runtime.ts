@@ -47,6 +47,8 @@ function sessionId(req: IncomingMessage): string | null | undefined {
 
 export class HttpRuntime {
   readonly #sessions: HttpSessionRegistry<Session>;
+  readonly #bodyAdmission: HttpPostAdmission<{ activePosts: number }>;
+  readonly #controlBodyAdmission: HttpPostAdmission<{ activePosts: number }>;
   readonly #workAdmission: HttpWorkAdmission;
   readonly #postAdmission: HttpPostAdmission<Session>;
   readonly #controlPostAdmission: HttpPostAdmission<Session["controlPosts"]>;
@@ -61,6 +63,14 @@ export class HttpRuntime {
     private readonly limits: HttpLimits,
   ) {
     this.#sessions = new HttpSessionRegistry<Session>(limits.maxSessions);
+    this.#bodyAdmission = new HttpPostAdmission(
+      limits.maxConcurrentPosts,
+      limits.maxConcurrentPosts,
+    );
+    this.#controlBodyAdmission = new HttpPostAdmission(
+      limits.maxConcurrentPostsPerSession,
+      limits.maxConcurrentPostsPerSession,
+    );
     this.#workAdmission = new HttpWorkAdmission(
       limits.maxConcurrentPosts,
       limits.maxConcurrentPostsPerSession,
@@ -118,17 +128,57 @@ export class HttpRuntime {
     work: (body: unknown) => Promise<void>,
     signal?: AbortSignal,
   ): Promise<void> {
-    const body = await parsePostBody(
-      req,
-      this.limits.maxRequestBodyBytes,
-      this.limits.bodyTimeoutMs,
-      signal,
-    );
+    const primary = this.#bodyAdmission.tryAcquire();
+    const admission =
+      typeof primary === "object"
+        ? primary
+        : this.#controlBodyAdmission.tryAcquire();
+    if (typeof admission !== "object") {
+      closeWithError(req, res, 503, "server request body limit reached", {
+        "retry-after": "1",
+      });
+      return;
+    }
+    let body: Awaited<ReturnType<typeof parsePostBody>>;
+    try {
+      body = await parsePostBody(
+        req,
+        this.limits.maxRequestBodyBytes,
+        this.limits.bodyTimeoutMs,
+        signal,
+      );
+    } finally {
+      admission.release();
+    }
     if (!body.ok) {
       closeWithError(req, res, body.status, body.message);
       return;
     }
     await work(body.value);
+  }
+
+  #closeSessionOnResponseDisconnect(
+    id: string,
+    session: Session,
+    res: ServerResponse,
+  ): () => void {
+    let finished = res.writableEnded;
+    const onFinish = (): void => {
+      finished = true;
+    };
+    const onClose = (): void => {
+      if (finished) return;
+      void this.#closeSession(id, session).catch((error: unknown) => {
+        console.error("failed to close disconnected MCP session", error);
+      });
+    };
+    res.once("finish", onFinish);
+    res.once("close", onClose);
+    if (res.destroyed) onClose();
+    return () => {
+      res.off("finish", onFinish);
+      res.off("close", onClose);
+    };
   }
 
   async #withAdmittedPost(
@@ -193,17 +243,22 @@ export class HttpRuntime {
       return;
     }
     if (req.method === "POST") {
-      await this.#sessions.withActive(session, () =>
-        this.#withParsedPostBody(
-          req,
-          res,
-          (body) =>
-            this.#withAdmittedPost(session, req, res, body, () =>
-              session.transport.handleRequest(req, res, body),
-            ),
-          session.abort.signal,
-        ),
-      );
+      const stopWatching = this.#closeSessionOnResponseDisconnect(id, session, res);
+      try {
+        await this.#sessions.withActive(session, () =>
+          this.#withParsedPostBody(
+            req,
+            res,
+            (body) =>
+              this.#withAdmittedPost(session, req, res, body, () =>
+                session.transport.handleRequest(req, res, body),
+              ),
+            session.abort.signal,
+          ),
+        );
+      } finally {
+        stopWatching();
+      }
       return;
     }
     await this.#sessions.withActive(session, () =>

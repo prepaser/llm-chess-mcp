@@ -22,6 +22,7 @@ const MODEL_KEYS = new Set(["3m", "5m", "23m", "79m"]);
 const DEFAULT_MAX_CONCURRENCY = 2;
 const DEFAULT_MAX_QUEUE = 32;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 type AdmissionWaiter = {
   onAbort: () => void;
@@ -449,6 +450,18 @@ export class MaiaWorkerPool {
   #closing: Promise<void> | null = null;
 
   constructor(size: number, timeoutMs: number, workerUrl: URL) {
+    if (!Number.isSafeInteger(size) || size < 1) {
+      throw new Error("Maia3 worker pool size must be a positive safe integer");
+    }
+    if (
+      !Number.isSafeInteger(timeoutMs) ||
+      timeoutMs < 1 ||
+      timeoutMs > MAX_TIMER_DELAY_MS
+    ) {
+      throw new Error(
+        `Maia3 worker timeout must be a positive safe integer no greater than ${MAX_TIMER_DELAY_MS}`,
+      );
+    }
     this.#slots = Array.from(
       { length: size },
       () => new MaiaWorkerSlot(workerUrl, timeoutMs),
@@ -459,12 +472,20 @@ export class MaiaWorkerPool {
     request: Omit<MaiaWorkerRequest, "type" | "id">,
     signal?: AbortSignal,
   ): Promise<Float32Array> {
-    if (this.#closing) throw new Error("Maia3 inference is shutting down");
+    if (this.#closing) {
+      return Promise.reject(new Error("Maia3 inference is shutting down"));
+    }
     const slot = this.#slots.find((candidate) => !candidate.busy);
     if (!slot) {
-      throw new ChessError("SERVER_BUSY", "Maia3 worker pool unavailable");
+      return Promise.reject(
+        new ChessError("SERVER_BUSY", "Maia3 worker pool unavailable"),
+      );
     }
-    return slot.run(request, signal);
+    try {
+      return slot.run(request, signal);
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   close(error: Error): Promise<void> {

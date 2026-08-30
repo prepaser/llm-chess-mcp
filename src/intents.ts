@@ -1,4 +1,6 @@
 import { Chess } from "chess.js";
+import { validateAnalysisLines } from "./analysis-boundary.js";
+import { MAX_MULTIPV } from "./domain.js";
 import type { ExplorerResult } from "./explorer.js";
 import { toEval, evalToCp } from "./eval.js";
 import type {
@@ -191,6 +193,7 @@ export function candidateSetFromData(
   sfLines: SfLine[],
   maiaMoves: Maia3Move[],
   lichessResult: LichessCandidateData,
+  sfMultipv = MAX_MULTIPV,
 ): CandidateSet {
   if (lichessResult.status === "available") {
     if (lichessResult.totalGames < 1 && lichessResult.moves.length === 0) {
@@ -211,6 +214,7 @@ export function candidateSetFromData(
   if (chess.isGameOver()) {
     return emptyCandidateSet();
   }
+  validateAnalysisLines(sfLines, sfMultipv);
   const legalMoves = new Map(
     chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
   );
@@ -378,9 +382,16 @@ export function createCandidateComputation(
     };
 
     const [sfLines, maiaMoves, lichessResult] = await Promise.all([
-      fatal(() =>
-        dependencies.analyze(chess.fen(), sfDepth, sfMultipv, workSignal),
-      ),
+      fatal(async () => {
+        const lines = await dependencies.analyze(
+          chess.fen(),
+          sfDepth,
+          sfMultipv,
+          workSignal,
+        );
+        validateAnalysisLines(lines, sfMultipv);
+        return lines;
+      }),
       fatal(() =>
         dependencies.humanMoveDistribution(
           chess,
@@ -393,7 +404,14 @@ export function createCandidateComputation(
       fatal(explorer),
     ]);
     workSignal.throwIfAborted();
-    return candidateSetFromData(chess, elo, sfLines, maiaMoves, lichessResult);
+    return candidateSetFromData(
+      chess,
+      elo,
+      sfLines,
+      maiaMoves,
+      lichessResult,
+      sfMultipv,
+    );
   };
 }
 

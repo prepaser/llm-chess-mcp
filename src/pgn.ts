@@ -1,4 +1,4 @@
-import { Chess, type Move } from "chess.js";
+import { Chess } from "chess.js";
 import {
   assertLegalPosition,
   assertSafeFenCounters,
@@ -296,13 +296,12 @@ function withoutPgnEscapeLines(pgn: string): string {
 }
 
 type PgnExportContext = {
-  history: Move[];
   initialFen: string;
 };
 
 function pgnExportContext(chess: Chess): PgnExportContext {
   const history = chess.history({ verbose: true });
-  return { history, initialFen: history[0]?.before ?? chess.fen() };
+  return { initialFen: history[0]?.before ?? chess.fen() };
 }
 
 function assertPgnExportHeaders(

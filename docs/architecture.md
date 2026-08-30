@@ -79,8 +79,9 @@ fetch, timeout, and sleep are injected at the explorer boundary.
    process-wide 1,000-game limit is reached.
 3. `game_play_move` compares `expected_revision` with the current revision,
    makes a legal move only on equality, then increments the revision.
-4. Deleting a game removes the game. Closing an MCP HTTP session does not
-   delete its games; expired and deleted IDs are no longer valid.
+4. Deleting a game removes it and frees process-wide game capacity. Closing an
+   MCP HTTP session does not delete its games; expired and deleted IDs are no
+   longer valid.
 
 Custom positions are validated before snapshotting. King and pawn placement,
 promotion material, castling rights, and en-passant metadata must describe a

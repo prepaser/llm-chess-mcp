@@ -252,6 +252,22 @@ export const CandidateSchema = z.strictObject({
   opening: OpeningStatsSchema,
 }) satisfies z.ZodType<Candidate>;
 
+const candidates = z.array(CandidateSchema).superRefine((values, ctx) => {
+  const ranks = new Set<number>();
+  for (const [index, candidate] of values.entries()) {
+    const rank = candidate.objective.rank;
+    if (rank === null) continue;
+    if (ranks.has(rank)) {
+      addCountIssue(
+        ctx,
+        [index, "objective", "rank"],
+        "evaluated candidate ranks must be unique",
+      );
+    }
+    ranks.add(rank);
+  }
+});
+
 export const OpeningSchema = z
   .strictObject({
     eco: moveText,
@@ -394,7 +410,7 @@ const candidatesBase = {
   elo: z.number(),
   analysis_level: z.enum(ANALYSIS_LEVELS),
   moveSensitivity: MoveSensitivitySchema,
-  candidates: z.array(CandidateSchema),
+  candidates,
 };
 
 export const MoveCandidatesOutputSchema = z.strictObject(candidatesBase);

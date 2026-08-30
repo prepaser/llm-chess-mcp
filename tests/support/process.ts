@@ -1,6 +1,4 @@
-import assert from "node:assert/strict";
 import type { ChildProcess } from "node:child_process";
-import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 
 export const REPO = fileURLToPath(new URL("../..", import.meta.url));
@@ -27,18 +25,6 @@ export function childEnv(
   env.MAIA3_MODEL = E2E_MAIA3_MODEL;
   env.STOCKFISH_FLAVOR = E2E_STOCKFISH_FLAVOR;
   return env;
-}
-
-export function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      assert.ok(address && typeof address === "object");
-      server.close((error) => (error ? reject(error) : resolve(address.port)));
-    });
-  });
 }
 
 export function waitForExit(

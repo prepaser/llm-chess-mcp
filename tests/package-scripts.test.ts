@@ -10,6 +10,7 @@ test("publishing runs the complete release gate", async () => {
 
   assert.equal(scripts.prepublishOnly, "pnpm release:check");
   for (const command of [
+    "pnpm check",
     "pnpm test:package",
     "pnpm audit --prod",
     "npm pack --dry-run --ignore-scripts",

@@ -601,13 +601,35 @@ test("rejects duplicate legal scored Stockfish root moves", () => {
   );
 });
 
+test("rejects malformed Stockfish candidate lines at the shared boundary", () => {
+  const disabled: LichessCandidateData = {
+    status: "disabled",
+    totalGames: null,
+    moves: [],
+  };
+  const line = sfLine("e2e4", 100, 1);
+  const candidateSet = (lines: SfLine[], multipv = 10) =>
+    candidateSetFromData(new Chess(), 1500, lines, [], disabled, multipv);
+
+  for (const lines of [
+    [line, { ...sfLine("d2d4", 50, 1) }],
+    [{ ...line, multipv: 2 }],
+    [{ ...line, scoreCp: Number.NaN }],
+    [{ ...line, scoreMate: 3 }],
+    [{ ...line, wdl: [500, 300, 199] }],
+    [{ ...line, pv: [""] }],
+  ] as unknown as SfLine[][]) {
+    assert.throws(() => candidateSet(lines, 1), RangeError);
+  }
+});
+
 test("filters illegal dependency moves and handles explorer failures", () => {
   const { candidates, moveSensitivity } = candidateSetFromData(
     new Chess(),
     1500,
     [
       { multipv: 1, scoreCp: 100, scoreMate: null, wdl: null, pv: [] },
-      sfLine("e2e4", null),
+      sfLine("e2e4", null, 2),
     ],
     [{ uci: "not-uci", san: "ignored", prob: 0.2 }],
     {

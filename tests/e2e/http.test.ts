@@ -8,7 +8,6 @@ import {
 import {
   REPO,
   childEnv,
-  freePort,
   killIfRunning,
   waitForExit,
   waitForOutput,
@@ -18,11 +17,9 @@ test(
   "CLI serves Streamable HTTP and shuts down cleanly",
   { timeout: 30_000 },
   async () => {
-    const port = await freePort();
-    const endpoint = `http://127.0.0.1:${port}/mcp`;
     const child = spawn(
       process.execPath,
-      ["dist/index.js", "--transport", "http", "--port", String(port)],
+      ["dist/index.js", "--transport", "http", "--port", "0"],
       {
         cwd: REPO,
         env: childEnv(),
@@ -38,18 +35,23 @@ test(
       stderr += chunk;
     });
     const exited = waitForExit(child, () => stderr, "HTTP server");
+    let endpoint: string | undefined;
     const ready = waitForOutput(
       child,
       "stderr",
-      () => stderr.includes(`listening on ${endpoint}`),
+      () => {
+        endpoint = /^llm-chess-mcp listening on (http:\/\/\S+)$/m.exec(stderr)?.[1];
+        return endpoint !== undefined;
+      },
       () => stderr,
       "HTTP server",
     );
-    const transport = new StreamableHTTPClientTransport(new URL(endpoint));
     const client = new Client({ name: "http-cli-e2e", version: "1.0.0" });
 
     try {
       await ready;
+      assert.ok(endpoint);
+      const transport = new StreamableHTTPClientTransport(new URL(endpoint));
       await client.connect(transport);
       const tools = await client.listTools();
       assert.ok(tools.tools.some(({ name }) => name === "create_game"));

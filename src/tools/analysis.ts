@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import type * as z from "zod/v4";
+import { validateAnalysisLines } from "../analysis-boundary.js";
 import {
   drawResult,
   parseMove,
@@ -31,8 +32,6 @@ import {
   validateMoveIdentities,
 } from "./move-boundary.js";
 
-type AnalysisLine = Awaited<ReturnType<AnalysisServices["analyze"]>>[number];
-
 type PositionAnalysis = z.output<
   typeof TOOL_OUTPUT_SCHEMAS.position_analyze
 >;
@@ -47,30 +46,6 @@ type AnalysisServices = Pick<
   AppServices,
   "games" | "analyze" | "humanMoveDistribution"
 >;
-
-function validateAnalysisLines(
-  lines: readonly AnalysisLine[],
-  multipv: number,
-): void {
-  if (lines.length > multipv) {
-    throw new RangeError("analysis returned too many lines");
-  }
-  const ranks = new Set<number>();
-  for (const line of lines) {
-    if (
-      !Number.isSafeInteger(line.multipv) ||
-      line.multipv < 1 ||
-      line.multipv > multipv ||
-      ranks.has(line.multipv)
-    ) {
-      throw new RangeError("invalid analysis multipv rank");
-    }
-    ranks.add(line.multipv);
-    if (line.scoreCp !== null && line.scoreMate !== null) {
-      throw new RangeError("analysis line has conflicting scores");
-    }
-  }
-}
 
 function completePvSan(
   chess: Parameters<typeof pvToSan>[0],

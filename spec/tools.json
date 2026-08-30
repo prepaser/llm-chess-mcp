@@ -48,7 +48,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Delete a game and free its session.",
+      "description": "Delete a process-shared game and free game capacity.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,

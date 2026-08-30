@@ -24,7 +24,7 @@ Options:
   --transport <stdio|http>  Transport to use (default: stdio)
   --http                    Shortcut for --transport http
   --host <host>             HTTP bind host (default: 127.0.0.1)
-  --port <port>             HTTP listen port (default: 3000)
+  --port <port>             HTTP listen port; 0 selects an available port (default: 3000)
   --path <path>             HTTP endpoint path (default: /mcp)
   --allowed-host <host>     Allowed HTTP Host/Origin hostname (repeatable)
   -h, --help                Show this help
@@ -111,8 +111,8 @@ export function parseCli(args: string[]): CliOptions {
     }
   }
 
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error("--port must be between 1 and 65535");
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new Error("--port must be between 0 and 65535");
   }
   if (!isCanonicalHttpPath(path)) {
     throw new Error("--path must be an absolute URL path without query or fragment");

@@ -19,14 +19,6 @@ function readPostBody(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<ParsedBody> {
-  const declaredLength = declaredBodyLength(req);
-  if (Number.isNaN(declaredLength)) {
-    return Promise.resolve({ ok: false, status: 400, message: "invalid Content-Length" });
-  }
-  if (declaredLength !== null && declaredLength > limit) {
-    return Promise.resolve({ ok: false, status: 413, message: "request body too large" });
-  }
-
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let size = 0;
