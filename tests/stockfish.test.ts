@@ -104,6 +104,18 @@ test("Stockfish timeouts fit the Node timer range", async () => {
   );
 });
 
+test("Stockfish maxQueue must be a positive safe integer", () => {
+  for (const value of [1, Number.MAX_SAFE_INTEGER]) {
+    assert.doesNotThrow(() => new Stockfish({ maxQueue: value }));
+  }
+  for (const value of [0, -1, 1.5, Number.NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(
+      () => new Stockfish({ maxQueue: value }),
+      /stockfish maxQueue must be a positive safe integer/,
+    );
+  }
+});
+
 test("Stockfish ignores inherited outer options", () => {
   const inheritedInit: StockfishInit = () => {
     throw new Error("inherited init must not run");

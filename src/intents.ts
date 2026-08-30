@@ -1,8 +1,13 @@
 import { Chess } from "chess.js";
 import { validateAnalysisLines } from "./analysis-boundary.js";
-import { MAX_MULTIPV } from "./domain.js";
+import {
+  EXPLORER_ERROR_KINDS,
+  MAX_HUMAN_MOVES,
+  MAX_MULTIPV,
+} from "./domain.js";
 import type { ExplorerResult } from "./explorer.js";
 import { toEval, evalToCp } from "./eval.js";
+import { validateHumanMoves } from "./human-boundary.js";
 import type {
   Candidate,
   ExplorerErrorKind,
@@ -51,6 +56,63 @@ function assertLichessMove(move: LichessMove): void {
     throw new RangeError(
       "chess average rating must be a non-negative safe integer",
     );
+  }
+}
+
+function validateLichessCandidateData(
+  value: LichessCandidateData,
+): void {
+  const data = value as {
+    status?: unknown;
+    totalGames?: unknown;
+    moves?: unknown;
+    reason?: unknown;
+  };
+  if (!Array.isArray(data.moves)) {
+    throw new RangeError("explorer data must contain moves");
+  }
+  const totalGames = data.totalGames;
+  switch (data.status) {
+    case "available":
+      if (
+        typeof totalGames !== "number" ||
+        !Number.isSafeInteger(totalGames) ||
+        totalGames < 1 ||
+        data.reason !== undefined
+      ) {
+        throw new RangeError("available explorer data must contain games");
+      }
+      return;
+    case "no_data":
+      if (
+        totalGames !== 0 ||
+        data.moves.length !== 0 ||
+        data.reason !== undefined
+      ) {
+        throw new RangeError("no_data explorer data cannot contain games");
+      }
+      return;
+    case "unavailable":
+      if (
+        totalGames !== null ||
+        data.moves.length !== 0 ||
+        typeof data.reason !== "string" ||
+        !EXPLORER_ERROR_KINDS.includes(data.reason as ExplorerErrorKind)
+      ) {
+        throw new RangeError("unavailable explorer data is invalid");
+      }
+      return;
+    case "disabled":
+      if (
+        totalGames !== null ||
+        data.moves.length !== 0 ||
+        data.reason !== undefined
+      ) {
+        throw new RangeError("disabled explorer data is invalid");
+      }
+      return;
+    default:
+      throw new RangeError("invalid explorer data status");
   }
 }
 
@@ -195,22 +257,7 @@ export function candidateSetFromData(
   lichessResult: LichessCandidateData,
   sfMultipv = MAX_MULTIPV,
 ): CandidateSet {
-  if (lichessResult.status === "available") {
-    if (lichessResult.totalGames < 1 && lichessResult.moves.length === 0) {
-      throw new RangeError("available explorer data must contain games");
-    }
-  } else if (lichessResult.moves.length > 0) {
-    throw new RangeError(
-      `${lichessResult.status} explorer data cannot contain moves`,
-    );
-  } else if (
-    lichessResult.status === "no_data" &&
-    lichessResult.totalGames !== 0
-  ) {
-    throw new RangeError(
-      "no_data explorer data cannot contain games",
-    );
-  }
+  validateLichessCandidateData(lichessResult);
   if (chess.isGameOver()) {
     return emptyCandidateSet();
   }
@@ -219,15 +266,9 @@ export function candidateSetFromData(
     chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
   );
   const turn = chess.turn();
+  validateHumanMoves(maiaMoves, MAX_HUMAN_MOVES, legalMoves);
   const maiaByUci = new Map<string, number>();
-  const maiaUcis = new Set<string>();
   for (const move of maiaMoves) {
-    if (maiaUcis.has(move.uci)) throw new RangeError("duplicate Maia move");
-    maiaUcis.add(move.uci);
-    if (!Number.isFinite(move.prob) || move.prob < 0 || move.prob > 1) {
-      throw new RangeError("Maia move probability must be between 0 and 1");
-    }
-    if (!legalMoves.has(move.uci)) continue;
     maiaByUci.set(move.uci, move.prob);
   }
   const sfByUci = new Map<
@@ -399,7 +440,16 @@ export function createCandidateComputation(
           elo,
           maiaTopN,
           workSignal,
-        ),
+        ).then((moves) => {
+          validateHumanMoves(
+            moves,
+            maiaTopN,
+            new Map(
+              chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
+            ),
+          );
+          return moves;
+        }),
       ),
       fatal(explorer),
     ]);

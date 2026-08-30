@@ -7,7 +7,7 @@ export type HttpPostLease = {
 };
 
 export type HttpBodyLease = HttpPostLease & {
-  preemptSignal: AbortSignal;
+  kind: "full" | "probe";
 };
 
 export class HttpPostAdmission<T extends HttpPostScope> {
@@ -37,44 +37,42 @@ export class HttpPostAdmission<T extends HttpPostScope> {
 }
 
 export class HttpBodyAdmission {
-  #activePrimary = 0;
-  readonly #controls = new Set<() => void>();
+  #activeFull = 0;
+  #activeProbes = 0;
 
   constructor(
-    private readonly maxPrimary: number,
-    private readonly maxControl: number,
+    private readonly maxFull: number,
+    private readonly maxProbes: number,
   ) {}
 
-  acquire(): HttpBodyLease {
-    if (this.#activePrimary < this.maxPrimary) {
-      this.#activePrimary += 1;
-      let released = false;
-      return {
-        preemptSignal: new AbortController().signal,
-        release: (): void => {
-          if (released) return;
-          released = true;
-          this.#activePrimary -= 1;
-        },
-      };
+  acquire(): HttpBodyLease | undefined {
+    if (this.#activeFull < this.maxFull) {
+      this.#activeFull += 1;
+      return this.lease("full", () => {
+        this.#activeFull -= 1;
+      });
     }
+    if (this.#activeProbes >= this.maxProbes) {
+      return undefined;
+    }
+    this.#activeProbes += 1;
+    return this.lease("probe", () => {
+      this.#activeProbes -= 1;
+    });
+  }
 
-    if (this.#controls.size >= this.maxControl) {
-      this.#controls.values().next().value?.();
-    }
-    const controller = new AbortController();
+  private lease(
+    kind: HttpBodyLease["kind"],
+    onRelease: () => void,
+  ): HttpBodyLease {
     let released = false;
-    let preempt!: () => void;
-    const release = (): void => {
-      if (released) return;
-      released = true;
-      this.#controls.delete(preempt);
+    return {
+      kind,
+      release: (): void => {
+        if (released) return;
+        released = true;
+        onRelease();
+      },
     };
-    preempt = (): void => {
-      release();
-      controller.abort();
-    };
-    this.#controls.add(preempt);
-    return { preemptSignal: controller.signal, release };
   }
 }

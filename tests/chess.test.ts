@@ -1117,6 +1117,34 @@ test("pgnOf bounds aggregate headers and bytes", () => {
   );
 });
 
+test("snapshotChess counts encoded headers and movetext together", () => {
+  const chess = new Chess();
+  for (let index = 0; index < 64; index += 1) {
+    chess.setHeader(`X${index}`, '"'.repeat(4_000));
+  }
+  let seed = 1;
+  for (let index = 0; index < 64; index += 1) {
+    const moves = chess.moves();
+    seed = (seed * 1_664_525 + 1_013_904_223) >>> 0;
+    chess.move(moves[seed % moves.length]!);
+    chess.setComment("a".repeat(8_400));
+  }
+  assert.equal(chess.getComments().length, 64);
+
+  const store = new GameStore({ createId: () => "oversized-export" });
+  for (const operation of [
+    () => snapshotChess(chess),
+    () => pgnOf(chess),
+    () => store.createGameFromChess(chess),
+  ]) {
+    assert.throws(
+      operation,
+      (error) => error instanceof ChessError && error.code === "PGN_TOO_LARGE",
+    );
+  }
+  assert.equal(store.gameCount(), 0);
+});
+
 test("programmatic snapshots and exports enforce the ply limit", () => {
   const chess = new Chess();
   const cycle = ["Nf3", "Nf6", "Ng1", "Ng8"];

@@ -687,8 +687,8 @@ export class Stockfish {
     this.maxQueue = ownOption(options, "maxQueue") ?? DEFAULT_MAX_QUEUE;
     this.timeouts = mergeTimeouts(ownOption(options, "timeouts"));
 
-    if (!Number.isInteger(this.maxQueue) || this.maxQueue < 1) {
-      throw new Error("stockfish maxQueue must be a positive integer");
+    if (!Number.isSafeInteger(this.maxQueue) || this.maxQueue < 1) {
+      throw new Error("stockfish maxQueue must be a positive safe integer");
     }
     for (const [name, timeout] of Object.entries(this.timeouts)) {
       if (

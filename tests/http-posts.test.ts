@@ -24,16 +24,17 @@ test("HTTP POST admission releases each lease once", () => {
   assert.equal(second.activePosts, 0);
 });
 
-test("HTTP body admission preempts an overflow body control lease", () => {
-  const admission = new HttpBodyAdmission(1, 1);
-  const primary = admission.acquire();
-  const control = admission.acquire();
-  const next = admission.acquire();
+test("HTTP body admission bounds full and probe leases independently", () => {
+  const admission = new HttpBodyAdmission(1, 2);
+  const full = admission.acquire();
+  const firstProbe = admission.acquire();
+  const secondProbe = admission.acquire();
 
-  assert.equal(primary.preemptSignal.aborted, false);
-  assert.equal(control.preemptSignal.aborted, true);
-  assert.equal(next.preemptSignal.aborted, false);
-  primary.release();
-  control.release();
-  next.release();
+  assert.equal(full?.kind, "full");
+  assert.equal(firstProbe?.kind, "probe");
+  assert.equal(secondProbe?.kind, "probe");
+  assert.equal(admission.acquire(), undefined);
+  firstProbe?.release();
+  assert.equal(admission.acquire()?.kind, "probe");
+  full?.release();
 });

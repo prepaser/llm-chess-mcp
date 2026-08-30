@@ -12,6 +12,7 @@ import { buildServer } from "./server.js";
 import {
   hasUnexpectedBody,
   isCancellationPostBody,
+  MAX_CANCELLATION_PROBE_BYTES,
   parsePostBody,
 } from "./http-body.js";
 import { canonicalHttpPath } from "./http-config.js";
@@ -64,7 +65,7 @@ export class HttpRuntime {
     this.#sessions = new HttpSessionRegistry<Session>(limits.maxSessions);
     this.#bodyAdmission = new HttpBodyAdmission(
       limits.maxConcurrentPosts,
-      limits.maxConcurrentPostsPerSession,
+      limits.maxConnections,
     );
     this.#workAdmission = new HttpWorkAdmission(
       limits.maxConcurrentPosts,
@@ -124,26 +125,44 @@ export class HttpRuntime {
     signal?: AbortSignal,
   ): Promise<void> {
     const admission = this.#bodyAdmission.acquire();
+    if (!admission) {
+      closeWithError(req, res, 503, "server request body limit reached", {
+        "retry-after": "1",
+      });
+      return;
+    }
     let body: Awaited<ReturnType<typeof parsePostBody>>;
     try {
       body = await parsePostBody(
         req,
-        this.limits.maxRequestBodyBytes,
+        admission.kind === "full"
+          ? this.limits.maxRequestBodyBytes
+          : Math.min(this.limits.maxRequestBodyBytes, MAX_CANCELLATION_PROBE_BYTES),
         this.limits.bodyTimeoutMs,
         signal,
-        admission.preemptSignal,
       );
     } finally {
       admission.release();
     }
     if (!body.ok) {
+      if (admission.kind === "probe") {
+        closeWithError(req, res, 503, "server request body limit reached", {
+          "retry-after": "1",
+        });
+        return;
+      }
       closeWithError(
         req,
         res,
         body.status,
         body.message,
-        body.status === 503 ? { "retry-after": "1" } : {},
       );
+      return;
+    }
+    if (admission.kind === "probe" && !isCancellationPostBody(body.value)) {
+      closeWithError(req, res, 503, "server request body limit reached", {
+        "retry-after": "1",
+      });
       return;
     }
     await work(body.value);

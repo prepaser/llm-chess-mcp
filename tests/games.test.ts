@@ -391,6 +391,21 @@ test("GameStore rolls back only an unobserved failed snapshot generation", () =>
   assert.equal(store.createGame(), "2:same");
 });
 
+test("GameStore rolls back an unobserved failed final insertion", () => {
+  let now = 0;
+  class ClockFailingChess extends Chess {
+    override getComments(): ReturnType<Chess["getComments"]> {
+      now = Number.NaN;
+      return super.getComments();
+    }
+  }
+
+  const store = new GameStore({ clock: () => now, createId: () => "same" });
+  assert.throws(() => store.createGameFromChess(new ClockFailingChess()), RangeError);
+  now = 0;
+  assert.equal(store.createGame(), "0:same");
+});
+
 test("GameStore rejects oversized programmatic chess state", () => {
   const chess = new Chess();
   chess.setComment("x".repeat(16 * 1024 + 1));

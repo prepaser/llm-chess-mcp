@@ -676,7 +676,18 @@ test("keeps Explorer failures optional but rejects malformed Explorer data", asy
   );
 });
 
-test("filters illegal dependency moves and handles explorer failures", () => {
+test("rejects illegal dependency moves and handles explorer failures", () => {
+  assert.throws(
+    () =>
+      candidateSetFromData(
+        new Chess(),
+        1500,
+        [],
+        [{ uci: "not-uci", san: "ignored", prob: 0.2 }],
+        { status: "disabled", totalGames: null, moves: [] },
+      ),
+    /invalid human move/,
+  );
   const { candidates, moveSensitivity } = candidateSetFromData(
     new Chess(),
     1500,
@@ -684,7 +695,7 @@ test("filters illegal dependency moves and handles explorer failures", () => {
       { multipv: 1, scoreCp: 100, scoreMate: null, wdl: null, pv: [] },
       sfLine("e2e4", null, 2),
     ],
-    [{ uci: "not-uci", san: "ignored", prob: 0.2 }],
+    [],
     {
       status: "unavailable",
       reason: "rate_limited",
@@ -740,6 +751,20 @@ test("rejects malformed and duplicate candidate dependency data", () => {
         1500,
         [],
         [
+          { uci: "e2e4", san: "e4", prob: 0.8 },
+          { uci: "d2d4", san: "d4", prob: 0.8 },
+        ],
+        disabled,
+      ),
+    /probability mass/,
+  );
+  assert.throws(
+    () =>
+      candidateSetFromData(
+        new Chess(),
+        1500,
+        [],
+        [
           { uci: "e2e4", san: "e4", prob: 0.5 },
           { uci: "e2e4", san: "e4", prob: 0.4 },
         ],
@@ -783,7 +808,7 @@ test("rejects malformed and duplicate candidate dependency data", () => {
           },
         ],
       }),
-    /move count must be positive/,
+    /available explorer data|move count must be positive/,
   );
   const move = {
     uci: "e2e4",
@@ -825,7 +850,7 @@ test("rejects malformed and duplicate candidate dependency data", () => {
           [],
           data as unknown as LichessCandidateData,
         ),
-      /explorer data cannot contain moves/,
+      /explorer data (cannot contain moves|is invalid)/,
     );
   }
   for (const data of [
@@ -845,6 +870,46 @@ test("rejects malformed and duplicate candidate dependency data", () => {
       /explorer data|available explorer data/,
     );
   }
+  for (const data of [
+    { status: "available", totalGames: 1, moves: [], reason: "upstream" },
+    { status: "no_data", totalGames: 0, moves: [], reason: "upstream" },
+    { status: "disabled", totalGames: 1, moves: [] },
+    { status: "disabled", totalGames: null, moves: [], reason: "upstream" },
+    { status: "unavailable", reason: "upstream", totalGames: 1, moves: [] },
+    { status: "unavailable", totalGames: null, moves: [] },
+    { status: "unknown", totalGames: null, moves: [] },
+  ]) {
+    assert.throws(
+      () =>
+        candidateSetFromData(
+          new Chess(),
+          1500,
+          [],
+          [],
+          data as unknown as LichessCandidateData,
+        ),
+      /explorer data|invalid explorer data status/,
+    );
+  }
+});
+
+test("rejects candidate Maia results beyond maia_top_n", async () => {
+  const computeCandidates = createCandidateComputation({
+    analyze: async () => [],
+    humanMoveDistribution: async () => [
+      { uci: "e2e4", san: "e4", prob: 0.5 },
+      { uci: "d2d4", san: "d4", prob: 0.5 },
+    ],
+    explorerEnabled: () => false,
+    openingExplorer: async () => {
+      throw new Error("unreachable");
+    },
+    explorerFailureReason: () => "upstream",
+  });
+  await assert.rejects(
+    computeCandidates(new Chess(), 1500, 1, 1, 1),
+    /exceeds top_n/,
+  );
 });
 
 test("classifies move sensitivity at exact spread boundaries", () => {

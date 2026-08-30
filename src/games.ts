@@ -119,27 +119,26 @@ export class GameStore {
     const nextGeneration =
       generation === Number.MAX_SAFE_INTEGER ? null : generation + 1;
     this.nextIdGeneration = nextGeneration;
-    this.assertUnique(id);
-    let snapshot: Chess;
     try {
-      snapshot = snapshotChess(chess);
+      this.assertUnique(id);
+      const snapshot = snapshotChess(chess);
+      const insertionTime = this.clockTime();
+      this.cleanupGamesAt(insertionTime);
+      this.assertCapacity();
+      this.assertUnique(id);
+      this.games.set(id, {
+        chess: snapshot,
+        createdAt: insertionTime,
+        lastAccessedAt: insertionTime,
+        revision: 0,
+      });
+      return id;
     } catch (error) {
       if (this.nextIdGeneration === nextGeneration) {
         this.nextIdGeneration = generation;
       }
       throw error;
     }
-    const insertionTime = this.clockTime();
-    this.cleanupGamesAt(insertionTime);
-    this.assertCapacity();
-    this.assertUnique(id);
-    this.games.set(id, {
-      chess: snapshot,
-      createdAt: insertionTime,
-      lastAccessedAt: insertionTime,
-      revision: 0,
-    });
-    return id;
   }
 
   getSnapshot(id: string): GameSnapshot {

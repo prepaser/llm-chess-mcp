@@ -361,7 +361,12 @@ async function smokeHttp(bin, packageRoot, cwd) {
     );
   } finally {
     await client.close().catch(() => {});
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    }
+    await exited;
   }
 }
 

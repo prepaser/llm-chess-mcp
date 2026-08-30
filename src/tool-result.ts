@@ -83,85 +83,115 @@ function schemaBranches(schema: JsonSchema, key: string): unknown[] {
 
 function schemaRef(
   schema: JsonSchema,
-  definitions: JsonSchema,
-): [string, JsonSchema] | undefined {
+  definitions: Record<string, unknown>,
+): [string, unknown] | undefined {
   if (typeof schema.$ref !== "string") return undefined;
-  const match = /^#\/\$defs\/([^/]+)$/.exec(schema.$ref);
-  if (!match) return undefined;
-  const name = match[1];
-  const definition = name === undefined ? undefined : definitions[name];
-  return isJsonSchema(definition) ? [schema.$ref, definition] : undefined;
+  const prefix = "#/$defs/";
+  if (!schema.$ref.startsWith(prefix)) return undefined;
+  const name = schema.$ref.slice(prefix.length);
+  if (Object.hasOwn(definitions, name)) return [schema.$ref, definitions[name]];
+  const decoded = name.replaceAll("~1", "/").replaceAll("~0", "~");
+  return Object.hasOwn(definitions, decoded)
+    ? [schema.$ref, definitions[decoded]]
+    : undefined;
 }
 
-function hasNonObjectBranch(
-  schema: unknown,
-  definitions: JsonSchema,
-  seen = new Set<string>(),
-): boolean {
-  if (!isJsonSchema(schema)) return false;
-  const type = schema.type;
-  if (typeof type === "string" && type !== "object") return true;
-  if (
-    Array.isArray(type) &&
-    type.some((value) => value !== "object")
-  ) {
-    return true;
-  }
+type SchemaPossibilities = {
+  object: boolean;
+  nonObject: boolean;
+};
 
-  const branches = ["allOf", "anyOf", "oneOf"].flatMap((key) =>
-    schemaBranches(schema, key),
+const IMPOSSIBLE_SCHEMA: SchemaPossibilities = {
+  object: false,
+  nonObject: false,
+};
+const UNKNOWN_SCHEMA: SchemaPossibilities = {
+  object: true,
+  nonObject: true,
+};
+
+function allOfPossibilities(
+  values: readonly SchemaPossibilities[],
+): SchemaPossibilities {
+  return {
+    object: values.every((value) => value.object),
+    nonObject: values.every((value) => value.nonObject),
+  };
+}
+
+function unionPossibilities(
+  values: readonly SchemaPossibilities[],
+): SchemaPossibilities {
+  return {
+    object: values.some((value) => value.object),
+    nonObject: values.some((value) => value.nonObject),
+  };
+}
+
+function isFalseSchema(schema: JsonSchema): boolean {
+  return (
+    Object.keys(schema).length === 1 &&
+    isJsonSchema(schema.not) &&
+    Object.keys(schema.not).length === 0
   );
-  if (branches.some((branch) => hasNonObjectBranch(branch, definitions, seen))) {
-    return true;
-  }
-
-  const ref = schemaRef(schema, definitions);
-  if (ref) {
-    const [key, definition] = ref;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    const result = hasNonObjectBranch(definition, definitions, seen);
-    seen.delete(key);
-    return result;
-  }
-
-  return false;
 }
 
-function hasObjectConstraint(
+function schemaPossibilities(
   schema: unknown,
-  definitions: JsonSchema,
+  definitions: Record<string, unknown>,
   seen = new Set<string>(),
-): boolean {
-  if (!isJsonSchema(schema)) return false;
+): SchemaPossibilities {
+  if (schema === false) return IMPOSSIBLE_SCHEMA;
+  if (schema === true || !isJsonSchema(schema)) return UNKNOWN_SCHEMA;
+  if (isFalseSchema(schema)) return IMPOSSIBLE_SCHEMA;
+
   const type = schema.type;
-  if (type === "object") return true;
-  if (Array.isArray(type)) return type.every((value) => value === "object");
+  const base =
+    type === "object"
+      ? { object: true, nonObject: false }
+      : typeof type === "string"
+        ? { object: false, nonObject: true }
+        : Array.isArray(type)
+          ? {
+              object: type.includes("object"),
+              nonObject: type.some((value) => value !== "object"),
+            }
+          : UNKNOWN_SCHEMA;
+
+  const constraints = [base];
+  const allOf = schemaBranches(schema, "allOf");
+  if (allOf.length > 0) {
+    constraints.push(
+      allOfPossibilities(
+        allOf.map((branch) => schemaPossibilities(branch, definitions, seen)),
+      ),
+    );
+  }
 
   const alternatives = ["anyOf", "oneOf"].flatMap((key) =>
     schemaBranches(schema, key),
   );
   if (alternatives.length > 0) {
-    return alternatives.every((branch) =>
-      hasObjectConstraint(branch, definitions, seen),
-    );
-  }
-
-  const allOf = schemaBranches(schema, "allOf");
-  if (allOf.length > 0) {
-    return allOf.some((branch) =>
-      hasObjectConstraint(branch, definitions, seen),
+    constraints.push(
+      unionPossibilities(
+        alternatives.map((branch) =>
+          schemaPossibilities(branch, definitions, seen),
+        ),
+      ),
     );
   }
 
   const ref = schemaRef(schema, definitions);
-  if (!ref) return false;
-  const [key, definition] = ref;
-  if (seen.has(key)) return false;
-  seen.add(key);
-  const result = hasObjectConstraint(definition, definitions, seen);
-  seen.delete(key);
-  return result;
+  if (ref) {
+    const [key, definition] = ref;
+    if (seen.has(key)) return UNKNOWN_SCHEMA;
+    seen.add(key);
+    const result = schemaPossibilities(definition, definitions, seen);
+    seen.delete(key);
+    constraints.push(result);
+  }
+
+  return allOfPossibilities(constraints);
 }
 
 function assertWireSchema(
@@ -170,13 +200,11 @@ function assertWireSchema(
 ): void {
   try {
     const wireSchema = z.toJSONSchema(schema);
-    const definitions = isJsonSchema(wireSchema.$defs)
+    const definitions: Record<string, unknown> = isJsonSchema(wireSchema.$defs)
       ? wireSchema.$defs
       : {};
-    if (
-      hasNonObjectBranch(wireSchema, definitions) ||
-      !hasObjectConstraint(wireSchema, definitions)
-    ) {
+    const possible = schemaPossibilities(wireSchema, definitions);
+    if (!possible.object || possible.nonObject) {
       throw new TypeError(`MCP tool ${kind} schema must have an object root`);
     }
   } catch (cause) {

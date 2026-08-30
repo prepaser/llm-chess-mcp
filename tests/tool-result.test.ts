@@ -245,6 +245,24 @@ test("safeHandler accepts object-valued union and intersection output schemas", 
   const intersectionHandler = safeHandler(input, intersection, async () =>
     toolResult({ value: "ok", count: 1 }, "ok"),
   );
+  const taggedUnion = z.discriminatedUnion("kind", [
+    z
+      .strictObject({ kind: z.literal("tagged_text"), value: z.string() })
+      .meta({ id: "tagged/text~value" }),
+    z
+      .strictObject({ kind: z.literal("tagged_count"), value: z.number() })
+      .meta({ id: "tagged/count~value" }),
+  ]);
+  const taggedUnionHandler = safeHandler(input, taggedUnion, async () =>
+    toolResult({ kind: "tagged_text" as const, value: "ok" }, "ok"),
+  );
+  const objectOrNever = z.union([
+    z.strictObject({ value: z.string() }),
+    z.never(),
+  ]);
+  const objectOrNeverHandler = safeHandler(input, objectOrNever, async () =>
+    toolResult({ value: "ok" }, "ok"),
+  );
 
   assert.deepEqual(
     await unionHandler({}),
@@ -253,6 +271,14 @@ test("safeHandler accepts object-valued union and intersection output schemas", 
   assert.deepEqual(
     await intersectionHandler({}),
     toolResult({ value: "ok", count: 1 }, "ok"),
+  );
+  assert.deepEqual(
+    await taggedUnionHandler({}),
+    toolResult({ kind: "tagged_text", value: "ok" }, "ok"),
+  );
+  assert.deepEqual(
+    await objectOrNeverHandler({}),
+    toolResult({ value: "ok" }, "ok"),
   );
 });
 
@@ -276,6 +302,16 @@ test("safeHandler rejects non-object input and output schemas before registratio
         async () => toolResult({}, "unreachable"),
       ),
     /MCP input schema must be representable as JSON Schema/,
+  );
+  assert.throws(
+    () =>
+      safeHandler(
+        z.strictObject({}),
+        // @ts-expect-error Nullable outputs can produce a non-object result.
+        z.union([z.strictObject({}), z.null()]),
+        async () => toolResult({}, "unreachable"),
+      ),
+    /MCP output schema must be representable as JSON Schema/,
   );
 });
 

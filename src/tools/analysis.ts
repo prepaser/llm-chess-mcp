@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import type * as z from "zod/v4";
 import { validateAnalysisLines } from "../analysis-boundary.js";
+import { validateHumanMoves } from "../human-boundary.js";
 import {
   drawResult,
   parseMove,
@@ -8,11 +9,6 @@ import {
   pvToSan,
   snapshotChess,
 } from "../chess.js";
-import {
-  HUMAN_PROBABILITY_TOLERANCE,
-  MAX_HUMAN_MOVES,
-  type Maia3Move,
-} from "../domain.js";
 import {
   ANALYSIS_PRESETS,
   classifyCpLoss,
@@ -28,8 +24,6 @@ import { safeHandler, toolResult } from "../tool-result.js";
 import { TOOL_OUTPUT_SCHEMAS } from "../tool-schemas.js";
 import {
   legalMoveMap,
-  type LegalMoveMap,
-  validateMoveIdentities,
 } from "./move-boundary.js";
 
 type PositionAnalysis = z.output<
@@ -54,27 +48,6 @@ function completePvSan(
   const san = pvToSan(chess, pv);
   if (san.length !== pv.length) throw new RangeError("invalid analysis PV");
   return san;
-}
-
-function validateHumanMoves(
-  moves: Maia3Move[],
-  topN: number,
-  legal: LegalMoveMap,
-): void {
-  if (moves.length > topN || moves.length > MAX_HUMAN_MOVES) {
-    throw new RangeError("human move distribution exceeds top_n");
-  }
-  validateMoveIdentities(moves, legal);
-  let probabilityMass = 0;
-  for (const move of moves) {
-    if (!Number.isFinite(move.prob) || move.prob < 0 || move.prob > 1) {
-      throw new RangeError("invalid human move probability");
-    }
-    probabilityMass += move.prob;
-  }
-  if (probabilityMass > 1 + HUMAN_PROBABILITY_TOLERANCE) {
-    throw new RangeError("human move probability mass exceeds 1");
-  }
 }
 
 export function registerAnalysisTools(

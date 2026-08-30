@@ -208,6 +208,55 @@ function partialSessionPost(
   });
 }
 
+function partialSessionJsonPost(
+  url: string,
+  id: string,
+  body: string,
+): Promise<{
+  closed: Promise<void>;
+  response: Promise<string>;
+  complete(): Promise<void>;
+  destroy(): void;
+}> {
+  return new Promise((resolve, reject) => {
+    const endpoint = new URL(url);
+    let ready = false;
+    const socket = connect(Number(endpoint.port), endpoint.hostname, () => {
+      socket.write(
+        [
+          "POST /mcp HTTP/1.1",
+          "Host: 127.0.0.1",
+          "Accept: application/json, text/event-stream",
+          "Content-Type: application/json",
+          `Mcp-Session-Id: ${id}`,
+          "Mcp-Protocol-Version: 2025-11-25",
+          `Content-Length: ${Buffer.byteLength(body)}`,
+          "",
+          body.slice(0, 1),
+        ].join("\r\n"),
+        () => {
+          ready = true;
+          const response = new Promise<string>((done) => {
+            socket.once("data", (chunk: Buffer) => done(chunk.toString()));
+          });
+          resolve({
+            closed: new Promise((done) => socket.once("close", done)),
+            response,
+            complete: () =>
+              new Promise((done, fail) => {
+                socket.write(body.slice(1), (error) => (error ? fail(error) : done()));
+              }),
+            destroy: () => socket.destroy(),
+          });
+        },
+      );
+    });
+    socket.on("error", (error) => {
+      if (!ready) reject(error);
+    });
+  });
+}
+
 function waitForConnectionClose(url: string, payload: string, label: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const endpoint = new URL(url);
@@ -852,7 +901,7 @@ test("Streamable HTTP bounds declared and chunked request bodies", async (t) => 
   assert.match(encoded.body, /Content-Encoding must be identity/);
 });
 
-test("Streamable HTTP preempts an overflow body parser", async (t) => {
+test("Streamable HTTP rejects ordinary overflow body probes", async (t) => {
   const http = await serveHttp(
     { port: 0, maxConcurrentPosts: 1, maxConcurrentPostsPerSession: 1 },
     fakeServices(new GameStore()),
@@ -865,12 +914,14 @@ test("Streamable HTTP preempts an overflow body parser", async (t) => {
   });
 
   uploads.push(await partialPost(http.url), await partialPost(http.url));
-  const admitted = await httpRequest(http.url, {
+  const rejected = await httpRequest(http.url, {
     method: "POST",
     headers: INIT_HEADERS,
     body: initializeBody(),
   });
-  assert.equal(admitted.status, 200);
+  assert.equal(rejected.status, 503);
+  assert.equal(rejected.retryAfter, "1");
+  assert.match(rejected.body, /server request body limit reached/);
 
   for (const upload of uploads) upload.destroy();
   await Promise.all(uploads.map((upload) => upload.closed));
@@ -882,42 +933,57 @@ test("Streamable HTTP preempts an overflow body parser", async (t) => {
   assert.equal(next.status, 200);
 });
 
-test("Streamable HTTP preempts slow uploads for cancellation", async (t) => {
-  const analysis = abortableAnalysis();
+test("Streamable HTTP preserves a cancellation probe through ordinary overflow", async (t) => {
   const http = await serveHttp(
     { port: 0, maxConcurrentPosts: 1, maxConcurrentPostsPerSession: 1 },
-    fakeServices(new GameStore(), { analyze: analysis.analyze }),
+    fakeServices(new GameStore()),
   );
   const { client, transport } = await connectClient(http, "http-body-cancel-priority");
-  const uploads: Awaited<ReturnType<typeof partialSessionPost>>[] = [];
-  const controller = new AbortController();
+  let primary: Awaited<ReturnType<typeof partialSessionPost>> | undefined;
+  let cancellation: Awaited<ReturnType<typeof partialSessionJsonPost>> | undefined;
   t.after(async () => {
-    controller.abort();
-    for (const upload of uploads) upload.destroy();
-    await Promise.all(uploads.map((upload) => upload.closed));
+    primary?.destroy();
+    cancellation?.destroy();
+    await Promise.all([primary?.closed, cancellation?.closed].filter(Boolean));
     await client.close().catch(() => {});
     await http.close();
   });
 
-  const gameId = await createGame(client);
-  const call = client.callTool(
-    {
-      name: "position_analyze",
-      arguments: { game_id: gameId, analysis_level: "fast" },
-    },
-    { signal: controller.signal },
-  ).catch((error: unknown) => error);
-  await analysis.started;
   assert.ok(transport.sessionId);
-  uploads.push(
-    await partialSessionPost(http.url, transport.sessionId),
-    await partialSessionPost(http.url, transport.sessionId),
+  const headers = {
+    ...INIT_HEADERS,
+    "mcp-session-id": transport.sessionId,
+    "mcp-protocol-version": "2025-11-25",
+  };
+  primary = await partialSessionPost(http.url, transport.sessionId);
+  cancellation = await partialSessionJsonPost(
+    http.url,
+    transport.sessionId,
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: "cancellable", reason: "cancel through parser pressure" },
+    }),
   );
   await new Promise<void>((resolve) => setImmediate(resolve));
 
-  controller.abort(new Error("cancel through parser pressure"));
-  await analysis.aborted;
-  await call;
+  const invalid = await httpRequest(http.url, {
+    method: "POST",
+    headers: { "content-type": "text/plain", "mcp-session-id": transport.sessionId },
+    body: "x",
+  });
+  assert.equal(invalid.status, 503);
+  assert.equal(invalid.retryAfter, "1");
+  const ordinary = await httpRequest(http.url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+  });
+  assert.equal(ordinary.status, 503);
+  assert.equal(ordinary.retryAfter, "1");
+
+  await cancellation.complete();
+  assert.match(await cancellation.response, /^HTTP\/1\.1 202 /);
   assert.equal(http.sessionCount(), 1);
 });
 
@@ -1452,13 +1518,6 @@ test("Streamable HTTP session deletion aborts partial uploads without consuming 
   upload = await partialSessionPost(http.url, initialized.sessionId);
   await new Promise((resolve) => setTimeout(resolve, 20));
 
-  const admitted = await httpRequest(http.url, {
-    method: "POST",
-    headers: INIT_HEADERS,
-    body: initializeBody(2),
-  });
-  assert.equal(admitted.status, 200);
-
   const terminated = await httpRequest(http.url, {
     method: "DELETE",
     headers: {
@@ -1477,7 +1536,7 @@ test("Streamable HTTP session deletion aborts partial uploads without consuming 
   const next = await httpRequest(http.url, {
     method: "POST",
     headers: INIT_HEADERS,
-    body: initializeBody(3),
+    body: initializeBody(2),
   });
   assert.equal(next.status, 200);
 });

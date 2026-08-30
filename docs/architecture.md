@@ -93,6 +93,8 @@ is legality-checked from its parent position before only the mainline is stored.
 An iterative pre-parser caps structural elements and strips variations before
 the dependency parser runs, avoiding recursive dependency-stack growth. Header
 count is capped separately and restoration uses one case-insensitive index.
+Snapshots enforce the same PGN byte, header, token, and ply resource bounds as
+export before entering game storage.
 
 Games are process-shared. There is no per-user, per-client, or per-MCP-session
 ownership record: possession of an opaque `game_id` is the capability required
@@ -136,12 +138,16 @@ deciding whether to retry. `expected_revision` makes a repeated move fail stale
 rather than apply to a newer position. Proxy timeouts are client-delivery
 limits, not proof that backend work was cancelled.
 
-HTTP admission is bounded before SDK dispatch. POST bodies are parsed once with
-a 2 MiB byte cap; after parsing, only 16 normal POST dispatches process-wide or
-two per session may run concurrently. Initialization then reserves one of 64
-session slots atomically.
+HTTP admission is bounded before SDK dispatch. Normal POST body parsers accept
+up to 2 MiB. When they are full, an overflow request gets only a small,
+up-to-8 KiB probe; a probe may proceed only when it is a complete cancellation
+notification, and all other probe outcomes receive 503. The listener's
+connection limit bounds the number of such probes, and an accepted body parser
+is never preempted. After parsing, at most 16 normal POST dispatches run
+process-wide and at most two run per session. Initialization then reserves one
+of 64 session slots atomically.
 A separately bounded control lane gives cancellation-only notifications priority
-when normal POST capacity is saturated. The same normal limits independently
+when normal dispatch capacity is saturated. The same normal limits independently
 bound downstream compute and network jobs. A job retains its slot until its
 service promise settles, including after session closure if the downstream work
 does not cooperate with abort. Sessions with no active request expire after 30

@@ -273,10 +273,11 @@ rejected:
 - Up to 1,000 games are retained per process; idle games expire after one hour.
 - `move_evaluate` accepts at most 10 moves per call.
 - Imported and exported PGNs are limited to 1 MiB, 256 headers, and 4,096
-  plies; stored game histories use the same ply limit. Imports also cap the
-  mainline and variations together at 32,768 structural elements and 16 KiB
-  per lexical token. Every variation is legality-checked; game state retains
-  the mainline. UTF-8 BOMs and standard escaped header values are supported.
+  plies; stored snapshots enforce the same byte, header, token, and ply resource
+  bounds. Imports also cap the mainline and variations together at 32,768
+  structural elements and 16 KiB per lexical token. Every variation is
+  legality-checked; game state retains the mainline. UTF-8 BOMs and standard
+  escaped header values are supported.
 - Custom FENs reject inconsistent castling/en-passant metadata and impossible
   pawn or promotion material.
 - Stockfish accepts up to 32 active or queued analyses. Maia runs at most two
@@ -284,14 +285,18 @@ rejected:
 - Lichess Explorer requests run one at a time and share 429 cooldowns.
 - HTTP retains at most 64 MCP sessions; sessions with no active request expire
   after 30 minutes. An open GET/SSE stream keeps its session active.
-- HTTP accepts bodies up to 2 MiB. After body parsing, it permits 16 concurrent
-  POST dispatches and downstream compute/network jobs process-wide, with two of
-  each per session. A separate bounded control lane prioritizes MCP cancellation
-  when normal POST capacity is full. If an existing-session POST response closes
-  before it finishes, its session is closed and its work is aborted; an
-  uncooperative downstream operation still holds capacity until it settles. HTTP
-  also caps connections at 128 and applies a 15-second body upload deadline plus
-  bounded header, socket, and keep-alive timeouts.
+- HTTP accepts bodies up to 2 MiB under normal body-parser capacity. Once those
+  parsers are full, an overflow request receives only a small, up-to-8 KiB
+  probe; only a complete MCP cancellation notification can proceed, and no
+  accepted parser is preempted. The listener's connection limit bounds overflow
+  probes. After body parsing, it permits 16 concurrent POST dispatches and
+  downstream compute/network jobs process-wide, with two of each per session.
+  A separate bounded control lane prioritizes MCP cancellation when normal
+  dispatch capacity is full. If an existing-session POST response closes before
+  it finishes, its session is closed and its work is aborted; an uncooperative
+  downstream operation still holds capacity until it settles. HTTP also caps
+  connections at 128 and applies a 15-second body upload deadline plus bounded
+  header, socket, and keep-alive timeouts.
 
 Programmatic users can override the HTTP limits through `HttpServerOptions`.
 These safeguards do not replace public-edge quotas: a public deployment must
