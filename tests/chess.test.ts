@@ -1214,6 +1214,48 @@ test("snapshotChess counts empty-header tag separators", () => {
   assert.equal(store.gameCount(), 0);
 });
 
+test("snapshotChess accounts for terminal PGN result normalization", () => {
+  const terminals = [
+    {
+      fen: "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1",
+      result: "1/2-1/2",
+    },
+    {
+      fen: "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1",
+      result: "1-0",
+    },
+  ] as const;
+  for (const { fen, result } of terminals) {
+    const chess = new Chess(fen);
+    for (let index = 0; index < 63; index += 1) {
+      chess.setHeader(`X${index}`, "a".repeat(MAX_PGN_TOKEN_BYTES));
+    }
+    chess.setHeader("Tail", "");
+    const remaining = MAX_PGN_BYTES - Buffer.byteLength(pgnOf(chess), "utf8");
+    assert.ok(remaining > 0 && remaining < MAX_PGN_TOKEN_BYTES);
+    chess.setHeader("Tail", "a".repeat(remaining));
+
+    assert.equal(chess.getHeaders().Result, "*");
+    assert.equal(Buffer.byteLength(pgnOf(chess), "utf8"), MAX_PGN_BYTES);
+    const snapshot = snapshotChess(chess);
+    assert.equal(snapshot.getHeaders().Result, "*");
+    const store = new GameStore({ createId: () => result });
+    assert.equal(store.createGameFromChess(chess), `0:${result}`);
+
+    chess.setHeader("Tail", "a".repeat(remaining + 1));
+    for (const operation of [
+      () => snapshotChess(chess),
+      () => pgnOf(chess),
+      () => store.createGameFromChess(chess),
+    ]) {
+      assert.throws(
+        operation,
+        (error) => error instanceof ChessError && error.code === "PGN_TOO_LARGE",
+      );
+    }
+  }
+});
+
 test("programmatic snapshots and exports enforce the ply limit", () => {
   const chess = new Chess();
   const cycle = ["Nf3", "Nf6", "Ng1", "Ng8"];

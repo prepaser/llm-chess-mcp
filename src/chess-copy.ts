@@ -12,6 +12,7 @@ import {
   pgnHeaderIndex,
   pgnSetupHeaders,
   replacePgnHeaders,
+  terminalPgnResult,
 } from "./pgn-shared.js";
 import {
   assertLegalPosition,
@@ -131,39 +132,49 @@ function replayHistory(
 }
 
 function assertSnapshotStorageLimits(chess: Chess): void {
-  const headers = Object.entries(chess.getHeaders());
-  if (headers.length > MAX_PGN_HEADERS) {
-    throw new ChessError(
-      "PGN_TOO_COMPLEX",
-      `PGN exceeds the ${MAX_PGN_HEADERS}-header limit`,
-    );
+  const result = terminalPgnResult(chess);
+  const originalResult = chess.getHeaders().Result;
+  if (result !== undefined) chess.setHeader("Result", result);
+  try {
+    const headers = Object.entries(chess.getHeaders());
+    if (headers.length > MAX_PGN_HEADERS) {
+      throw new ChessError(
+        "PGN_TOO_COMPLEX",
+        `PGN exceeds the ${MAX_PGN_HEADERS}-header limit`,
+      );
+    }
+    const rawTags: string[] = [];
+    let tagBytes = 0;
+    for (const [index, [name, value]] of headers.entries()) {
+      const encoded = encodePgnHeaderValue(value);
+      assertPgnTokenSize(name);
+      assertPgnTokenSize(encoded);
+      tagBytes += Buffer.byteLength(`[${name} "${encoded}"]`, "utf8");
+      if (index > 0) tagBytes += 1;
+      assertPgnBytes(tagBytes);
+      if (value.length > 0) rawTags.push(`[${name} "${value}"]\n`);
+    }
+    for (const { comment } of Chess.prototype.getComments.call(chess)) {
+      assertPgnTokenSize(comment);
+    }
+    const raw = Chess.prototype.pgn.call(chess);
+    assertPgnSize(raw);
+    const rawTagText = rawTags.join("");
+    if (!raw.startsWith(rawTagText)) {
+      throw new ChessError("INVALID_PGN", "could not locate PGN movetext");
+    }
+    let movetext = raw.slice(rawTagText.length);
+    if (movetext.startsWith("\n")) movetext = movetext.slice(1);
+    const bytes = headers.length
+      ? tagBytes + (movetext ? 2 + Buffer.byteLength(movetext, "utf8") : 0)
+      : Buffer.byteLength(movetext, "utf8");
+    assertPgnBytes(bytes);
+  } finally {
+    if (result !== undefined) {
+      if (originalResult === undefined) chess.removeHeader("Result");
+      else chess.setHeader("Result", originalResult);
+    }
   }
-  const rawTags: string[] = [];
-  let tagBytes = 0;
-  for (const [index, [name, value]] of headers.entries()) {
-    const encoded = encodePgnHeaderValue(value);
-    assertPgnTokenSize(name);
-    assertPgnTokenSize(encoded);
-    tagBytes += Buffer.byteLength(`[${name} "${encoded}"]`, "utf8");
-    if (index > 0) tagBytes += 1;
-    assertPgnBytes(tagBytes);
-    if (value.length > 0) rawTags.push(`[${name} "${value}"]\n`);
-  }
-  for (const { comment } of Chess.prototype.getComments.call(chess)) {
-    assertPgnTokenSize(comment);
-  }
-  const raw = Chess.prototype.pgn.call(chess);
-  assertPgnSize(raw);
-  const rawTagText = rawTags.join("");
-  if (!raw.startsWith(rawTagText)) {
-    throw new ChessError("INVALID_PGN", "could not locate PGN movetext");
-  }
-  let movetext = raw.slice(rawTagText.length);
-  if (movetext.startsWith("\n")) movetext = movetext.slice(1);
-  const bytes = headers.length
-    ? tagBytes + (movetext ? 2 + Buffer.byteLength(movetext, "utf8") : 0)
-    : Buffer.byteLength(movetext, "utf8");
-  assertPgnBytes(bytes);
 }
 
 function restoreUnsafeComments(

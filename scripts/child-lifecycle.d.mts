@@ -33,5 +33,5 @@ export function cleanupChild(
   lifecycle: ChildLifecycle,
   timeoutMs: number,
   label: string,
-  primaryError: unknown,
+  hasPrimaryFailure: boolean,
 ): Promise<void>;

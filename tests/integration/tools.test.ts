@@ -685,6 +685,43 @@ test("candidate tools reject moves from a mutated injected position", async (t) 
   assert.equal(context.games.getSnapshot(gameId).chess.fen(), before.chess.fen());
 });
 
+test("candidate tools validate injected objective and human invariants", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    await context.client.close();
+    await context.server.close();
+  });
+  const created = await success(context.client, "create_game", {});
+  const gameId = String(created.game_id);
+  const base = candidate("e2e4", "e4", 1, 70, 0.58);
+  const invalid = [
+    { ...base, objective: { ...base.objective, rank: 2 } },
+    { ...base, objective: { ...base.objective, whiteCp: 71 } },
+    {
+      ...base,
+      objective: {
+        ...base.objective,
+        moverMate: 3,
+        whiteMate: 3,
+      },
+    },
+    { ...base, human: { ...base.human, selfElo: 1_700 } },
+  ];
+
+  for (const value of invalid) {
+    context.services.computeCandidates = async () => ({
+      candidates: [value],
+      moveSensitivity: { level: "low", topMoveSpreadCp: null },
+    });
+    await errorEnvelope(
+      context.client,
+      "move_candidates",
+      { game_id: gameId, elo: 1800, sf_multipv: 1 },
+      "INTERNAL",
+    );
+  }
+});
+
 test("intent and explorer tools revalidate injected moves against the original position", async (t) => {
   const context = await fixture();
   t.after(async () => {

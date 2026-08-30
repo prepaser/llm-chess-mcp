@@ -16,7 +16,11 @@ export type ToolResult<StructuredContent extends Record<string, unknown> = Recor
 type ToolSuccessResult<StructuredContent extends Record<string, unknown>> =
   ToolResult<StructuredContent> & { isError?: false | undefined };
 
-export type ToolErrorResult = ToolResult & { isError: true };
+export type ToolErrorResult = {
+  content: { type: "text"; text: string }[];
+  structuredContent: { error: { code: string; message: string } };
+  isError: true;
+};
 
 type ToolHandlerResult<StructuredContent extends Record<string, unknown>> =
   | ToolSuccessResult<StructuredContent>
@@ -68,6 +72,30 @@ export function toolError(code: string, message: string): ToolErrorResult {
 
 function explorerErrorCode(kind: ExplorerErrorKind): string {
   return `LICHESS_${kind.toUpperCase()}`;
+}
+
+function isToolErrorResult(result: ToolHandlerResult<Record<string, unknown>>): result is ToolErrorResult {
+  if (
+    result.isError !== true ||
+    !Array.isArray(result.content) ||
+    result.content.length === 0 ||
+    !result.content.every(
+      (content) =>
+        typeof content === "object" &&
+        content !== null &&
+        content.type === "text" &&
+        typeof content.text === "string",
+    ) ||
+    !isJsonSchema(result.structuredContent) ||
+    Object.keys(result.structuredContent).length !== 1 ||
+    !isJsonSchema(result.structuredContent.error) ||
+    Object.keys(result.structuredContent.error).length !== 2 ||
+    typeof result.structuredContent.error.code !== "string" ||
+    typeof result.structuredContent.error.message !== "string"
+  ) {
+    return false;
+  }
+  return true;
 }
 
 type JsonSchema = Record<string, unknown>;
@@ -284,7 +312,15 @@ export function safeHandler<
       }
       const result = await handler(parsedInput.data, signal);
       signal.throwIfAborted();
-      if (result.isError) return result;
+      if (result.isError !== undefined && typeof result.isError !== "boolean") {
+        throw new TypeError("tool result isError must be a boolean");
+      }
+      if (result.isError === true) {
+        if (!isToolErrorResult(result)) {
+          throw new TypeError("invalid tool error result");
+        }
+        return result;
+      }
       const parsed = await outputSchema.safeParseAsync(result.structuredContent);
       if (!parsed.success) throw new Error("invalid tool output");
       signal.throwIfAborted();

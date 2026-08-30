@@ -17,6 +17,7 @@ import {
   pgnHeaderIndex,
   pgnSetupHeaders,
   replacePgnHeaders,
+  terminalPgnResult,
 } from "./pgn-shared.js";
 
 export { MAX_PGN_BYTES, MAX_PGN_HEADERS, MAX_PGN_TOKEN_BYTES } from "./pgn-shared.js";
@@ -837,11 +838,7 @@ function validateResultForPosition(chess: Chess, result: PgnResult | undefined):
 export function pgnOf(chess: Chess): string {
   const snapshot = snapshotChess(chess);
   const context = pgnExportContext(snapshot);
-  const result = snapshot.isCheckmate()
-    ? (snapshot.turn() === "w" ? "0-1" : "1-0")
-    : snapshot.isDraw()
-      ? "1/2-1/2"
-      : undefined;
+  const result = terminalPgnResult(snapshot);
   if (result === undefined) return pgnText(snapshot, context);
 
   assertPgnExportHeaders(snapshot, context);

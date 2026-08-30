@@ -37,6 +37,13 @@ export function encodePgnHeaderValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+export function terminalPgnResult(
+  chess: Chess,
+): "1-0" | "0-1" | "1/2-1/2" | undefined {
+  if (chess.isCheckmate()) return chess.turn() === "w" ? "0-1" : "1-0";
+  return chess.isDraw() ? "1/2-1/2" : undefined;
+}
+
 const CANONICAL_HEADERS = new Map(
   [
     "Event",

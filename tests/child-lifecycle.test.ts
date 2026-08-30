@@ -50,9 +50,12 @@ test("child lifecycle bounds failed termination and preserves primary failures",
   );
   assert.deepEqual(child.signals, ["SIGKILL"]);
 
-  const primary = new Error("primary failure");
+  await assert.rejects(
+    cleanupChild(lifecycle, 1, "child", false),
+    /child could not be terminated/,
+  );
   await assert.doesNotReject(
-    cleanupChild(lifecycle, 1, "child", primary),
+    cleanupChild(lifecycle, 1, "child", true),
   );
 });
 

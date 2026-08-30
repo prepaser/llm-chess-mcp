@@ -72,11 +72,11 @@ export function childLifecycle(
   return { exited, wait, stop };
 }
 
-export async function cleanupChild(lifecycle, timeoutMs, label, primaryError) {
+export async function cleanupChild(lifecycle, timeoutMs, label, hasPrimaryFailure) {
   try {
     await lifecycle.stop("SIGKILL", timeoutMs, label);
   } catch (error) {
-    if (primaryError !== undefined) return;
+    if (hasPrimaryFailure) return;
     throw error;
   }
 }

@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { isDeepStrictEqual } from "node:util";
 import type * as z from "zod/v4";
 import { snapshotChess } from "../chess.js";
-import { ANALYSIS_PRESETS } from "../eval.js";
+import { ANALYSIS_PRESETS, evalToCp } from "../eval.js";
 import { emptyCandidateSet } from "../intents.js";
 import type { Candidate } from "../domain.js";
 import type { AppServices } from "../services.js";
@@ -53,6 +53,82 @@ function validateRankedCandidates(
   }
 }
 
+function validNullableNumber(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function validatePerspective(
+  mover: unknown,
+  white: unknown,
+  turn: "w" | "b",
+): void {
+  if (!validNullableNumber(mover) || !validNullableNumber(white)) {
+    throw new RangeError("candidate objective has an invalid score");
+  }
+  if (mover === null || white === null) {
+    if (mover !== white) {
+      throw new RangeError("candidate objective has incomplete perspective scores");
+    }
+    return;
+  }
+  if (white !== (turn === "w" ? mover : -mover)) {
+    throw new RangeError("candidate objective has inconsistent perspective scores");
+  }
+}
+
+function validateCandidateInvariants(
+  candidates: readonly Candidate[],
+  sfMultipv: number,
+  elo: number,
+  turn: "w" | "b",
+): void {
+  for (const candidate of candidates) {
+    const { objective, human } = candidate;
+    if (
+      objective.rank !== null &&
+      (!Number.isSafeInteger(objective.rank) ||
+        objective.rank < 1 ||
+        objective.rank > sfMultipv)
+    ) {
+      throw new RangeError("candidate objective rank exceeds requested multipv");
+    }
+    if (
+      !validNullableNumber(objective.cpLoss) ||
+      (objective.cpLoss !== null && objective.cpLoss < 0)
+    ) {
+      throw new RangeError("candidate objective has an invalid cp loss");
+    }
+    validatePerspective(objective.moverCp, objective.whiteCp, turn);
+    validatePerspective(objective.moverMate, objective.whiteMate, turn);
+    if (
+      objective.moverMate !== null &&
+      (!Number.isSafeInteger(objective.moverMate) ||
+        objective.moverCp !== evalToCp({
+          type: "mate",
+          plies: objective.moverMate,
+        }))
+    ) {
+      throw new RangeError("candidate objective has inconsistent mate scores");
+    }
+    if (
+      objective.rank === null &&
+      [
+        objective.moverCp,
+        objective.whiteCp,
+        objective.cpLoss,
+        objective.moverMate,
+        objective.whiteMate,
+        objective.wdl,
+      ].some((value) => value !== null)
+    ) {
+      throw new RangeError("unevaluated candidate has objective data");
+    }
+    if (human.selfElo !== elo || human.opponentElo !== elo) {
+      throw new RangeError("candidate human ratings differ from requested elo");
+    }
+  }
+}
+
 async function candidatePayload(
   services: CandidateServices,
   {
@@ -73,6 +149,7 @@ async function candidatePayload(
   const turn = chess.turn();
   const legal = legalMoveMap(chess);
   const preset = ANALYSIS_PRESETS[analysis_level];
+  const resolvedSfMultipv = sf_multipv ?? preset.multipv;
   if (chess.isGameOver()) {
     return {
       legal,
@@ -91,7 +168,7 @@ async function candidatePayload(
     snapshotChess(chess),
     elo,
     sf_depth ?? preset.depth,
-    sf_multipv ?? preset.multipv,
+    resolvedSfMultipv,
     maia_top_n,
     candidateExplorerFilters({
       lichess_db,
@@ -103,6 +180,7 @@ async function candidatePayload(
   signal.throwIfAborted();
   const { candidates, moveSensitivity } = structuredClone(computed);
   validateMoveIdentities(candidates, legal);
+  validateCandidateInvariants(candidates, resolvedSfMultipv, elo, turn);
 
   return {
     legal,

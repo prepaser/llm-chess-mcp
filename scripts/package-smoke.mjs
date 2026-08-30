@@ -356,7 +356,7 @@ async function smokeHttp(bin, packageRoot, cwd) {
     );
   });
   const client = new Client({ name: "package-http-smoke", version: "1.0.0" });
-  let primaryError;
+  let hasPrimaryFailure = false;
 
   try {
     await ready;
@@ -378,7 +378,7 @@ async function smokeHttp(bin, packageRoot, cwd) {
       stderr,
     );
   } catch (error) {
-    primaryError = error;
+    hasPrimaryFailure = true;
     throw error;
   } finally {
     await client.close().catch(() => {});
@@ -386,7 +386,7 @@ async function smokeHttp(bin, packageRoot, cwd) {
       lifecycle,
       CHILD_EXIT_TIMEOUT_MS,
       "packed HTTP server",
-      primaryError,
+      hasPrimaryFailure,
     );
   }
 }

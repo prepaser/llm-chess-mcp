@@ -212,6 +212,42 @@ test("safeHandler preserves error results without output validation", async () =
   assert.deepEqual(await handler({}), expected);
 });
 
+test("safeHandler rejects malformed error discriminants", async () => {
+  const handler = safeHandler(
+    z.strictObject({}),
+    z.strictObject({ value: z.number() }),
+    async () =>
+      ({
+        content: [],
+        structuredContent: { value: "invalid" },
+        isError: "yes",
+      }) as never,
+  );
+
+  assert.deepEqual(
+    await handler({}),
+    toolError("INTERNAL", "internal tool error"),
+  );
+});
+
+test("safeHandler rejects malformed literal error envelopes", async () => {
+  const handler = safeHandler(
+    z.strictObject({}),
+    z.strictObject({ value: z.number() }),
+    async () =>
+      ({
+        content: [],
+        structuredContent: { error: { code: "EXPECTED", message: 1 } },
+        isError: true,
+      }) as never,
+  );
+
+  assert.deepEqual(
+    await handler({}),
+    toolError("INTERNAL", "internal tool error"),
+  );
+});
+
 test("safeHandler accepts handlers that return success or tool errors", async () => {
   let fail = false;
   const handler = safeHandler(
