@@ -137,7 +137,12 @@ export class GameStore {
   }
 
   applyMove(id: string, expectedRevision: number, move: Move): GameSnapshot {
-    const materialized = materializeMove(move);
+    const promotion = move.promotion;
+    const materialized = materializeMove({
+      from: move.from,
+      to: move.to,
+      ...(promotion ? { promotion } : {}),
+    });
     const game = this.getLiveGame(id);
     if (expectedRevision !== game.revision) {
       throw new ChessError(

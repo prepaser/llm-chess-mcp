@@ -193,6 +193,17 @@ async function verifyPackageApi(install) {
     ],
     install,
   );
+
+  await command(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--eval",
+      'import assert from "node:assert/strict"; const { toolResult } = await import("llm-chess-mcp/dist/tool-result.js"); const modern = toolResult({ value: 1 }, "modern"); const legacy = toolResult({}, { value: 2 }, "legacy"); assert.deepEqual(modern, { content: [{ type: "text", text: "modern" }], structuredContent: { value: 1 } }); assert.deepEqual(legacy, { content: [{ type: "text", text: "legacy" }], structuredContent: { value: 2 } });',
+      missingEntry,
+    ],
+    install,
+  );
 }
 
 function assertToolCatalog(listed) {

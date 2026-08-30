@@ -67,3 +67,35 @@ test("PGN normalization composes variations, en passant, and comment clusters", 
   assert.equal(chess.getComments().at(-1)?.comment, "one two three");
   assert.doesNotThrow(() => parseImportedPgn(pgnOf(chess)));
 });
+
+test("PGN result disagreements precede movetext element limits", () => {
+  const excessive = "() ".repeat(20_000);
+  assert.throws(
+    () => parseImportedPgn(`[Result "1-0"]\n\n* ${excessive}`),
+    (error) => error instanceof ChessError && error.code === "INVALID_PGN",
+  );
+  assert.throws(
+    () => parseImportedPgn(`[Result "*"]\n\n* ${excessive}`),
+    (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
+  );
+});
+
+test("PGN result pre-pass ignores markers inside mainline and variation comments", () => {
+  const chess = parseImportedPgn(
+    '[Result "1-0"]\n\n1.e4 {0-1} (1.d4 {1/2-1/2}) 1-0',
+  );
+
+  assert.deepEqual(chess.history(), ["e4"]);
+  assert.equal(chess.getHeaders().Result, "1-0");
+});
+
+test("PGN result pre-pass preserves variation-boundary marker semantics", () => {
+  const excessive = "() ".repeat(20_000);
+  assert.throws(
+    () =>
+      parseImportedPgn(
+        `[Result "1-0"]\n\n1.e4 (1.d4 *) ${excessive}`,
+      ),
+    (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
+  );
+});

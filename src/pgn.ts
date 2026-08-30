@@ -471,15 +471,43 @@ function movetextTokens(pgn: string): MovetextToken[] {
   return tokens;
 }
 
+function movetextResultMarkers(pgn: string): PgnResult[] {
+  const results: PgnResult[] = [];
+  for (let index = 0; index < pgn.length; ) {
+    const char = pgn[index]!;
+    if (/\s/.test(char) || char === "(" || char === ")") {
+      index += 1;
+      continue;
+    }
+    const comment = commentSpan(pgn, index);
+    if (comment) {
+      index = comment.end;
+      continue;
+    }
+    const word = wordSpan(pgn, index + 1, /[\s{}();]/);
+    const boundary = pgn[word.end];
+    if (
+      boundary === undefined ||
+      /\s/.test(boundary) ||
+      boundary === "{" ||
+      boundary === ";"
+    ) {
+      splitPgnWord(pgn.slice(index, word.end), (value) => {
+        if (isPgnResult(value)) results.push(value);
+      });
+    }
+    index = word.end;
+  }
+  return results;
+}
+
 function declaredPgnResult(
   headerResult: PgnResult | undefined,
-  tokens: readonly MovetextToken[],
+  markers: readonly PgnResult[],
 ): PgnResult | undefined {
   const results = [
     ...(headerResult === undefined ? [] : [headerResult]),
-    ...tokens.flatMap((token) =>
-      token.kind === "word" && isPgnResult(token.value) ? [token.value] : [],
-    ),
+    ...markers,
   ];
   const result = results[0];
   if (results.some((value) => value !== result)) {
@@ -852,8 +880,11 @@ export function parseImportedPgn(pgn: string): Chess {
   validatePgnSetupFen(fen);
   const headerResult = pgnHeaderResult(headerIndex.get("result"));
   const initialFen = setup === "1" && fen ? fen : new Chess().fen();
+  const result = declaredPgnResult(
+    headerResult,
+    movetextResultMarkers(movetextPgn),
+  );
   const tokens = movetextTokens(movetextPgn);
-  const result = declaredPgnResult(headerResult, tokens);
   validatePgnMoves(tokens, initialFen);
 
   let chess: Chess;

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Chess } from "chess.js";
+import type { Move } from "chess.js";
 import { parseMove } from "../src/chess.js";
 import { ChessError } from "../src/errors.js";
 import { unicodeLength } from "../src/string-length.js";
@@ -473,6 +474,35 @@ test("GameStore materializes moves before checking revisions", () => {
   const snapshot = store.getSnapshot(id);
   assert.equal(snapshot.revision, 1);
   assert.deepEqual(snapshot.chess.history(), ["e4"]);
+});
+
+test("GameStore reads promotion before reentrant move coordinates", () => {
+  const store = new GameStore({ clock: () => 0, createId: () => "game" });
+  const id = store.createGame();
+  const e4 = parseMove(store.getSnapshot(id).chess, "e4");
+  const move = {} as Move;
+  let reentered = false;
+  Object.defineProperties(move, {
+    from: {
+      get() {
+        reentered = true;
+        store.applyMove(id, 0, e4);
+        return "e7";
+      },
+    },
+    promotion: {
+      get() {
+        throw new Error("promotion getter failed");
+      },
+    },
+    to: { value: "e5" },
+  });
+
+  assert.throws(() => store.applyMove(id, 0, move), /promotion getter failed/);
+  assert.equal(reentered, false);
+  const snapshot = store.getSnapshot(id);
+  assert.equal(snapshot.revision, 0);
+  assert.deepEqual(snapshot.chess.history(), []);
 });
 
 test("GameStore rolls back a move that exceeds safe FEN counters", () => {
