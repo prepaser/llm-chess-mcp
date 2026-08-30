@@ -24,6 +24,8 @@
         "additionalProperties": false,
         "properties": {
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "revision": {
@@ -52,6 +54,8 @@
         "additionalProperties": false,
         "properties": {
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           }
         },
@@ -70,6 +74,8 @@
             "type": "boolean"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           }
         },
@@ -135,6 +141,8 @@
             "type": "string"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "history": {
@@ -241,6 +249,8 @@
         "additionalProperties": false,
         "properties": {
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           }
         },
@@ -260,6 +270,8 @@
             "type": "integer"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "moves": {
@@ -375,6 +387,8 @@
         "additionalProperties": false,
         "properties": {
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           }
         },
@@ -389,6 +403,8 @@
         "additionalProperties": false,
         "properties": {
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "pgn": {
@@ -427,6 +443,8 @@
             "type": "integer"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "move": {
@@ -473,6 +491,8 @@
             "type": "string"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "history": {
@@ -584,6 +604,8 @@
         "additionalProperties": false,
         "properties": {
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "include_ascii": {
@@ -632,6 +654,8 @@
             "type": "string"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "history": {
@@ -745,6 +769,8 @@
             "type": "integer"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "oppo_elo": {
@@ -773,6 +799,8 @@
             "type": "number"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "moves": {
@@ -879,6 +907,8 @@
             "type": "integer"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "lichess_db": {
@@ -1544,6 +1574,8 @@
             "type": "string"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "moveSensitivity": {
@@ -1653,6 +1685,8 @@
             "type": "integer"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "intent": {
@@ -2330,6 +2364,8 @@
             "type": "string"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "intent": {
@@ -2417,6 +2453,8 @@
             "type": "integer"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "move": {
@@ -2447,6 +2485,8 @@
         "additionalProperties": false,
         "properties": {
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "results": {
@@ -2620,6 +2660,8 @@
             "type": "string"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "ratings": {
@@ -2717,6 +2759,8 @@
             "type": "integer"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "moves": {
@@ -2860,6 +2904,8 @@
             "type": "integer"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "multipv": {
@@ -2890,6 +2936,8 @@
             "type": "string"
           },
           "game_id": {
+            "maxLength": 256,
+            "minLength": 1,
             "type": "string"
           },
           "lines": {

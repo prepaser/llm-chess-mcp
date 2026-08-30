@@ -44,3 +44,24 @@ test("masters filter constraints share runtime and wire behavior", () => {
   };
   assert.equal(wireSchema.allOf?.[0]?.then?.properties?.speeds?.maxItems, 0);
 });
+
+test("every game-id input enforces the shared length bounds", () => {
+  for (const [name, input] of Object.entries(validInputs)) {
+    if (!("game_id" in input)) continue;
+    const schema = TOOL_INPUT_SCHEMAS[
+      name as keyof typeof TOOL_INPUT_SCHEMAS
+    ] as z.ZodType;
+    assert.equal(schema.safeParse({ ...input, game_id: "g".repeat(256) }).success, true, name);
+    assert.equal(schema.safeParse({ ...input, game_id: "" }).success, false, name);
+    assert.equal(
+      schema.safeParse({ ...input, game_id: "g".repeat(257) }).success,
+      false,
+      name,
+    );
+    const wire = z.toJSONSchema(schema) as {
+      properties?: Record<string, { maxLength?: number; minLength?: number }>;
+    };
+    assert.equal(wire.properties?.game_id?.minLength, 1, name);
+    assert.equal(wire.properties?.game_id?.maxLength, 256, name);
+  }
+});

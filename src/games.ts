@@ -98,6 +98,7 @@ export class GameStore {
       );
     }
 
+    this.availableIdGeneration();
     const rawId = this.createId();
     if (
       typeof rawId !== "string" ||
@@ -109,13 +110,7 @@ export class GameStore {
         `game ID source must return a non-empty string of at most ${MAX_GAME_ID_SOURCE_LENGTH} characters`,
       );
     }
-    const generation = this.nextIdGeneration;
-    if (generation === null) {
-      throw new ChessError(
-        "GAME_ID_GENERATION_FAILED",
-        "game ID generation exhausted",
-      );
-    }
+    const generation = this.availableIdGeneration();
     const id = `${generation.toString(36)}:${rawId}`;
     if (id.length > MAX_GAME_ID_LENGTH) {
       throw new ChessError(
@@ -214,6 +209,16 @@ export class GameStore {
 
   private clockTime(): number {
     return this.validateClockTime(this.clock());
+  }
+
+  private availableIdGeneration(): number {
+    if (this.nextIdGeneration === null) {
+      throw new ChessError(
+        "GAME_ID_GENERATION_FAILED",
+        "game ID generation exhausted",
+      );
+    }
+    return this.nextIdGeneration;
   }
 
   private validateCleanupTime(now: number): number {

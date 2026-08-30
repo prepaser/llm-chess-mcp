@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import type * as z from "zod/v4";
+import { snapshotChess } from "../chess.js";
 import { ANALYSIS_PRESETS } from "../eval.js";
 import { emptyCandidateSet } from "../intents.js";
 import type { Candidate } from "../domain.js";
@@ -11,6 +12,11 @@ import {
 import { TOOL_META } from "../tool-meta.js";
 import { safeHandler, toolResult } from "../tool-result.js";
 import { TOOL_OUTPUT_SCHEMAS } from "../tool-schemas.js";
+import {
+  legalMoveMap,
+  type LegalMoveMap,
+  validateMoveIdentities,
+} from "./move-boundary.js";
 
 type CandidateServices = Pick<
   AppServices,
@@ -26,6 +32,11 @@ type CandidatePayload = Omit<
   "candidates"
 > & { candidates: Candidate[] };
 
+type CandidateResult = {
+  payload: CandidatePayload;
+  legal: LegalMoveMap;
+};
+
 async function candidatePayload(
   services: CandidateServices,
   {
@@ -40,24 +51,28 @@ async function candidatePayload(
     lichess_ratings,
   }: CandidateToolInput,
   signal: AbortSignal,
-): Promise<CandidatePayload> {
+): Promise<CandidateResult> {
   const { chess, revision } = services.games.getSnapshot(game_id);
   const fen = chess.fen();
   const turn = chess.turn();
+  const legal = legalMoveMap(chess);
   const preset = ANALYSIS_PRESETS[analysis_level];
   if (chess.isGameOver()) {
     return {
-      game_id,
-      revision,
-      fen,
-      turn,
-      elo,
-      analysis_level,
-      ...emptyCandidateSet(),
+      legal,
+      payload: {
+        game_id,
+        revision,
+        fen,
+        turn,
+        elo,
+        analysis_level,
+        ...emptyCandidateSet(),
+      },
     };
   }
-  const { candidates, moveSensitivity } = await services.computeCandidates(
-    chess,
+  const computed = await services.computeCandidates(
+    snapshotChess(chess),
     elo,
     sf_depth ?? preset.depth,
     sf_multipv ?? preset.multipv,
@@ -70,16 +85,21 @@ async function candidatePayload(
     signal,
   );
   signal.throwIfAborted();
+  const { candidates, moveSensitivity } = structuredClone(computed);
+  validateMoveIdentities(candidates, legal);
 
   return {
-    game_id,
-    revision,
-    fen,
-    turn,
-    elo,
-    analysis_level,
-    moveSensitivity,
-    candidates,
+    legal,
+    payload: {
+      game_id,
+      revision,
+      fen,
+      turn,
+      elo,
+      analysis_level,
+      moveSensitivity,
+      candidates,
+    },
   };
 }
 
@@ -99,7 +119,7 @@ export function registerCandidateTools(
       moveCandidatesSchema,
       TOOL_OUTPUT_SCHEMAS.move_candidates,
       async (input, signal) => {
-        const payload = await candidatePayload(services, input, signal);
+        const { payload } = await candidatePayload(services, input, signal);
 
         return toolResult(
           TOOL_OUTPUT_SCHEMAS.move_candidates,
@@ -122,10 +142,13 @@ export function registerCandidateTools(
       byIntentSchema,
       TOOL_OUTPUT_SCHEMAS.move_candidates_by_intent,
       async ({ intent, ...input }, signal) => {
-        const payload = await candidatePayload(services, input, signal);
-        const candidates = payload.candidates.length
-          ? services.rankByIntent(payload.candidates, intent)
-          : [];
+        const { payload, legal } = await candidatePayload(services, input, signal);
+        const candidates = structuredClone(
+          payload.candidates.length
+            ? services.rankByIntent(payload.candidates, intent)
+            : [],
+        );
+        validateMoveIdentities(candidates, legal);
 
         return toolResult(
           TOOL_OUTPUT_SCHEMAS.move_candidates_by_intent,

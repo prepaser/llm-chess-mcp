@@ -217,13 +217,14 @@ test("human_move_distribution rejects invalid injected results directly", async 
   }
 });
 
-test("human_move_distribution masks invalid injected results on wire", async (t) => {
+test("human_move_distribution validates against the original position on wire", async (t) => {
   const games = new GameStore({ createId: () => "human-wire" });
   const gameId = games.createGame();
   const server = buildServer(
-    analysisServices(games, async () => [
-      { uci: "a1a2", san: "Ra2", prob: 0.9 },
-    ]),
+    analysisServices(games, async (chess) => {
+      chess.move("e4");
+      return [{ uci: "e7e5", san: "e5", prob: 0.9 }];
+    }),
   );
   const client = new Client({ name: "analysis-tests", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -242,4 +243,5 @@ test("human_move_distribution masks invalid injected results on wire", async (t)
   assert.deepEqual(response.structuredContent, {
     error: { code: "INTERNAL", message: "internal tool error" },
   });
+  assert.equal(games.getSnapshot(gameId).chess.turn(), "w");
 });

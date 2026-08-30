@@ -25,6 +25,11 @@ import { TOOL_INPUT_SCHEMAS } from "../tool-inputs.js";
 import { TOOL_META } from "../tool-meta.js";
 import { safeHandler, toolResult } from "../tool-result.js";
 import { TOOL_OUTPUT_SCHEMAS } from "../tool-schemas.js";
+import {
+  legalMoveMap,
+  type LegalMoveMap,
+  validateMoveIdentities,
+} from "./move-boundary.js";
 
 type PositionAnalysis = z.output<
   typeof TOOL_OUTPUT_SCHEMAS.position_analyze
@@ -42,24 +47,16 @@ type AnalysisServices = Pick<
 >;
 
 function validateHumanMoves(
-  chess: Parameters<AnalysisServices["humanMoveDistribution"]>[0],
   moves: Maia3Move[],
   topN: number,
+  legal: LegalMoveMap,
 ): void {
   if (moves.length > topN || moves.length > MAX_HUMAN_MOVES) {
     throw new RangeError("human move distribution exceeds top_n");
   }
-  const legal = new Map(
-    chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
-  );
-  const seen = new Set<string>();
+  validateMoveIdentities(moves, legal);
   let probabilityMass = 0;
   for (const move of moves) {
-    if (seen.has(move.uci)) throw new RangeError("duplicate human move");
-    seen.add(move.uci);
-    if (legal.get(move.uci) !== move.san) {
-      throw new RangeError("invalid human move");
-    }
     if (!Number.isFinite(move.prob) || move.prob < 0 || move.prob > 1) {
       throw new RangeError("invalid human move probability");
     }
@@ -126,15 +123,18 @@ export function registerAnalysisTools(
       TOOL_OUTPUT_SCHEMAS.human_move_distribution,
       async ({ game_id, elo, oppo_elo, top_n }, signal) => {
         const { chess, revision } = services.games.getSnapshot(game_id);
+        const legal = legalMoveMap(chess);
         const opponentElo = oppo_elo ?? elo;
-        const moves = await services.humanMoveDistribution(
-          chess,
-          elo,
-          opponentElo,
-          top_n,
-          signal,
+        const moves = structuredClone(
+          await services.humanMoveDistribution(
+            snapshotChess(chess),
+            elo,
+            opponentElo,
+            top_n,
+            signal,
+          ),
         );
-        validateHumanMoves(chess, moves, top_n);
+        validateHumanMoves(moves, top_n, legal);
         const payload: HumanMoveDistribution = {
           game_id,
           elo,

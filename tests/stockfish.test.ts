@@ -1727,7 +1727,7 @@ test("listener ownership failure disposes its orphan engine transactionally", as
   );
   assert.deepEqual(JSON.parse(stdout), {
     outcome: "Error: observer failed",
-    observerThrows: 4,
+    observerThrows: 6,
     engines: [
       { name: "returned", commands: ["quit"], terminations: 1 },
       { name: "initialized", commands: ["quit"], terminations: 1 },
@@ -1735,6 +1735,277 @@ test("listener ownership failure disposes its orphan engine transactionally", as
     uncaught: false,
     unhandled: false,
   });
+});
+
+test("failed acquisition disposes repeated late callback engines once", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const initError = new Error("init failed");
+    const engine = (name) => ({
+      listener: null,
+      commands: [],
+      terminations: 0,
+      sendCommand(command) {
+        this.commands.push(command);
+      },
+      terminate() {
+        this.terminations++;
+      },
+      name,
+    });
+    const first = engine("first");
+    const second = engine("second");
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          setTimeout(() => {
+            callback(null, first);
+            callback(null, first);
+            callback(null, second);
+          }, 0);
+          throw initError;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      const originalError = await stockfish
+        .analyze("fen", 1, 1)
+        .then(() => false, (error) => error === initError);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await stockfish.quit();
+      process.stdout.write(JSON.stringify({
+        originalError,
+        engines: [first, second].map((current) => ({
+          name: current.name,
+          commands: current.commands,
+          terminations: current.terminations,
+        })),
+      }));
+    } finally {
+      Module._load = load;
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    originalError: true,
+    engines: [
+      { name: "first", commands: ["quit"], terminations: 1 },
+      { name: "second", commands: ["quit"], terminations: 1 },
+    ],
+  });
+});
+
+test("prepended duplicate hooks preserve preexisting once occurrences", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    let hooks = 0;
+    let markers = 0;
+    const shared = () => hooks++;
+    const marker = () => markers++;
+    process.on("uncaughtException", marker);
+    process.once("uncaughtException", shared);
+    const engine = {
+      listener: null,
+      sendCommand(command) {
+        if (command === "uci") queueMicrotask(() => this.listener?.("uciok"));
+        else if (command === "isready") queueMicrotask(() => this.listener?.("readyok"));
+        else if (command.startsWith("go depth ")) {
+          queueMicrotask(() => this.listener?.("bestmove e2e4"));
+        }
+      },
+      terminate() {},
+    };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          process.prependListener("uncaughtException", shared);
+          queueMicrotask(() => callback(null, engine));
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      await stockfish.analyze("fen", 1, 1);
+      await stockfish.quit();
+      const order = process.rawListeners("uncaughtException").map((listener) =>
+        listener === marker
+          ? "marker"
+          : listener.listener === shared
+            ? "once-shared"
+            : listener === shared
+              ? "persistent-shared"
+              : "other",
+      );
+      process.emit("uncaughtException", new Error("first"), "uncaughtException");
+      process.emit("uncaughtException", new Error("second"), "uncaughtException");
+      process.stdout.write(JSON.stringify({ hooks, markers, order }));
+    } finally {
+      Module._load = load;
+      process.removeAllListeners("uncaughtException");
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    hooks: 1,
+    markers: 2,
+    order: ["marker", "once-shared"],
+  });
+});
+
+test("failed prepended acquisition restores the exact raw listener baseline", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const initError = new Error("init failed");
+    let hooks = 0;
+    let markers = 0;
+    const shared = () => hooks++;
+    const marker = () => markers++;
+    process.on("uncaughtException", marker);
+    process.once("uncaughtException", shared);
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return () => {
+          process.prependListener("uncaughtException", shared);
+          throw initError;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      const originalError = await stockfish
+        .analyze("fen", 1, 1)
+        .then(() => false, (error) => error === initError);
+      const order = process.rawListeners("uncaughtException").map((listener) =>
+        listener === marker
+          ? "marker"
+          : listener.listener === shared
+            ? "once-shared"
+            : listener === shared
+              ? "persistent-shared"
+              : "other",
+      );
+      process.emit("uncaughtException", new Error("first"), "uncaughtException");
+      process.emit("uncaughtException", new Error("second"), "uncaughtException");
+      process.stdout.write(JSON.stringify({ originalError, hooks, markers, order }));
+    } finally {
+      Module._load = load;
+      process.removeAllListeners("uncaughtException");
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    originalError: true,
+    hooks: 1,
+    markers: 2,
+    order: ["marker", "once-shared"],
+  });
+});
+
+test("ordinary listener acquisition does not re-register preexisting hooks", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const markerUncaught = () => {};
+    const markerUnhandled = () => {};
+    const uncaught = () => {};
+    const unhandled = () => {};
+    process.on("uncaughtException", markerUncaught);
+    process.on("unhandledRejection", markerUnhandled);
+    let markerAdds = 0;
+    let markerRemovals = 0;
+    process.on("newListener", (_event, listener) => {
+      if (listener === markerUncaught || listener === markerUnhandled) markerAdds++;
+    });
+    process.on("removeListener", (_event, listener) => {
+      if (listener === markerUncaught || listener === markerUnhandled) {
+        markerRemovals++;
+      }
+    });
+    const engine = {
+      listener: null,
+      sendCommand(command) {
+        if (command === "uci") queueMicrotask(() => this.listener?.("uciok"));
+        else if (command === "isready") queueMicrotask(() => this.listener?.("readyok"));
+        else if (command.startsWith("go depth ")) {
+          queueMicrotask(() => this.listener?.("bestmove e2e4"));
+        }
+      },
+      terminate() {},
+    };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          process.on("uncaughtException", uncaught);
+          process.on("unhandledRejection", unhandled);
+          queueMicrotask(() => callback(null, engine));
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      await stockfish.analyze("fen", 1, 1);
+      await stockfish.quit();
+      process.stdout.write(JSON.stringify({ markerAdds, markerRemovals }));
+    } finally {
+      Module._load = load;
+      process.removeAllListeners("newListener");
+      process.removeAllListeners("removeListener");
+      process.removeAllListeners("uncaughtException");
+      process.removeAllListeners("unhandledRejection");
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), { markerAdds: 0, markerRemovals: 0 });
 });
 
 test(

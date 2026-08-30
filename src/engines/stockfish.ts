@@ -117,8 +117,12 @@ function loadStockfish(): StockfishInit {
   const packageRoot = dirname(entry) + sep;
   const packageEntry = (id: string) => id === entry || id.startsWith(packageRoot);
   return (flavor, callback) => {
-    const uncaught = process.listeners("uncaughtException");
-    const unhandled = process.listeners("unhandledRejection");
+    const uncaught = process.rawListeners(
+      "uncaughtException",
+    ) as UncaughtExceptionListener[];
+    const unhandled = process.rawListeners(
+      "unhandledRejection",
+    ) as UnhandledRejectionListener[];
     const cached = new Map(
       Object.entries(require.cache).filter(
         (entry): entry is [string, NodeModule] =>
@@ -133,11 +137,24 @@ function loadStockfish(): StockfishInit {
         Error | null,
         StockfishEngine,
       ]> = [];
-      let initialized = false;
+      let phase: "pending" | "active" | "failed" = "pending";
       let callbackDelivered = false;
       let owner!: StockfishEngine;
       let engine: StockfishEngine;
       const initEngines = new Set<StockfishEngine>();
+      const disposedInitEngines = new WeakSet<StockfishEngine>();
+      const disposeInitEngine = (initializedEngine: StockfishEngine) => {
+        if (disposedInitEngines.has(initializedEngine)) return;
+        disposedInitEngines.add(initializedEngine);
+        disposeOrphanEngine(initializedEngine);
+      };
+      const rollbackInitEngines = () => {
+        phase = "failed";
+        for (const initializedEngine of initEngines) {
+          disposeInitEngine(initializedEngine);
+        }
+        initEngines.clear();
+      };
       const deliver = (
         error: Error | null,
         initializedEngine: StockfishEngine,
@@ -156,18 +173,20 @@ function loadStockfish(): StockfishInit {
       try {
         const init = require(entry) as StockfishInit;
         engine = init(flavor, (error, initializedEngine) => {
-          if (!initialized) {
+          if (phase === "pending") {
             initEngines.add(initializedEngine);
             pendingCallbacks.push([error, initializedEngine]);
+            return;
+          }
+          if (phase === "failed") {
+            disposeInitEngine(initializedEngine);
             return;
           }
           deliver(error, initializedEngine);
         });
         initEngines.add(engine);
       } catch (error) {
-        for (const initializedEngine of initEngines) {
-          disposeOrphanEngine(initializedEngine);
-        }
+        rollbackInitEngines();
         cleanupAddedProcessListeners(uncaught, unhandled);
         throw error;
       }
@@ -177,7 +196,9 @@ function loadStockfish(): StockfishInit {
       try {
         cleanupUncaught = ownAddedListeners<UncaughtExceptionListener>(
           uncaught,
-          process.listeners("uncaughtException"),
+          process.rawListeners(
+            "uncaughtException",
+          ) as UncaughtExceptionListener[],
           (listener) => process.removeListener("uncaughtException", listener),
           (listener) => process.on("uncaughtException", listener),
           (listener) =>
@@ -204,7 +225,9 @@ function loadStockfish(): StockfishInit {
         );
         cleanupUnhandled = ownAddedListeners<UnhandledRejectionListener>(
           unhandled,
-          process.listeners("unhandledRejection"),
+          process.rawListeners(
+            "unhandledRejection",
+          ) as UnhandledRejectionListener[],
           (listener) => process.removeListener("unhandledRejection", listener),
           (listener) => process.on("unhandledRejection", listener),
           (listener) =>
@@ -230,9 +253,7 @@ function loadStockfish(): StockfishInit {
           },
         );
       } catch (error) {
-        for (const initializedEngine of initEngines) {
-          disposeOrphanEngine(initializedEngine);
-        }
+        rollbackInitEngines();
         cleanupAddedProcessListeners(uncaught, unhandled);
         throw error;
       }
@@ -260,7 +281,7 @@ function loadStockfish(): StockfishInit {
       };
       processListenerCleanups.set(engine, cleanup);
       owner = engine;
-      initialized = true;
+      phase = "active";
       for (const [error, initializedEngine] of pendingCallbacks) {
         deliver(error, initializedEngine);
       }
@@ -275,27 +296,58 @@ function loadStockfish(): StockfishInit {
   };
 }
 
+function addedListenerIndexes<T>(before: T[], after: T[]): number[] {
+  const added = Array.from({ length: after.length }, () => true);
+  let beforeIndex = before.length - 1;
+  for (let index = after.length - 1; index >= 0 && beforeIndex >= 0; index--) {
+    if (after[index] !== before[beforeIndex]) continue;
+    added[index] = false;
+    beforeIndex--;
+  }
+  if (beforeIndex >= 0) {
+    const remaining = [...before];
+    return after.flatMap((listener, afterIndex) => {
+      const index = remaining.indexOf(listener);
+      if (index < 0) return [afterIndex];
+      remaining.splice(index, 1);
+      return [];
+    });
+  }
+  return added.flatMap((isAdded, index) => (isAdded ? [index] : []));
+}
+
 function addedListeners<T>(before: T[], after: T[]): T[] {
-  const remaining = [...before];
-  return after.filter((listener) => {
-    const index = remaining.indexOf(listener);
-    if (index < 0) return true;
-    remaining.splice(index, 1);
-    return false;
-  });
+  return addedListenerIndexes(before, after).map((index) => after[index]!);
 }
 
 function removeAddedListeners<T>(
   before: T[],
   current: () => T[],
   remove: (listener: T) => void,
+  add: (listener: T) => void,
 ): void {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const added = addedListeners(before, current());
-    if (added.length === 0) return;
-    for (let index = added.length - 1; index >= 0; index--) {
+  const after = current();
+  const added = addedListenerIndexes(before, after);
+  const firstAdded = after.length - added.length;
+  if (!added.every((index) => index >= firstAdded)) {
+    for (let index = after.length - 1; index >= 0; index--) {
       try {
-        remove(added[index]!);
+        remove(after[index]!);
+      } catch {}
+    }
+    for (const listener of before) {
+      try {
+        add(listener);
+      } catch {}
+    }
+    return;
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const pending = addedListeners(before, current());
+    if (pending.length === 0) return;
+    for (let index = pending.length - 1; index >= 0; index--) {
+      try {
+        remove(pending[index]!);
       } catch {}
     }
   }
@@ -307,13 +359,17 @@ function cleanupAddedProcessListeners(
 ): void {
   removeAddedListeners(
     uncaught,
-    () => process.listeners("uncaughtException"),
+    () =>
+      process.rawListeners("uncaughtException") as UncaughtExceptionListener[],
     (listener) => process.removeListener("uncaughtException", listener),
+    (listener) => process.on("uncaughtException", listener),
   );
   removeAddedListeners(
     unhandled,
-    () => process.listeners("unhandledRejection"),
+    () =>
+      process.rawListeners("unhandledRejection") as UnhandledRejectionListener[],
     (listener) => process.removeListener("unhandledRejection", listener),
+    (listener) => process.on("unhandledRejection", listener),
   );
 }
 
@@ -338,13 +394,45 @@ function ownAddedListeners<T>(
   wrap: (listener: T) => T,
   register: (listener: T) => T,
 ): () => void {
-  const added = addedListeners(before, after);
-  for (let index = added.length - 1; index >= 0; index--) {
-    remove(added[index]!);
+  const added = new Set(addedListenerIndexes(before, after));
+  const owned = new Map<number, T>();
+  for (const index of added) owned.set(index, register(wrap(after[index]!)));
+  let failure: unknown;
+  const firstAdded = after.length - added.size;
+  const appended = [...added].every((index) => index >= firstAdded);
+  if (appended) {
+    for (let index = after.length - 1; index >= firstAdded; index--) {
+      try {
+        remove(after[index]!);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    for (let index = firstAdded; index < after.length; index++) {
+      try {
+        add(owned.get(index)!);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+  } else {
+    for (let index = after.length - 1; index >= 0; index--) {
+      try {
+        remove(after[index]!);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    for (const [index, listener] of after.entries()) {
+      try {
+        add(owned.get(index) ?? listener);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
   }
-  const owned = added.map(wrap).map(register);
-  for (const registration of owned) add(registration);
-  const pending = new Set(owned);
+  if (failure) throw failure;
+  const pending = new Set(owned.values());
   return () => {
     let failure: unknown;
     for (let attempt = 0; attempt < 2 && pending.size !== 0; attempt++) {

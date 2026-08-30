@@ -217,6 +217,23 @@ test("GameStore bounds generated IDs and fails closed on generation exhaustion",
   assert.equal(exhausted.gameCount(), 0);
 });
 
+test("GameStore generation exhaustion fails before invoking the ID source", () => {
+  let calls = 0;
+  let store: GameStore;
+  store = new GameStore({
+    clock: () => 0,
+    createId: () => {
+      calls += 1;
+      return store.createGame();
+    },
+  });
+  (store as unknown as { nextIdGeneration: number | null }).nextIdGeneration = null;
+
+  expectChessError("GAME_ID_GENERATION_FAILED", () => store.createGame());
+  assert.equal(calls, 0);
+  assert.equal(store.gameCount(), 0);
+});
+
 test("GameStore ID source bounds survive base36 generation widening", () => {
   const store = new GameStore({
     clock: () => 0,

@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
+import { snapshotChess } from "../chess.js";
 import { ChessError } from "../errors.js";
 import type { AppServices } from "../services.js";
 import {
@@ -8,6 +9,7 @@ import {
 import { TOOL_META } from "../tool-meta.js";
 import { safeHandler, toolResult } from "../tool-result.js";
 import { OpeningExplorerOutputSchema } from "../tool-schemas.js";
+import { legalMoveMap, validateMoveIdentities } from "./move-boundary.js";
 
 type ExplorerServices = Pick<
   AppServices,
@@ -36,14 +38,18 @@ export function registerExplorerTool(
           );
         }
         const { chess, revision } = services.games.getSnapshot(game_id);
+        const legal = legalMoveMap(chess);
         const filters = explorerFilters({ db, speeds, ratings });
-        const result = await services.openingExplorer(
-          chess,
-          filters.db,
-          filters.speeds,
-          filters.ratings,
-          signal,
+        const result = structuredClone(
+          await services.openingExplorer(
+            snapshotChess(chess),
+            filters.db,
+            filters.speeds,
+            filters.ratings,
+            signal,
+          ),
         );
+        validateMoveIdentities(result.moves, legal);
         return toolResult(
           OpeningExplorerOutputSchema,
           { game_id, revision, ...result, db: filters.db },

@@ -24,6 +24,7 @@ import {
   EXPLORER_MAX_STRING_LENGTH,
 } from "./explorer-core.js";
 import type { ToolName } from "./tool-names.js";
+import { GameIdSchema } from "./tool-fields.js";
 
 const revision = z.number().int().min(0);
 const color = z.enum(COLORS);
@@ -208,23 +209,23 @@ export const OpeningSchema = z
   .nullable();
 
 export const CreateGameOutputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   revision: z.literal(0),
 });
 
 export const DeleteGameOutputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   deleted: z.literal(true),
 });
 
 export const GameStateOutputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   ...StateSchema.shape,
   board: z.string().optional(),
 });
 
 export const GamePlayMoveOutputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   move: z.string(),
   ...StateSchema.shape,
 });
@@ -242,14 +243,14 @@ const legalMove = z.strictObject({
 });
 
 export const GameLegalMovesOutputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   revision,
   count: z.number().int().min(0),
   moves: z.array(legalMove),
 });
 
 export const PositionAnalyzeOutputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   fen: z.string(),
   turn: color,
   revision,
@@ -293,7 +294,7 @@ const humanMoves = z
   );
 
 export const HumanMoveDistributionOutputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   elo: z.number(),
   oppo_elo: z.number(),
   revision,
@@ -316,7 +317,7 @@ const moveEvaluation = z.strictObject({
 });
 
 export const MoveEvaluateOutputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   revision,
   results: z.array(moveEvaluation).min(1).max(10),
 });
@@ -327,7 +328,7 @@ export const MoveSensitivitySchema = z.strictObject({
 }) satisfies z.ZodType<MoveSensitivity>;
 
 const candidatesBase = {
-  game_id: z.string(),
+  game_id: GameIdSchema,
   revision,
   fen: z.string(),
   turn: color,
@@ -366,7 +367,7 @@ export const LichessMoveSchema = z
 
 export const OpeningExplorerOutputSchema = z
   .strictObject({
-    game_id: z.string(),
+    game_id: GameIdSchema,
     revision,
     db: z.enum(["lichess", "masters"]),
     white: safeCount,
@@ -399,13 +400,13 @@ export const OpeningExplorerOutputSchema = z
   );
 
 export const GamePgnOutputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   revision,
   pgn: z.string(),
 });
 
 export const GameImportPgnOutputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   ...StateSchema.shape,
   revision: z.literal(0),
 });

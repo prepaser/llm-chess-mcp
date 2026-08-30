@@ -657,7 +657,7 @@ test("create_game does not misclassify operational failures as invalid FEN", asy
   assert.equal(error.message, "internal tool error");
 });
 
-test("candidate payload keeps the original position when injected computation mutates its chess", async (t) => {
+test("candidate tools reject moves from a mutated injected position", async (t) => {
   const context = await fixture();
   t.after(async () => {
     await context.client.close();
@@ -671,18 +671,68 @@ test("candidate payload keeps the original position when injected computation mu
     chess.move("e4");
     await Promise.resolve();
     return {
-      candidates: [],
+      candidates: [candidate("e7e5", "e5", 1, 70, 1)],
       moveSensitivity: { level: "low", topMoveSpreadCp: null },
     };
   };
 
-  const payload = await success(context.client, "move_candidates", {
-    game_id: gameId,
-  });
-
-  assert.equal(payload.fen, before.chess.fen());
-  assert.equal(payload.turn, before.chess.turn());
+  await errorEnvelope(
+    context.client,
+    "move_candidates",
+    { game_id: gameId },
+    "INTERNAL",
+  );
   assert.equal(context.games.getSnapshot(gameId).chess.fen(), before.chess.fen());
+});
+
+test("intent and explorer tools revalidate injected moves against the original position", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    await context.client.close();
+    await context.server.close();
+  });
+  const created = await success(context.client, "create_game", {});
+  const gameId = String(created.game_id);
+  const before = context.games.getSnapshot(gameId).chess.fen();
+
+  context.services.rankByIntent = (candidates) => [
+    { ...candidates[0]!, uci: "e7e5", san: "e5" },
+  ];
+  await errorEnvelope(
+    context.client,
+    "move_candidates_by_intent",
+    { game_id: gameId, intent: "natural" },
+    "INTERNAL",
+  );
+
+  context.services.openingExplorer = async (chess, db) => {
+    chess.move("e4");
+    return {
+      db,
+      white: 1,
+      draws: 0,
+      black: 0,
+      moves: [
+        {
+          uci: "e7e5",
+          san: "e5",
+          white: 1,
+          draws: 0,
+          black: 0,
+          count: 1,
+          averageRating: 1_500,
+        },
+      ],
+      opening: null,
+    };
+  };
+  await errorEnvelope(
+    context.client,
+    "opening_explorer",
+    { game_id: gameId },
+    "INTERNAL",
+  );
+  assert.equal(context.games.getSnapshot(gameId).chess.fen(), before);
 });
 
 test("candidate tools return no moves for terminal games", async (t) => {

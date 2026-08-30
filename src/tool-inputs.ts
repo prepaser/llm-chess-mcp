@@ -8,6 +8,7 @@ import {
 } from "./explorer.js";
 import { ANALYSIS_LEVELS, INTENTS, MAX_HUMAN_MOVES } from "./domain.js";
 import type { ToolName } from "./tool-names.js";
+import { GameIdSchema } from "./tool-fields.js";
 
 const lichessSpeedsSchema = z
   .array(lichessSpeedSchema)
@@ -105,30 +106,30 @@ export function candidateExplorerFilters(input: {
 }
 
 export const CreateGameInputSchema = z.strictObject({ fen: z.string().optional() });
-export const GameIdInputSchema = z.strictObject({ game_id: z.string() });
+export const GameIdInputSchema = z.strictObject({ game_id: GameIdSchema });
 export const GameStateInputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   include_ascii: z.boolean().default(false),
 });
 export const GamePlayMoveInputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   move: z.string(),
   expected_revision: z.number().int().min(0),
 });
 export const PositionAnalyzeInputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   analysis_level: z.enum(ANALYSIS_LEVELS).default("normal"),
   depth: z.number().int().min(1).max(30).optional(),
   multipv: z.number().int().min(1).max(10).optional(),
 });
 export const HumanMoveDistributionInputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   elo: z.number().int().min(600).max(2600).default(1500),
   oppo_elo: z.number().int().min(600).max(2600).optional(),
   top_n: z.number().int().min(1).max(MAX_HUMAN_MOVES).default(5),
 });
 export const MoveEvaluateInputSchema = z.strictObject({
-  game_id: z.string(),
+  game_id: GameIdSchema,
   move: z.union([
     z.string(),
     z.array(z.string()).min(1).max(MAX_EVALUATED_MOVES),
@@ -137,7 +138,7 @@ export const MoveEvaluateInputSchema = z.strictObject({
 });
 
 const candidateFields = {
-  game_id: z.string(),
+  game_id: GameIdSchema,
   elo: z.number().int().min(600).max(2600).default(1500),
   analysis_level: z.enum(ANALYSIS_LEVELS).default("normal"),
   sf_depth: z.number().int().min(1).max(30).optional(),
@@ -174,7 +175,7 @@ export const MoveCandidatesByIntentInputSchema = strictExplorerInputSchema(
 
 export const OpeningExplorerInputSchema = strictExplorerInputSchema(
   {
-    game_id: z.string(),
+    game_id: GameIdSchema,
     db: explorerFilterFields.db.default("lichess"),
     speeds: explorerFilterFields.speeds,
     ratings: explorerFilterFields.ratings,

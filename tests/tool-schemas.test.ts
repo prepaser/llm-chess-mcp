@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import * as z from "zod/v4";
 import { EXPLORER_MAX_MOVES, EXPLORER_MAX_STRING_LENGTH } from "../src/explorer-core.js";
+import { GAME_ID_MAX_LENGTH, GameIdSchema } from "../src/tool-fields.js";
 import {
   CandidateSchema,
   HumanMoveDistributionOutputSchema,
@@ -9,6 +10,7 @@ import {
   Maia3MoveSchema,
   OpeningExplorerOutputSchema,
   OpeningStatsSchema,
+  TOOL_OUTPUT_SCHEMAS,
 } from "../src/tool-schemas.js";
 
 type JsonSchema = {
@@ -318,4 +320,24 @@ test("wire schemas expose UCI and cross-field constraints", () => {
   assert.match(openingSchema?.description ?? "", /Non-available stats must all be null/);
   assert.match(explorerSchema.description ?? "", /must not exceed/);
   assert.match(moveSchema?.description ?? "", /count must equal/);
+});
+
+test("every game-id output exposes the shared length bounds", () => {
+  assert.equal(GameIdSchema.safeParse("g").success, true);
+  assert.equal(GameIdSchema.safeParse("g".repeat(GAME_ID_MAX_LENGTH)).success, true);
+  assert.equal(GameIdSchema.safeParse("").success, false);
+  assert.equal(
+    GameIdSchema.safeParse("g".repeat(GAME_ID_MAX_LENGTH + 1)).success,
+    false,
+  );
+
+  for (const [name, schema] of Object.entries(TOOL_OUTPUT_SCHEMAS)) {
+    const wire = z.toJSONSchema(schema) as {
+      properties?: Record<string, { maxLength?: number; minLength?: number }>;
+    };
+    const gameId = wire.properties?.game_id;
+    assert.ok(gameId, name);
+    assert.equal(gameId.minLength, 1, name);
+    assert.equal(gameId.maxLength, GAME_ID_MAX_LENGTH, name);
+  }
 });
