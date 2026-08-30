@@ -140,12 +140,12 @@ function assertSnapshotStorageLimits(chess: Chess): void {
   }
   const rawTags: string[] = [];
   let tagBytes = 0;
-  for (const [name, value] of headers) {
+  for (const [index, [name, value]] of headers.entries()) {
     const encoded = encodePgnHeaderValue(value);
     assertPgnTokenSize(name);
     assertPgnTokenSize(encoded);
     tagBytes += Buffer.byteLength(`[${name} "${encoded}"]`, "utf8");
-    if (rawTags.length > 0) tagBytes += 1;
+    if (index > 0) tagBytes += 1;
     assertPgnBytes(tagBytes);
     if (value.length > 0) rawTags.push(`[${name} "${value}"]\n`);
   }

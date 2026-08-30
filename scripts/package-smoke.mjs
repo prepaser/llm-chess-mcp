@@ -8,11 +8,13 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { childLifecycle, cleanupChild } from "./child-lifecycle.mjs";
 
 const execFile = promisify(execFileCallback);
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_PATH = join(REPO, "spec", "tools.json");
 const TIMEOUT_MS = 90_000;
+const CHILD_EXIT_TIMEOUT_MS = 10_000;
 const contract = JSON.parse(await readFile(CONTRACT_PATH, "utf8"));
 assert.ok(Array.isArray(contract.tools), "tool contract has no tools array");
 const EXPECTED_TOOLS = contract.tools.map(({ name }) => {
@@ -321,27 +323,40 @@ async function smokeHttp(bin, packageRoot, cwd) {
   child.stderr.setEncoding("utf8").on("data", (chunk) => {
     stderr += chunk;
   });
-  const exited = new Promise((resolve) =>
-    child.once("exit", (code, signal) => resolve([code, signal])),
-  );
+  const lifecycle = childLifecycle(child);
   let endpoint;
   const ready = new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stderr.off("data", onData);
+      if (error) reject(error);
+      else resolve();
+    };
     const timer = setTimeout(
-      () => reject(new Error(`packed HTTP server did not start: ${stderr}`)),
+      () => finish(new Error(`packed HTTP server did not start: ${stderr}`)),
       TIMEOUT_MS,
     );
-    child.stderr.on("data", () => {
+    const onData = () => {
       endpoint = /^llm-chess-mcp listening on (http:\/\/\S+)$/m.exec(stderr)?.[1];
       if (endpoint === undefined) return;
-      clearTimeout(timer);
-      resolve();
-    });
-    child.once("exit", (code) => {
-      clearTimeout(timer);
-      reject(new Error(`packed HTTP server exited early with ${code}: ${stderr}`));
-    });
+      finish();
+    };
+    child.stderr.on("data", onData);
+    void lifecycle.exited.then(
+      ([code, signal]) =>
+        finish(
+          new Error(
+            `packed HTTP server exited early with ${code ?? signal}: ${stderr}`,
+          ),
+        ),
+      (error) => finish(error instanceof Error ? error : new Error(String(error))),
+    );
   });
   const client = new Client({ name: "package-http-smoke", version: "1.0.0" });
+  let primaryError;
 
   try {
     await ready;
@@ -352,21 +367,27 @@ async function smokeHttp(bin, packageRoot, cwd) {
     const created = await call(client, "create_game", {});
     assert.equal(typeof created.game_id, "string");
     await client.close();
-    child.kill("SIGTERM");
-    const [code, signal] = await exited;
+    const [code, signal] = await lifecycle.stop(
+      "SIGTERM",
+      CHILD_EXIT_TIMEOUT_MS,
+      "packed HTTP server",
+    );
     assert.ok(
       (code === 0 && signal === null) ||
         (process.platform === "win32" && code === null && signal === "SIGTERM"),
       stderr,
     );
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
     await client.close().catch(() => {});
-    if (child.exitCode === null && child.signalCode === null) {
-      try {
-        child.kill("SIGKILL");
-      } catch {}
-    }
-    await exited;
+    await cleanupChild(
+      lifecycle,
+      CHILD_EXIT_TIMEOUT_MS,
+      "packed HTTP server",
+      primaryError,
+    );
   }
 }
 

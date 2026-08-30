@@ -28,6 +28,8 @@ export function validateHumanMoves(
       move === null ||
       Array.isArray(move) ||
       typeof move.uci !== "string" ||
+      typeof move.san !== "string" ||
+      !legal.has(move.uci) ||
       legal.get(move.uci) !== move.san
     ) {
       throw new RangeError("invalid human move");

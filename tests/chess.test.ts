@@ -1145,6 +1145,75 @@ test("snapshotChess counts encoded headers and movetext together", () => {
   assert.equal(store.gameCount(), 0);
 });
 
+test("snapshotChess counts empty-header tag separators", () => {
+  const setup = (): { chess: Chess; moves: string[] } => {
+    const chess = new Chess();
+    for (const name of ["Event", "Site", "Date", "Round", "White", "Black"]) {
+      chess.setHeader(name, "");
+    }
+    for (let index = 0; index < 64; index += 1) {
+      chess.setHeader(`X${index}`, '"'.repeat(4_000));
+    }
+    let seed = 1;
+    const moves: string[] = [];
+    for (let index = 0; index < 64; index += 1) {
+      const legal = chess.moves();
+      seed = (seed * 1_664_525 + 1_013_904_223) >>> 0;
+      const move = legal[seed % legal.length]!;
+      chess.move(move);
+      moves.push(move);
+      chess.setComment("a");
+    }
+    return { chess, moves };
+  };
+  const exportedBytes = (chess: Chess): number => {
+    const headers = Object.entries(chess.getHeaders());
+    const rawTags = headers
+      .filter(([, value]) => value.length > 0)
+      .map(([name, value]) => `[${name} "${value}"]\n`)
+      .join("");
+    const raw = chess.pgn();
+    let movetext = raw.slice(rawTags.length);
+    if (movetext.startsWith("\n")) movetext = movetext.slice(1);
+    const tags = headers
+      .map(([name, value]) =>
+        `[${name} "${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`,
+      )
+      .join("\n");
+    return Buffer.byteLength(`${tags}\n\n${movetext}`, "utf8");
+  };
+
+  const initial = setup();
+  const remaining = MAX_PGN_BYTES - exportedBytes(initial.chess) + 1;
+  const base = Math.floor(remaining / initial.moves.length);
+  const extra = remaining % initial.moves.length;
+  const chess = new Chess();
+  for (const name of ["Event", "Site", "Date", "Round", "White", "Black"]) {
+    chess.setHeader(name, "");
+  }
+  for (let index = 0; index < 64; index += 1) {
+    chess.setHeader(`X${index}`, '"'.repeat(4_000));
+  }
+  for (const [index, move] of initial.moves.entries()) {
+    chess.move(move);
+    chess.setComment("a".repeat(1 + base + (index < extra ? 1 : 0)));
+  }
+  assert.equal(exportedBytes(chess), MAX_PGN_BYTES + 1);
+
+  const store = new GameStore({ createId: () => "empty-headers" });
+  for (const operation of [
+    () => snapshotChess(chess),
+    () => pgnOf(chess),
+    () => store.createGameFromChess(chess),
+  ]) {
+    assert.throws(
+      operation,
+      (error) => error instanceof ChessError && error.code === "PGN_TOO_LARGE",
+    );
+  }
+  assert.equal(store.gameCount(), 0);
+});
+
 test("programmatic snapshots and exports enforce the ply limit", () => {
   const chess = new Chess();
   const cycle = ["Nf3", "Nf6", "Ng1", "Ng8"];

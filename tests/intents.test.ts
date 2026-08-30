@@ -10,7 +10,7 @@ import {
   type LichessCandidateData,
 } from "../src/intents.js";
 import { ExplorerError } from "../src/explorer.js";
-import type { Candidate, SfLine } from "../src/types.js";
+import type { Candidate, Maia3Move, SfLine } from "../src/types.js";
 
 function sfLine(
   uci: string,
@@ -303,6 +303,40 @@ test("aborts sibling candidate sources after a fatal source failure", async () =
   await engineStopped;
   assert.equal(engineAbort, failure);
   assert.equal(explorerCalls, 0);
+});
+
+test("does not start candidate siblings after a synchronous analysis failure", async () => {
+  const failure = new Error("Stockfish failed synchronously");
+  let humanCalls = 0;
+  let explorerCalls = 0;
+  const computeCandidates = createCandidateComputation({
+    analyze: () => {
+      throw failure;
+    },
+    humanMoveDistribution: async () => {
+      humanCalls += 1;
+      return [];
+    },
+    explorerEnabled: () => true,
+    openingExplorer: async () => {
+      explorerCalls += 1;
+      throw new Error("unreachable");
+    },
+    explorerFailureReason: () => "upstream",
+  });
+
+  await assert.rejects(
+    computeCandidates(
+      new Chess(),
+      1500,
+      1,
+      1,
+      1,
+      { db: "lichess", speeds: [], ratings: [] },
+    ),
+    (error: unknown) => error === failure,
+  );
+  assert.deepEqual([humanCalls, explorerCalls], [0, 0]);
 });
 
 test("aborts candidate sources after fatal Explorer dependency failures", async () => {
@@ -677,17 +711,22 @@ test("keeps Explorer failures optional but rejects malformed Explorer data", asy
 });
 
 test("rejects illegal dependency moves and handles explorer failures", () => {
-  assert.throws(
-    () =>
-      candidateSetFromData(
-        new Chess(),
-        1500,
-        [],
-        [{ uci: "not-uci", san: "ignored", prob: 0.2 }],
-        { status: "disabled", totalGames: null, moves: [] },
-      ),
-    /invalid human move/,
-  );
+  for (const move of [
+    { uci: "not-uci", san: "ignored", prob: 0.2 },
+    { uci: "not-uci", prob: 0.2 },
+  ]) {
+    assert.throws(
+      () =>
+        candidateSetFromData(
+          new Chess(),
+          1500,
+          [],
+          [move] as unknown as Maia3Move[],
+          { status: "disabled", totalGames: null, moves: [] },
+        ),
+      /invalid human move/,
+    );
+  }
   const { candidates, moveSensitivity } = candidateSetFromData(
     new Chess(),
     1500,

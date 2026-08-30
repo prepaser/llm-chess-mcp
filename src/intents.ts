@@ -423,16 +423,17 @@ export function createCandidateComputation(
     };
 
     const [sfLines, maiaMoves, lichessResult] = await Promise.all([
-      fatal(async () => {
-        const lines = await dependencies.analyze(
+      fatal(() =>
+        dependencies.analyze(
           chess.fen(),
           sfDepth,
           sfMultipv,
           workSignal,
-        );
-        validateAnalysisLines(lines, sfMultipv);
-        return lines;
-      }),
+        ).then((lines) => {
+          validateAnalysisLines(lines, sfMultipv);
+          return lines;
+        }),
+      ),
       fatal(() =>
         dependencies.humanMoveDistribution(
           chess,
