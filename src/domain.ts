@@ -41,6 +41,9 @@ export type MoveEvaluationResult = (typeof MOVE_EVALUATION_RESULTS)[number];
 export const ANALYSIS_LEVELS = ["fast", "normal", "deep"] as const;
 export type AnalysisLevel = (typeof ANALYSIS_LEVELS)[number];
 
+export const MAX_HUMAN_MOVES = 20;
+export const HUMAN_PROBABILITY_TOLERANCE = 1e-5;
+
 export const MOVE_CLASSIFICATIONS = [
   "best",
   "excellent",

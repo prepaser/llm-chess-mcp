@@ -4,6 +4,7 @@ import * as z from "zod/v4";
 import { EXPLORER_MAX_MOVES, EXPLORER_MAX_STRING_LENGTH } from "../src/explorer-core.js";
 import {
   CandidateSchema,
+  HumanMoveDistributionOutputSchema,
   LichessMoveSchema,
   Maia3MoveSchema,
   OpeningExplorerOutputSchema,
@@ -249,6 +250,48 @@ test("candidate output enforces move, probability, evaluation, and opening bound
   );
   assert.equal(
     Maia3MoveSchema.safeParse({ uci: "g1f3", san: "Nf3", prob: -0.01 }).success,
+    false,
+  );
+});
+
+test("human distribution bounds moves, UCIs, and probability mass", () => {
+  const base = {
+    game_id: "game",
+    elo: 1_500,
+    oppo_elo: 1_500,
+    revision: 0,
+  };
+  const move = { uci: "e2e4", san: "e4", prob: 0.5 };
+  assert.equal(
+    HumanMoveDistributionOutputSchema.safeParse({ ...base, moves: [move] })
+      .success,
+    true,
+  );
+  assert.equal(
+    HumanMoveDistributionOutputSchema.safeParse({
+      ...base,
+      moves: [move, move],
+    }).success,
+    false,
+  );
+  assert.equal(
+    HumanMoveDistributionOutputSchema.safeParse({
+      ...base,
+      moves: [
+        { ...move, prob: 0.6 },
+        { uci: "d2d4", san: "d4", prob: 0.6 },
+      ],
+    }).success,
+    false,
+  );
+  assert.equal(
+    HumanMoveDistributionOutputSchema.safeParse({
+      ...base,
+      moves: Array.from({ length: 21 }, (_, index) => ({
+        ...move,
+        uci: index % 2 ? "e2e4" : "d2d4",
+      })),
+    }).success,
     false,
   );
 });

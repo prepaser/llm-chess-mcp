@@ -1,10 +1,53 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import type { McpServer, ServerContext } from "@modelcontextprotocol/server";
 import { GameStore } from "../src/games.js";
 import { buildServer } from "../src/server.js";
 import type { AppServices } from "../src/services.js";
+import { toolError } from "../src/tool-result.js";
 import { MoveEvaluateOutputSchema } from "../src/tool-schemas.js";
+import { registerAnalysisTools } from "../src/tools/analysis.js";
+
+type Handler = (
+  args: Record<string, unknown>,
+  context: ServerContext,
+) => Promise<unknown>;
+
+function analysisServices(
+  games: GameStore,
+  humanMoveDistribution: AppServices["humanMoveDistribution"],
+): AppServices {
+  return {
+    games,
+    analyze: async () => [],
+    quit: async () => undefined,
+    humanMoveDistribution,
+    explorerEnabled: () => false,
+    openingExplorer: async () => {
+      throw new Error("unused");
+    },
+    computeCandidates: async () => ({
+      candidates: [],
+      moveSensitivity: { level: "low", topMoveSpreadCp: null },
+    }),
+    rankByIntent: (candidates) => candidates,
+  };
+}
+
+function captureHandlers(): {
+  server: McpServer;
+  handlers: Map<string, Handler>;
+} {
+  const handlers = new Map<string, Handler>();
+  const server = {
+    registerTool(name: string, _config: unknown, handler: Handler) {
+      handlers.set(name, handler);
+      return {};
+    },
+  } as unknown as McpServer;
+  return { server, handlers };
+}
 
 test("move_evaluate rejects terminal games before engine analysis", async (t) => {
   const games = new GameStore({ createId: () => "terminal-game" });
@@ -121,4 +164,82 @@ test("move_evaluate classifies terminal draws from the mover's prior score", asy
 
   assert.equal(analysisCalls, 3);
   assert.equal(games.getSnapshot(gameId).revision, 0);
+});
+
+test("human_move_distribution rejects invalid injected results directly", async () => {
+  const games = new GameStore({ createId: () => "human-direct" });
+  const gameId = games.createGame();
+  let moves = [{ uci: "e2e4", san: "e4", prob: 0.5 }];
+  const { server, handlers } = captureHandlers();
+  registerAnalysisTools(
+    server,
+    analysisServices(games, async () => moves),
+  );
+  const handler = handlers.get("human_move_distribution");
+  assert.ok(handler);
+  const context = {
+    mcpReq: { signal: new AbortController().signal },
+  } as ServerContext;
+
+  for (const invalid of [
+    {
+      topN: 1,
+      moves: [
+        { uci: "e2e4", san: "e4", prob: 0.5 },
+        { uci: "d2d4", san: "d4", prob: 0.5 },
+      ],
+    },
+    {
+      topN: 2,
+      moves: [
+        { uci: "e2e4", san: "e4", prob: 0.4 },
+        { uci: "e2e4", san: "e4", prob: 0.4 },
+      ],
+    },
+    { topN: 1, moves: [{ uci: "a1a2", san: "Ra2", prob: 0.5 }] },
+    { topN: 1, moves: [{ uci: "e2e4", san: "d4", prob: 0.5 }] },
+    {
+      topN: 2,
+      moves: [
+        { uci: "e2e4", san: "e4", prob: 0.6 },
+        { uci: "d2d4", san: "d4", prob: 0.6 },
+      ],
+    },
+  ]) {
+    moves = invalid.moves;
+    assert.deepEqual(
+      await handler(
+        { game_id: gameId, elo: 1500, top_n: invalid.topN },
+        context,
+      ),
+      toolError("INTERNAL", "internal tool error"),
+    );
+  }
+});
+
+test("human_move_distribution masks invalid injected results on wire", async (t) => {
+  const games = new GameStore({ createId: () => "human-wire" });
+  const gameId = games.createGame();
+  const server = buildServer(
+    analysisServices(games, async () => [
+      { uci: "a1a2", san: "Ra2", prob: 0.9 },
+    ]),
+  );
+  const client = new Client({ name: "analysis-tests", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const response = await client.callTool({
+    name: "human_move_distribution",
+    arguments: { game_id: gameId, top_n: 1 },
+  });
+  assert.equal(response.isError, true);
+  assert.deepEqual(response.structuredContent, {
+    error: { code: "INTERNAL", message: "internal tool error" },
+  });
 });

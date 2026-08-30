@@ -166,7 +166,7 @@ test("GameStore validates limits and generations distinguish repeated ID sources
 });
 
 test("GameStore rejects invalid generated IDs without consuming capacity", () => {
-  for (const id of [42, null, {}, "", "x".repeat(255)]) {
+  for (const id of [42, null, {}, "", "x".repeat(245)]) {
     const store = new GameStore({
       maxGames: 1,
       clock: () => 0,
@@ -201,8 +201,10 @@ test("GameStore rejects invalid generated IDs without consuming capacity", () =>
 test("GameStore bounds generated IDs and fails closed on generation exhaustion", () => {
   const bounded = new GameStore({
     clock: () => 0,
-    createId: () => "x".repeat(254),
+    createId: () => "x".repeat(244),
   });
+  (bounded as unknown as { nextIdGeneration: number | null })
+    .nextIdGeneration = Number.MAX_SAFE_INTEGER;
   assert.equal(bounded.createGame().length, 256);
 
   const exhausted = new GameStore({ clock: () => 0, createId: () => "game" });
@@ -213,6 +215,23 @@ test("GameStore bounds generated IDs and fails closed on generation exhaustion",
   assert.equal(exhausted.deleteGame(last), true);
   expectChessError("GAME_ID_GENERATION_FAILED", () => exhausted.createGame());
   assert.equal(exhausted.gameCount(), 0);
+});
+
+test("GameStore ID source bounds survive base36 generation widening", () => {
+  const store = new GameStore({
+    clock: () => 0,
+    createId: () => "x".repeat(244),
+  });
+  (store as unknown as { nextIdGeneration: number | null }).nextIdGeneration = 35;
+
+  const singleDigit = store.createGame();
+  assert.equal(singleDigit.length, 246);
+  assert.match(singleDigit, /^z:/);
+  assert.equal(store.deleteGame(singleDigit), true);
+
+  const doubleDigit = store.createGame();
+  assert.equal(doubleDigit.length, 247);
+  assert.match(doubleDigit, /^10:/);
 });
 
 test("GameStore preserves capacity under reentrant ID generation", () => {

@@ -349,6 +349,59 @@ test("aborts an uncooperative fetch and cancels its late response", async () => 
   assert.equal(limiter.pending, 0);
 });
 
+test("applies a shared cooldown from a late 429 response", async () => {
+  const limiter = createExplorerLimiter(() => 0);
+  const attempt = new AbortController();
+  let calls = 0;
+  let resolveFirst: ((response: Response) => void) | undefined;
+  let resolveCancelled: (() => void) | undefined;
+  const cancelled = new Promise<void>((resolve) => {
+    resolveCancelled = resolve;
+  });
+  const fetch: ExplorerFetch = async () => {
+    calls += 1;
+    if (calls > 1) return response();
+    return await new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+  };
+  const requestOptions = options(fetch, {
+    limiter,
+    now: () => 0,
+    wallNow: () => 0,
+    sleep: async () => undefined,
+    timeout: () =>
+      calls === 0 ? attempt.signal : AbortSignal.timeout(1_000),
+  });
+  const first = openingExplorer(
+    new Chess(),
+    "lichess",
+    [],
+    [],
+    requestOptions,
+  );
+
+  attempt.abort();
+  await first;
+  resolveFirst?.(
+    new Response(
+      new ReadableStream({
+        cancel() {
+          resolveCancelled?.();
+        },
+      }),
+      { status: 429, headers: { "Retry-After": "60" } },
+    ),
+  );
+  await cancelled;
+
+  await assert.rejects(
+    openingExplorer(new Chess(), "masters", [], [], requestOptions),
+    expectKind("rate_limited"),
+  );
+  assert.equal(calls, 2);
+});
+
 test("applies attempt timeouts to an uncooperative fetch", async () => {
   const attempts = [new AbortController(), new AbortController()];
   let calls = 0;

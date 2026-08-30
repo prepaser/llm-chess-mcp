@@ -776,6 +776,7 @@
             "type": "string"
           },
           "moves": {
+            "description": "At most 20 moves with unique UCIs; probability mass must not exceed 1, allowing float32 rounding tolerance.",
             "items": {
               "additionalProperties": false,
               "properties": {
@@ -803,6 +804,7 @@
               ],
               "type": "object"
             },
+            "maxItems": 20,
             "type": "array"
           },
           "oppo_elo": {

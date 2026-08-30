@@ -137,6 +137,7 @@ function loadStockfish(): StockfishInit {
       let callbackDelivered = false;
       let owner!: StockfishEngine;
       let engine: StockfishEngine;
+      const initEngines = new Set<StockfishEngine>();
       const deliver = (
         error: Error | null,
         initializedEngine: StockfishEngine,
@@ -156,79 +157,85 @@ function loadStockfish(): StockfishInit {
         const init = require(entry) as StockfishInit;
         engine = init(flavor, (error, initializedEngine) => {
           if (!initialized) {
+            initEngines.add(initializedEngine);
             pendingCallbacks.push([error, initializedEngine]);
             return;
           }
           deliver(error, initializedEngine);
         });
+        initEngines.add(engine);
       } catch (error) {
-        removeAddedListeners(
-          uncaught,
-          process.listeners("uncaughtException"),
-          (listener) => process.removeListener("uncaughtException", listener),
-        );
-        removeAddedListeners(
-          unhandled,
-          process.listeners("unhandledRejection"),
-          (listener) => process.removeListener("unhandledRejection", listener),
-        );
+        for (const initializedEngine of initEngines) {
+          disposeOrphanEngine(initializedEngine);
+        }
+        cleanupAddedProcessListeners(uncaught, unhandled);
         throw error;
       }
 
-      const cleanupUncaught = ownAddedListeners<UncaughtExceptionListener>(
-        uncaught,
-        process.listeners("uncaughtException"),
-        (listener) => process.removeListener("uncaughtException", listener),
-        (listener) => process.on("uncaughtException", listener),
-        (listener) =>
-          process.rawListeners("uncaughtException").includes(listener),
-        (listener) =>
-          function ownedUncaughtException(
-            this: NodeJS.Process,
-            error,
-            origin,
-          ) {
-            Reflect.apply(listener, this, [error, origin]);
+      let cleanupUncaught: () => void;
+      let cleanupUnhandled: () => void;
+      try {
+        cleanupUncaught = ownAddedListeners<UncaughtExceptionListener>(
+          uncaught,
+          process.listeners("uncaughtException"),
+          (listener) => process.removeListener("uncaughtException", listener),
+          (listener) => process.on("uncaughtException", listener),
+          (listener) =>
+            process.rawListeners("uncaughtException").includes(listener),
+          (listener) =>
+            function ownedUncaughtException(
+              this: NodeJS.Process,
+              error,
+              origin,
+            ) {
+              Reflect.apply(listener, this, [error, origin]);
+            },
+          (listener) => {
+            const registration = function registeredUncaughtException(
+              this: NodeJS.Process,
+              error: Error,
+              origin: "uncaughtException" | "unhandledRejection",
+            ) {
+              Reflect.apply(listener, this, [error, origin]);
+            };
+            Object.defineProperty(registration, "listener", { value: listener });
+            return registration;
           },
-        (listener) => {
-          const registration = function registeredUncaughtException(
-            this: NodeJS.Process,
-            error: Error,
-            origin: "uncaughtException" | "unhandledRejection",
-          ) {
-            Reflect.apply(listener, this, [error, origin]);
-          };
-          Object.defineProperty(registration, "listener", { value: listener });
-          return registration;
-        },
-      );
-      const cleanupUnhandled = ownAddedListeners<UnhandledRejectionListener>(
-        unhandled,
-        process.listeners("unhandledRejection"),
-        (listener) => process.removeListener("unhandledRejection", listener),
-        (listener) => process.on("unhandledRejection", listener),
-        (listener) =>
-          process.rawListeners("unhandledRejection").includes(listener),
-        (listener) =>
-          function ownedUnhandledRejection(
-            this: NodeJS.Process,
-            reason,
-            promise,
-          ) {
-            Reflect.apply(listener, this, [reason, promise]);
+        );
+        cleanupUnhandled = ownAddedListeners<UnhandledRejectionListener>(
+          unhandled,
+          process.listeners("unhandledRejection"),
+          (listener) => process.removeListener("unhandledRejection", listener),
+          (listener) => process.on("unhandledRejection", listener),
+          (listener) =>
+            process.rawListeners("unhandledRejection").includes(listener),
+          (listener) =>
+            function ownedUnhandledRejection(
+              this: NodeJS.Process,
+              reason,
+              promise,
+            ) {
+              Reflect.apply(listener, this, [reason, promise]);
+            },
+          (listener) => {
+            const registration = function registeredUnhandledRejection(
+              this: NodeJS.Process,
+              reason: unknown,
+              promise: Promise<unknown>,
+            ) {
+              Reflect.apply(listener, this, [reason, promise]);
+            };
+            Object.defineProperty(registration, "listener", { value: listener });
+            return registration;
           },
-        (listener) => {
-          const registration = function registeredUnhandledRejection(
-            this: NodeJS.Process,
-            reason: unknown,
-            promise: Promise<unknown>,
-          ) {
-            Reflect.apply(listener, this, [reason, promise]);
-          };
-          Object.defineProperty(registration, "listener", { value: listener });
-          return registration;
-        },
-      );
+        );
+      } catch (error) {
+        for (const initializedEngine of initEngines) {
+          disposeOrphanEngine(initializedEngine);
+        }
+        cleanupAddedProcessListeners(uncaught, unhandled);
+        throw error;
+      }
       let uncaughtCleaned = false;
       let unhandledCleaned = false;
       const cleanup = () => {
@@ -257,6 +264,7 @@ function loadStockfish(): StockfishInit {
       for (const [error, initializedEngine] of pendingCallbacks) {
         deliver(error, initializedEngine);
       }
+      initEngines.clear();
       return engine;
     } finally {
       for (const id of Object.keys(require.cache)) {
@@ -279,10 +287,46 @@ function addedListeners<T>(before: T[], after: T[]): T[] {
 
 function removeAddedListeners<T>(
   before: T[],
-  after: T[],
+  current: () => T[],
   remove: (listener: T) => void,
 ): void {
-  for (const listener of addedListeners(before, after)) remove(listener);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const added = addedListeners(before, current());
+    if (added.length === 0) return;
+    for (let index = added.length - 1; index >= 0; index--) {
+      try {
+        remove(added[index]!);
+      } catch {}
+    }
+  }
+}
+
+function cleanupAddedProcessListeners(
+  uncaught: UncaughtExceptionListener[],
+  unhandled: UnhandledRejectionListener[],
+): void {
+  removeAddedListeners(
+    uncaught,
+    () => process.listeners("uncaughtException"),
+    (listener) => process.removeListener("uncaughtException", listener),
+  );
+  removeAddedListeners(
+    unhandled,
+    () => process.listeners("unhandledRejection"),
+    (listener) => process.removeListener("unhandledRejection", listener),
+  );
+}
+
+function disposeOrphanEngine(engine: StockfishEngine): void {
+  try {
+    engine.listener = () => {};
+  } catch {}
+  try {
+    if (typeof engine.sendCommand === "function") engine.sendCommand("quit");
+  } catch {}
+  try {
+    engine.terminate();
+  } catch {}
 }
 
 function ownAddedListeners<T>(

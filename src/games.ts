@@ -14,6 +14,8 @@ import type { GameRecord } from "./domain.js";
 export const MAX_GAMES = 1_000;
 export const GAME_TTL_MS = 60 * 60 * 1_000;
 const MAX_GAME_ID_LENGTH = 256;
+const MAX_GAME_ID_SOURCE_LENGTH =
+  MAX_GAME_ID_LENGTH - Number.MAX_SAFE_INTEGER.toString(36).length - 1;
 
 function monotonicClock(): () => number {
   const origin = Date.now() - performance.now();
@@ -99,11 +101,12 @@ export class GameStore {
     const rawId = this.createId();
     if (
       typeof rawId !== "string" ||
-      rawId.length === 0
+      rawId.length === 0 ||
+      rawId.length > MAX_GAME_ID_SOURCE_LENGTH
     ) {
       throw new ChessError(
         "GAME_ID_GENERATION_FAILED",
-        "game ID source must return a non-empty string",
+        `game ID source must return a non-empty string of at most ${MAX_GAME_ID_SOURCE_LENGTH} characters`,
       );
     }
     const generation = this.nextIdGeneration;

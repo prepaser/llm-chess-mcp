@@ -8,6 +8,11 @@ import {
   snapshotChess,
 } from "../chess.js";
 import {
+  HUMAN_PROBABILITY_TOLERANCE,
+  MAX_HUMAN_MOVES,
+  type Maia3Move,
+} from "../domain.js";
+import {
   ANALYSIS_PRESETS,
   classifyCpLoss,
   evalToCp,
@@ -35,6 +40,35 @@ type AnalysisServices = Pick<
   AppServices,
   "games" | "analyze" | "humanMoveDistribution"
 >;
+
+function validateHumanMoves(
+  chess: Parameters<AnalysisServices["humanMoveDistribution"]>[0],
+  moves: Maia3Move[],
+  topN: number,
+): void {
+  if (moves.length > topN || moves.length > MAX_HUMAN_MOVES) {
+    throw new RangeError("human move distribution exceeds top_n");
+  }
+  const legal = new Map(
+    chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
+  );
+  const seen = new Set<string>();
+  let probabilityMass = 0;
+  for (const move of moves) {
+    if (seen.has(move.uci)) throw new RangeError("duplicate human move");
+    seen.add(move.uci);
+    if (legal.get(move.uci) !== move.san) {
+      throw new RangeError("invalid human move");
+    }
+    if (!Number.isFinite(move.prob) || move.prob < 0 || move.prob > 1) {
+      throw new RangeError("invalid human move probability");
+    }
+    probabilityMass += move.prob;
+  }
+  if (probabilityMass > 1 + HUMAN_PROBABILITY_TOLERANCE) {
+    throw new RangeError("human move probability mass exceeds 1");
+  }
+}
 
 export function registerAnalysisTools(
   server: McpServer,
@@ -100,6 +134,7 @@ export function registerAnalysisTools(
           top_n,
           signal,
         );
+        validateHumanMoves(chess, moves, top_n);
         const payload: HumanMoveDistribution = {
           game_id,
           elo,

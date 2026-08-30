@@ -3,7 +3,9 @@ import {
   ANALYSIS_LEVELS,
   COLORS,
   EXPLORER_ERROR_KINDS,
+  HUMAN_PROBABILITY_TOLERANCE,
   INTENTS,
+  MAX_HUMAN_MOVES,
   MOVE_EVALUATION_RESULTS,
   MOVE_CLASSIFICATIONS,
   PIECES,
@@ -261,12 +263,41 @@ export const Maia3MoveSchema = z.strictObject({
   prob: probability,
 }) satisfies z.ZodType<Maia3Move>;
 
+const humanMoves = z
+  .array(Maia3MoveSchema)
+  .max(MAX_HUMAN_MOVES)
+  .superRefine((moves, ctx) => {
+    const seen = new Set<string>();
+    let probabilityMass = 0;
+    for (const [index, move] of moves.entries()) {
+      if (seen.has(move.uci)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "human move UCIs must be unique",
+          path: [index, "uci"],
+        });
+      }
+      seen.add(move.uci);
+      probabilityMass += move.prob;
+    }
+    if (probabilityMass > 1 + HUMAN_PROBABILITY_TOLERANCE) {
+      ctx.addIssue({
+        code: "custom",
+        message: "human move probability mass must not exceed 1",
+        path: [],
+      });
+    }
+  })
+  .describe(
+    `At most ${MAX_HUMAN_MOVES} moves with unique UCIs; probability mass must not exceed 1, allowing float32 rounding tolerance.`,
+  );
+
 export const HumanMoveDistributionOutputSchema = z.strictObject({
   game_id: z.string(),
   elo: z.number(),
   oppo_elo: z.number(),
   revision,
-  moves: z.array(Maia3MoveSchema),
+  moves: humanMoves,
 });
 
 const moveEvaluation = z.strictObject({

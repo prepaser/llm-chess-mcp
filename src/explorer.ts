@@ -137,6 +137,7 @@ interface ExplorerSetup extends ExplorerLimiterOptions {
   db: "lichess" | "masters";
   legalMoves: Map<string, string>;
   limiter: ExplorerLimiter;
+  onLateResponse: (response: Response) => void;
   request: ExplorerFetch;
   timeout: (ms: number) => AbortSignal;
   token: string;
@@ -189,6 +190,8 @@ function setupExplorerRequest(
   ) {
     throw explorerError("invalid_input");
   }
+  const limiter = options.limiter ?? processExplorerLimiter;
+  const wallNow = options.wallNow ?? Date.now;
   return {
     callerSignal,
     db,
@@ -196,8 +199,16 @@ function setupExplorerRequest(
     legalMoves: new Map(
       chess.moves({ verbose: true }).map((move) => [move.lan, move.san]),
     ),
-    limiter: options.limiter ?? processExplorerLimiter,
+    limiter,
     now,
+    onLateResponse: (response) => {
+      if (response.status !== 429) return;
+      const delay = rateLimitCooldownMs(
+        response.headers.get("retry-after"),
+        wallNow(),
+      );
+      limiter.cooldown(delay, now());
+    },
     request: options.fetch ?? globalThis.fetch,
     sleep:
       options.sleep ??
@@ -205,7 +216,7 @@ function setupExplorerRequest(
     timeout: options.timeout ?? ((ms: number) => AbortSignal.timeout(ms)),
     token,
     url: `${BASE}/${db}?${params}`,
-    wallNow: options.wallNow ?? Date.now,
+    wallNow,
   };
 }
 

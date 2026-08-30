@@ -10,6 +10,7 @@ export interface ExplorerTransportOptions {
   callerSignal: AbortSignal | undefined;
   deadline: number;
   now: () => number;
+  onLateResponse: (response: Response) => void;
   request: ExplorerFetch;
   timeout: (ms: number) => AbortSignal;
   token: string;
@@ -53,7 +54,16 @@ function errorKindForStatus(status: number): ExplorerError["kind"] {
 export async function requestExplorerTransport(
   options: ExplorerTransportOptions,
 ): Promise<ExplorerTransportResult> {
-  const { callerSignal, deadline, now, request, timeout, token, url } = options;
+  const {
+    callerSignal,
+    deadline,
+    now,
+    onLateResponse,
+    request,
+    timeout,
+    token,
+    url,
+  } = options;
   throwIfAborted(callerSignal);
   const remaining = deadline - now();
   if (remaining <= 0) throw explorerError("timeout");
@@ -78,7 +88,12 @@ export async function requestExplorerTransport(
   } catch {
     if (signal.aborted && pending) {
       void pending
-        .then((lateResponse) => discardResponse(lateResponse, attemptSignal))
+        .then((lateResponse) => {
+          try {
+            onLateResponse(lateResponse);
+          } catch {}
+          return discardResponse(lateResponse, attemptSignal);
+        })
         .catch(() => {});
     }
     throwIfAborted(callerSignal);

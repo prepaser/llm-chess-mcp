@@ -6,7 +6,7 @@ import {
   lichessRatingSchema,
   lichessSpeedSchema,
 } from "./explorer.js";
-import { ANALYSIS_LEVELS, INTENTS } from "./domain.js";
+import { ANALYSIS_LEVELS, INTENTS, MAX_HUMAN_MOVES } from "./domain.js";
 import type { ToolName } from "./tool-names.js";
 
 const lichessSpeedsSchema = z
@@ -125,7 +125,7 @@ export const HumanMoveDistributionInputSchema = z.strictObject({
   game_id: z.string(),
   elo: z.number().int().min(600).max(2600).default(1500),
   oppo_elo: z.number().int().min(600).max(2600).optional(),
-  top_n: z.number().int().min(1).max(20).default(5),
+  top_n: z.number().int().min(1).max(MAX_HUMAN_MOVES).default(5),
 });
 export const MoveEvaluateInputSchema = z.strictObject({
   game_id: z.string(),
