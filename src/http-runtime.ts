@@ -16,7 +16,7 @@ import {
 } from "./http-body.js";
 import { canonicalHttpPath } from "./http-config.js";
 import type { HttpLimits } from "./http-config.js";
-import { HttpPostAdmission } from "./http-posts.js";
+import { HttpBodyAdmission, HttpPostAdmission } from "./http-posts.js";
 import { closeWithError } from "./http-response.js";
 import { HttpSessionRegistry } from "./http-sessions.js";
 import { HttpWorkAdmission, withSessionWorkAdmission } from "./http-work.js";
@@ -47,8 +47,7 @@ function sessionId(req: IncomingMessage): string | null | undefined {
 
 export class HttpRuntime {
   readonly #sessions: HttpSessionRegistry<Session>;
-  readonly #bodyAdmission: HttpPostAdmission<{ activePosts: number }>;
-  readonly #controlBodyAdmission: HttpPostAdmission<{ activePosts: number }>;
+  readonly #bodyAdmission: HttpBodyAdmission;
   readonly #workAdmission: HttpWorkAdmission;
   readonly #postAdmission: HttpPostAdmission<Session>;
   readonly #controlPostAdmission: HttpPostAdmission<Session["controlPosts"]>;
@@ -63,12 +62,8 @@ export class HttpRuntime {
     private readonly limits: HttpLimits,
   ) {
     this.#sessions = new HttpSessionRegistry<Session>(limits.maxSessions);
-    this.#bodyAdmission = new HttpPostAdmission(
+    this.#bodyAdmission = new HttpBodyAdmission(
       limits.maxConcurrentPosts,
-      limits.maxConcurrentPosts,
-    );
-    this.#controlBodyAdmission = new HttpPostAdmission(
-      limits.maxConcurrentPostsPerSession,
       limits.maxConcurrentPostsPerSession,
     );
     this.#workAdmission = new HttpWorkAdmission(
@@ -128,17 +123,7 @@ export class HttpRuntime {
     work: (body: unknown) => Promise<void>,
     signal?: AbortSignal,
   ): Promise<void> {
-    const primary = this.#bodyAdmission.tryAcquire();
-    const admission =
-      typeof primary === "object"
-        ? primary
-        : this.#controlBodyAdmission.tryAcquire();
-    if (typeof admission !== "object") {
-      closeWithError(req, res, 503, "server request body limit reached", {
-        "retry-after": "1",
-      });
-      return;
-    }
+    const admission = this.#bodyAdmission.acquire();
     let body: Awaited<ReturnType<typeof parsePostBody>>;
     try {
       body = await parsePostBody(
@@ -146,12 +131,19 @@ export class HttpRuntime {
         this.limits.maxRequestBodyBytes,
         this.limits.bodyTimeoutMs,
         signal,
+        admission.preemptSignal,
       );
     } finally {
       admission.release();
     }
     if (!body.ok) {
-      closeWithError(req, res, body.status, body.message);
+      closeWithError(
+        req,
+        res,
+        body.status,
+        body.message,
+        body.status === 503 ? { "retry-after": "1" } : {},
+      );
       return;
     }
     await work(body.value);

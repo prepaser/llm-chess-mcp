@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { HttpPostAdmission } from "../src/http-posts.js";
+import { HttpBodyAdmission, HttpPostAdmission } from "../src/http-posts.js";
 
 test("HTTP POST admission releases each lease once", () => {
   const admission = new HttpPostAdmission<{ activePosts: number }>(1, 1);
@@ -22,4 +22,18 @@ test("HTTP POST admission releases each lease once", () => {
   assert.equal(typeof next, "object");
   if (typeof next === "object") next.release();
   assert.equal(second.activePosts, 0);
+});
+
+test("HTTP body admission preempts an overflow body control lease", () => {
+  const admission = new HttpBodyAdmission(1, 1);
+  const primary = admission.acquire();
+  const control = admission.acquire();
+  const next = admission.acquire();
+
+  assert.equal(primary.preemptSignal.aborted, false);
+  assert.equal(control.preemptSignal.aborted, true);
+  assert.equal(next.preemptSignal.aborted, false);
+  primary.release();
+  control.release();
+  next.release();
 });

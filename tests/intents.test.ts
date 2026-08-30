@@ -9,6 +9,7 @@ import {
   rankByIntent,
   type LichessCandidateData,
 } from "../src/intents.js";
+import { ExplorerError } from "../src/explorer.js";
 import type { Candidate, SfLine } from "../src/types.js";
 
 function sfLine(
@@ -621,6 +622,58 @@ test("rejects malformed Stockfish candidate lines at the shared boundary", () =>
   ] as unknown as SfLine[][]) {
     assert.throws(() => candidateSet(lines, 1), RangeError);
   }
+
+  const sparse = ["e2e4", , "e7e5"];
+  assert.throws(
+    () => candidateSet([{ ...line, pv: sparse } as unknown as SfLine], 1),
+    /invalid PV/,
+  );
+});
+
+test("keeps Explorer failures optional but rejects malformed Explorer data", async () => {
+  const dependencies = {
+    analyze: async () => [sfLine("e2e4", 100)],
+    humanMoveDistribution: async () => [],
+    explorerEnabled: () => true,
+    explorerFailureReason: (error: unknown) => {
+      assert.ok(error instanceof ExplorerError);
+      return error.kind;
+    },
+  };
+  const lichess = { db: "lichess" as const, speeds: [], ratings: [] };
+  const unavailable = createCandidateComputation({
+    ...dependencies,
+    openingExplorer: async () => {
+      throw new ExplorerError("rate_limited", "rate limited");
+    },
+  });
+  const available = await unavailable(new Chess(), 1500, 1, 1, 1, lichess);
+  assert.deepEqual(available.candidates[0]?.opening, {
+    status: "unavailable",
+    reason: "rate_limited",
+    games: null,
+    frequency: null,
+    white: null,
+    draws: null,
+    black: null,
+    averageRating: null,
+  });
+
+  const malformed = createCandidateComputation({
+    ...dependencies,
+    openingExplorer: async () => ({
+      db: "lichess",
+      white: -1,
+      draws: 0,
+      black: 0,
+      moves: [],
+      opening: null,
+    }),
+  });
+  await assert.rejects(
+    malformed(new Chess(), 1500, 1, 1, 1, lichess),
+    /move totals exceed/,
+  );
 });
 
 test("filters illegal dependency moves and handles explorer failures", () => {

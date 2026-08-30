@@ -3,7 +3,12 @@ import type { Move } from "chess.js";
 import { materializeMove } from "./chess-move.js";
 import { ChessError } from "./errors.js";
 import {
+  assertPgnBytes,
   assertPgnPlyLimit,
+  assertPgnSize,
+  assertPgnTokenSize,
+  encodePgnHeaderValue,
+  MAX_PGN_HEADERS,
   pgnHeaderIndex,
   pgnSetupHeaders,
   replacePgnHeaders,
@@ -125,6 +130,29 @@ function replayHistory(
   }
 }
 
+function assertSnapshotStorageLimits(chess: Chess): void {
+  const headers = Object.entries(chess.getHeaders());
+  if (headers.length > MAX_PGN_HEADERS) {
+    throw new ChessError(
+      "PGN_TOO_COMPLEX",
+      `PGN exceeds the ${MAX_PGN_HEADERS}-header limit`,
+    );
+  }
+  let bytes = 0;
+  for (const [name, value] of headers) {
+    const encoded = encodePgnHeaderValue(value);
+    assertPgnTokenSize(name);
+    assertPgnTokenSize(encoded);
+    bytes += Buffer.byteLength(`[${name} "${encoded}"]\n`, "utf8");
+  }
+  for (const { comment } of Chess.prototype.getComments.call(chess)) {
+    assertPgnTokenSize(comment);
+    bytes += Buffer.byteLength(comment, "utf8") + 2;
+  }
+  assertPgnBytes(bytes);
+  assertPgnSize(Chess.prototype.pgn.call(chess));
+}
+
 function restoreUnsafeComments(
   snapshot: Chess,
   comments: ReadonlyMap<string, string>,
@@ -181,13 +209,16 @@ export function snapshotChess(chess: Chess): Chess {
   assertSafeFenCounters(snapshot.fen());
   if (!unsafeComments) {
     replacePgnHeaders(snapshot, sourceHeaders, { removeMissing: true });
+    assertSnapshotStorageLimits(snapshot);
     return snapshot;
   }
-  return restoreUnsafeComments(
+  const restored = restoreUnsafeComments(
     snapshot,
     comments,
     markerPrefix,
     markerComments,
     sourceHeaders,
   );
+  assertSnapshotStorageLimits(restored);
+  return restored;
 }

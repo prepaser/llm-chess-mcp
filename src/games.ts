@@ -11,13 +11,13 @@ import {
 } from "./chess.js";
 import { ChessError } from "./errors.js";
 import { unicodeLength } from "./string-length.js";
+import { GAME_ID_MAX_LENGTH } from "./domain.js";
 import type { GameRecord } from "./domain.js";
 
 export const MAX_GAMES = 1_000;
 export const GAME_TTL_MS = 60 * 60 * 1_000;
-const MAX_GAME_ID_LENGTH = 256;
 const MAX_GAME_ID_SOURCE_LENGTH =
-  MAX_GAME_ID_LENGTH - Number.MAX_SAFE_INTEGER.toString(36).length - 1;
+  GAME_ID_MAX_LENGTH - Number.MAX_SAFE_INTEGER.toString(36).length - 1;
 
 function monotonicClock(): () => number {
   const origin = Date.now() - performance.now();
@@ -110,10 +110,10 @@ export class GameStore {
     }
     const generation = this.availableIdGeneration();
     const id = `${generation.toString(36)}:${rawId}`;
-    if (unicodeLength(id) > MAX_GAME_ID_LENGTH) {
+    if (unicodeLength(id) > GAME_ID_MAX_LENGTH) {
       throw new ChessError(
         "GAME_ID_GENERATION_FAILED",
-        `game ID must be at most ${MAX_GAME_ID_LENGTH} characters`,
+        `game ID must be at most ${GAME_ID_MAX_LENGTH} characters`,
       );
     }
     const nextGeneration =
@@ -129,12 +129,14 @@ export class GameStore {
       }
       throw error;
     }
+    const insertionTime = this.clockTime();
+    this.cleanupGamesAt(insertionTime);
     this.assertCapacity();
     this.assertUnique(id);
     this.games.set(id, {
       chess: snapshot,
-      createdAt: now,
-      lastAccessedAt: now,
+      createdAt: insertionTime,
+      lastAccessedAt: insertionTime,
       revision: 0,
     });
     return id;

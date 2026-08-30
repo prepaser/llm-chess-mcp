@@ -7,18 +7,20 @@ import {
 import { ChessError } from "./errors.js";
 import { commentSpan, quotedSpan, wordSpan } from "./pgn-lex.js";
 import {
+  assertPgnSize,
+  assertPgnTokenSize,
   assertPgnPlyLimit,
   canonicalPgnHeaderName,
+  encodePgnHeaderValue,
+  MAX_PGN_HEADERS,
   MAX_PGN_PLIES,
   pgnHeaderIndex,
   pgnSetupHeaders,
   replacePgnHeaders,
 } from "./pgn-shared.js";
 
-export const MAX_PGN_BYTES = 1024 * 1024;
-export const MAX_PGN_HEADERS = 256;
+export { MAX_PGN_BYTES, MAX_PGN_HEADERS, MAX_PGN_TOKEN_BYTES } from "./pgn-shared.js";
 export { MAX_PGN_PLIES } from "./pgn-shared.js";
-export const MAX_PGN_TOKEN_BYTES = 16 * 1024;
 const MAX_PGN_ELEMENTS = MAX_PGN_PLIES * 8;
 
 const PGN_RESULTS = ["1-0", "0-1", "1/2-1/2", "*"] as const;
@@ -29,24 +31,6 @@ type PgnHeader = { name: string; value: string };
 
 const HEADER_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
 const TAG_LINE = /^(\s*\[\s*)([A-Za-z][A-Za-z0-9_]*)(\s+")((?:\\.|[^"\\])*)("\s*\]\s*)$/;
-
-function assertPgnTokenSize(value: string): void {
-  if (Buffer.byteLength(value, "utf8") > MAX_PGN_TOKEN_BYTES) {
-    throw new ChessError(
-      "PGN_TOO_COMPLEX",
-      `PGN token exceeds the ${MAX_PGN_TOKEN_BYTES}-byte limit`,
-    );
-  }
-}
-
-function assertPgnSize(pgn: string): void {
-  if (Buffer.byteLength(pgn, "utf8") > MAX_PGN_BYTES) {
-    throw new ChessError(
-      "PGN_TOO_LARGE",
-      `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
-    );
-  }
-}
 
 function splitPgnWord(value: string, emit: (token: string) => void): void {
   const annotated = (part: string): void => {
@@ -152,10 +136,6 @@ function decodeHeaderValue(value: string): string {
     index += 1;
   }
   return decoded;
-}
-
-function encodeHeaderValue(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 type CommentTrie = {
@@ -268,7 +248,7 @@ function prepareHeaders(pgn: string): {
           ? canonicalPgnHeaderName(name)
           : null;
       loaderPgn += canonical
-        ? `[${canonical} "${encodeHeaderValue(value)}"]${ending}`
+        ? `[${canonical} "${encodePgnHeaderValue(value)}"]${ending}`
         : ending;
       movetextPgn += ending;
       continue;
@@ -320,7 +300,7 @@ function assertPgnExportHeaders(
   }
   for (const [name, value] of headers) {
     assertPgnTokenSize(name);
-    assertPgnTokenSize(encodeHeaderValue(value));
+    assertPgnTokenSize(encodePgnHeaderValue(value));
     if (!HEADER_NAME.test(name)) {
       throw new ChessError("INVALID_PGN", "invalid PGN header name");
     }
@@ -377,7 +357,7 @@ function pgnText(chess: Chess, context: PgnExportContext): string {
     comments.map(({ comment }) => comment),
   );
   const tags = headers
-    .map(([name, value]) => `[${name} "${encodeHeaderValue(value)}"]`)
+    .map(([name, value]) => `[${name} "${encodePgnHeaderValue(value)}"]`)
     .join("\n");
   const pgn = !headers.length
     ? movetext

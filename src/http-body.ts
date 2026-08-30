@@ -3,7 +3,7 @@ import { isJSONRPCNotification } from "@modelcontextprotocol/server";
 
 export type ParsedBody =
   | { ok: true; value: unknown }
-  | { ok: false; status: 400 | 408 | 413 | 415; message: string };
+  | { ok: false; status: 400 | 408 | 413 | 415 | 503; message: string };
 
 function declaredBodyLength(req: IncomingMessage): number | null {
   const header = req.headers["content-length"];
@@ -18,6 +18,7 @@ function readPostBody(
   limit: number,
   timeoutMs: number,
   signal?: AbortSignal,
+  preemptSignal?: AbortSignal,
 ): Promise<ParsedBody> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
@@ -36,6 +37,7 @@ function readPostBody(
       req.off("aborted", onAborted);
       req.off("error", onError);
       signal?.removeEventListener("abort", onCancelled);
+      preemptSignal?.removeEventListener("abort", onPreempted);
       resolve(result);
     };
     const onData = (chunk: Buffer): void => {
@@ -65,12 +67,22 @@ function readPostBody(
       finish({ ok: false, status: 400, message: "MCP session closed" });
       req.destroy(signal?.reason instanceof Error ? signal.reason : undefined);
     };
+    const onPreempted = (): void => {
+      req.pause();
+      finish({
+        ok: false,
+        status: 503,
+        message: "server request body limit reached",
+      });
+    };
     req.on("data", onData);
     req.once("end", onEnd);
     req.once("aborted", onAborted);
     req.once("error", onError);
     if (signal?.aborted) onCancelled();
     else signal?.addEventListener("abort", onCancelled, { once: true });
+    if (preemptSignal?.aborted) onPreempted();
+    else preemptSignal?.addEventListener("abort", onPreempted, { once: true });
   });
 }
 
@@ -93,6 +105,7 @@ export async function parsePostBody(
   limit: number,
   timeoutMs: number,
   signal?: AbortSignal,
+  preemptSignal?: AbortSignal,
 ): Promise<ParsedBody> {
   const declaredLength = declaredBodyLength(req);
   if (Number.isNaN(declaredLength)) {
@@ -107,7 +120,7 @@ export async function parsePostBody(
   if (hasUnsupportedContentEncoding(req)) {
     return { ok: false, status: 415, message: "Content-Encoding must be identity" };
   }
-  return readPostBody(req, limit, timeoutMs, signal);
+  return readPostBody(req, limit, timeoutMs, signal, preemptSignal);
 }
 
 export function hasUnexpectedBody(req: IncomingMessage): boolean {

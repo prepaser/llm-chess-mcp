@@ -150,6 +150,13 @@ test("bounds Maia inference and removes queued aborts immediately", async () => 
   assert.throws(() => new MaiaAdmission(1, -1), /maxQueue/);
 });
 
+test("Maia admission rejects pre-aborted work asynchronously", async () => {
+  const admission = new MaiaAdmission();
+  const result = admission.run(AbortSignal.abort(), async () => 1);
+  assert.ok(result instanceof Promise);
+  await assert.rejects(result, { name: "AbortError" });
+});
+
 test("aborts before loading the model", async () => {
   const previous = process.env.MAIA3_MODEL;
   process.env.MAIA3_MODEL = "invalid";

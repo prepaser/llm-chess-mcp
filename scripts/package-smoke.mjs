@@ -3,7 +3,6 @@ import { execFile as execFileCallback, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createServer } from "node:net";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -306,26 +305,12 @@ async function smoke(bin, packageRoot, cwd) {
   }
 }
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      assert.ok(address && typeof address === "object");
-      server.close((error) => (error ? reject(error) : resolve(address.port)));
-    });
-  });
-}
-
 async function smokeHttp(bin, packageRoot, cwd) {
-  const port = await freePort();
-  const endpoint = `http://127.0.0.1:${port}/mcp`;
   const invocation = serverInvocation(bin, packageRoot, [
     "--transport",
     "http",
     "--port",
-    String(port),
+    "0",
   ]);
   const child = spawn(invocation.command, invocation.args, {
     cwd,
@@ -339,13 +324,15 @@ async function smokeHttp(bin, packageRoot, cwd) {
   const exited = new Promise((resolve) =>
     child.once("exit", (code, signal) => resolve([code, signal])),
   );
+  let endpoint;
   const ready = new Promise((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error(`packed HTTP server did not start: ${stderr}`)),
       TIMEOUT_MS,
     );
     child.stderr.on("data", () => {
-      if (!stderr.includes(`listening on ${endpoint}`)) return;
+      endpoint = /^llm-chess-mcp listening on (http:\/\/\S+)$/m.exec(stderr)?.[1];
+      if (endpoint === undefined) return;
       clearTimeout(timer);
       resolve();
     });
@@ -354,11 +341,12 @@ async function smokeHttp(bin, packageRoot, cwd) {
       reject(new Error(`packed HTTP server exited early with ${code}: ${stderr}`));
     });
   });
-  const transport = new StreamableHTTPClientTransport(new URL(endpoint));
   const client = new Client({ name: "package-http-smoke", version: "1.0.0" });
 
   try {
     await ready;
+    assert.ok(endpoint);
+    const transport = new StreamableHTTPClientTransport(new URL(endpoint));
     await client.connect(transport);
     assertToolCatalog(await client.listTools(undefined, { timeout: TIMEOUT_MS }));
     const created = await call(client, "create_game", {});

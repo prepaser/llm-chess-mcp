@@ -1,3 +1,4 @@
+import { WDL_TOTAL } from "../domain.js";
 import type { SfLine, Wdl } from "../domain.js";
 
 type Score = {
@@ -14,7 +15,6 @@ export type AnalysisInfo = {
 
 const MAX_MULTIPV = 256;
 const MAX_SCORE = 100_000;
-const MAX_WDL = 1_000;
 
 function parseInteger(
   value: string,
@@ -46,11 +46,11 @@ function parseWdl(line: string): Wdl | undefined {
   if (!groups) return;
   const { wins: winToken, draws: drawToken, losses: lossToken } = groups;
   if (!winToken || !drawToken || !lossToken) return;
-  const wins = parseInteger(winToken, 0, MAX_WDL);
-  const draws = parseInteger(drawToken, 0, MAX_WDL);
-  const losses = parseInteger(lossToken, 0, MAX_WDL);
+  const wins = parseInteger(winToken, 0, WDL_TOTAL);
+  const draws = parseInteger(drawToken, 0, WDL_TOTAL);
+  const losses = parseInteger(lossToken, 0, WDL_TOTAL);
   if (wins === undefined || draws === undefined || losses === undefined) return;
-  if (wins + draws + losses !== MAX_WDL) return;
+  if (wins + draws + losses !== WDL_TOTAL) return;
   return [wins, draws, losses];
 }
 

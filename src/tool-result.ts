@@ -70,16 +70,114 @@ function explorerErrorCode(kind: ExplorerErrorKind): string {
   return `LICHESS_${kind.toUpperCase()}`;
 }
 
-function assertWireSchema(schema: z.ZodType, kind: "input" | "output"): void {
+type JsonSchema = Record<string, unknown>;
+
+function isJsonSchema(value: unknown): value is JsonSchema {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function schemaBranches(schema: JsonSchema, key: string): unknown[] {
+  const value = schema[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function schemaRef(
+  schema: JsonSchema,
+  definitions: JsonSchema,
+): [string, JsonSchema] | undefined {
+  if (typeof schema.$ref !== "string") return undefined;
+  const match = /^#\/\$defs\/([^/]+)$/.exec(schema.$ref);
+  if (!match) return undefined;
+  const name = match[1];
+  const definition = name === undefined ? undefined : definitions[name];
+  return isJsonSchema(definition) ? [schema.$ref, definition] : undefined;
+}
+
+function hasNonObjectBranch(
+  schema: unknown,
+  definitions: JsonSchema,
+  seen = new Set<string>(),
+): boolean {
+  if (!isJsonSchema(schema)) return false;
+  const type = schema.type;
+  if (typeof type === "string" && type !== "object") return true;
+  if (
+    Array.isArray(type) &&
+    type.some((value) => value !== "object")
+  ) {
+    return true;
+  }
+
+  const branches = ["allOf", "anyOf", "oneOf"].flatMap((key) =>
+    schemaBranches(schema, key),
+  );
+  if (branches.some((branch) => hasNonObjectBranch(branch, definitions, seen))) {
+    return true;
+  }
+
+  const ref = schemaRef(schema, definitions);
+  if (ref) {
+    const [key, definition] = ref;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    const result = hasNonObjectBranch(definition, definitions, seen);
+    seen.delete(key);
+    return result;
+  }
+
+  return false;
+}
+
+function hasObjectConstraint(
+  schema: unknown,
+  definitions: JsonSchema,
+  seen = new Set<string>(),
+): boolean {
+  if (!isJsonSchema(schema)) return false;
+  const type = schema.type;
+  if (type === "object") return true;
+  if (Array.isArray(type)) return type.every((value) => value === "object");
+
+  const alternatives = ["anyOf", "oneOf"].flatMap((key) =>
+    schemaBranches(schema, key),
+  );
+  if (alternatives.length > 0) {
+    return alternatives.every((branch) =>
+      hasObjectConstraint(branch, definitions, seen),
+    );
+  }
+
+  const allOf = schemaBranches(schema, "allOf");
+  if (allOf.length > 0) {
+    return allOf.some((branch) =>
+      hasObjectConstraint(branch, definitions, seen),
+    );
+  }
+
+  const ref = schemaRef(schema, definitions);
+  if (!ref) return false;
+  const [key, definition] = ref;
+  if (seen.has(key)) return false;
+  seen.add(key);
+  const result = hasObjectConstraint(definition, definitions, seen);
+  seen.delete(key);
+  return result;
+}
+
+function assertWireSchema(
+  schema: z.ZodType,
+  kind: "input" | "output",
+): void {
   try {
     const wireSchema = z.toJSONSchema(schema);
+    const definitions = isJsonSchema(wireSchema.$defs)
+      ? wireSchema.$defs
+      : {};
     if (
-      kind === "output" &&
-      (typeof wireSchema !== "object" ||
-        wireSchema === null ||
-        wireSchema.type !== "object")
+      hasNonObjectBranch(wireSchema, definitions) ||
+      !hasObjectConstraint(wireSchema, definitions)
     ) {
-      throw new TypeError("MCP tool output schema must have an object root");
+      throw new TypeError(`MCP tool ${kind} schema must have an object root`);
     }
   } catch (cause) {
     throw new TypeError(
@@ -90,7 +188,7 @@ function assertWireSchema(schema: z.ZodType, kind: "input" | "output"): void {
 }
 
 export function safeHandler<
-  InputSchema extends z.ZodType,
+  InputSchema extends z.ZodType<Record<string, unknown>>,
   OutputSchema extends z.ZodType<Record<string, unknown>>,
 >(
   inputSchema: InputSchema,
@@ -104,7 +202,7 @@ export function safeHandler<
   context?: ServerContext,
 ) => Promise<ToolResult>;
 export function safeHandler<
-  InputSchema extends z.ZodType,
+  InputSchema extends z.ZodType<Record<string, unknown>>,
   OutputSchema extends z.ZodType<Record<string, unknown>>,
 >(
   inputSchema: InputSchema,
@@ -118,7 +216,7 @@ export function safeHandler<
   context?: ServerContext,
 ) => Promise<ToolResult>;
 export function safeHandler<
-  InputSchema extends z.ZodType,
+  InputSchema extends z.ZodType<Record<string, unknown>>,
   OutputSchema extends z.ZodType<Record<string, unknown>>,
 >(
   inputSchema: InputSchema,
@@ -132,7 +230,7 @@ export function safeHandler<
   context?: ServerContext,
 ) => Promise<ToolResult>;
 export function safeHandler<
-  InputSchema extends z.ZodType,
+  InputSchema extends z.ZodType<Record<string, unknown>>,
   OutputSchema extends z.ZodType<Record<string, unknown>>,
 >(
   inputSchema: InputSchema,

@@ -229,7 +229,34 @@ test("safeHandler accepts handlers that return success or tool errors", async ()
   );
 });
 
-test("safeHandler rejects non-object output schemas before tool registration", () => {
+test("safeHandler accepts object-valued union and intersection output schemas", async () => {
+  const input = z.strictObject({});
+  const union = z.discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("text"), value: z.string() }),
+    z.strictObject({ kind: z.literal("count"), value: z.number() }),
+  ]);
+  const intersection = z.intersection(
+    z.strictObject({ value: z.string() }),
+    z.strictObject({ count: z.number() }),
+  );
+  const unionHandler = safeHandler(input, union, async () =>
+    toolResult({ kind: "text" as const, value: "ok" }, "ok"),
+  );
+  const intersectionHandler = safeHandler(input, intersection, async () =>
+    toolResult({ value: "ok", count: 1 }, "ok"),
+  );
+
+  assert.deepEqual(
+    await unionHandler({}),
+    toolResult({ kind: "text", value: "ok" }, "ok"),
+  );
+  assert.deepEqual(
+    await intersectionHandler({}),
+    toolResult({ value: "ok", count: 1 }, "ok"),
+  );
+});
+
+test("safeHandler rejects non-object input and output schemas before registration", () => {
   assert.throws(
     () =>
       safeHandler(
@@ -237,8 +264,18 @@ test("safeHandler rejects non-object output schemas before tool registration", (
         // @ts-expect-error MCP tool structured content must be an object.
         z.string(),
         async () => toolResult({}, "unreachable"),
-      ),
+    ),
     /MCP output schema must be representable as JSON Schema/,
+  );
+  assert.throws(
+    () =>
+      safeHandler(
+        // @ts-expect-error MCP tool arguments must be an object.
+        z.string(),
+        z.strictObject({}),
+        async () => toolResult({}, "unreachable"),
+      ),
+    /MCP input schema must be representable as JSON Schema/,
   );
 });
 

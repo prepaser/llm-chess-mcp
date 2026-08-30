@@ -334,6 +334,29 @@ test("GameStore rechecks capacity and preserves unique IDs after snapshot callba
   assert.deepEqual(colliding.listGames(), ["1:same", "0:same"]);
 });
 
+test("GameStore timestamps outer creations after reentrant ID generation", () => {
+  let now = 0;
+  let reentered = false;
+  let store: GameStore;
+  store = new GameStore({
+    maxGames: 2,
+    idleTtlMs: 2,
+    clock: () => now++,
+    createId: () => {
+      if (!reentered) {
+        reentered = true;
+        assert.equal(store.createGame(), "0:inner");
+        return "outer";
+      }
+      return "inner";
+    },
+  });
+
+  const id = store.createGame();
+  assert.equal(id, "1:outer");
+  assert.equal(store.getSnapshot(id).revision, 0);
+});
+
 test("GameStore rolls back only an unobserved failed snapshot generation", () => {
   class FailingCommentChess extends Chess {
     override getComments(): ReturnType<Chess["getComments"]> {
@@ -366,6 +389,15 @@ test("GameStore rolls back only an unobserved failed snapshot generation", () =>
   );
   assert.deepEqual(store.listGames(), ["1:same"]);
   assert.equal(store.createGame(), "2:same");
+});
+
+test("GameStore rejects oversized programmatic chess state", () => {
+  const chess = new Chess();
+  chess.setComment("x".repeat(16 * 1024 + 1));
+  const store = new GameStore({ clock: () => 0, createId: () => "game" });
+
+  expectChessError("PGN_TOO_COMPLEX", () => store.createGameFromChess(chess));
+  assert.equal(store.gameCount(), 0);
 });
 
 test("GameStore never reuses IDs after deletion or expiry", () => {

@@ -2,6 +2,40 @@ import type { Chess } from "chess.js";
 import { ChessError } from "./errors.js";
 
 export const MAX_PGN_PLIES = 4096;
+export const MAX_PGN_BYTES = 1024 * 1024;
+export const MAX_PGN_HEADERS = 256;
+export const MAX_PGN_TOKEN_BYTES = 16 * 1024;
+
+export function assertPgnTokenSize(value: string): void {
+  if (Buffer.byteLength(value, "utf8") > MAX_PGN_TOKEN_BYTES) {
+    throw new ChessError(
+      "PGN_TOO_COMPLEX",
+      `PGN token exceeds the ${MAX_PGN_TOKEN_BYTES}-byte limit`,
+    );
+  }
+}
+
+export function assertPgnSize(pgn: string): void {
+  if (Buffer.byteLength(pgn, "utf8") > MAX_PGN_BYTES) {
+    throw new ChessError(
+      "PGN_TOO_LARGE",
+      `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
+    );
+  }
+}
+
+export function assertPgnBytes(bytes: number): void {
+  if (bytes > MAX_PGN_BYTES) {
+    throw new ChessError(
+      "PGN_TOO_LARGE",
+      `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
+    );
+  }
+}
+
+export function encodePgnHeaderValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 
 const CANONICAL_HEADERS = new Map(
   [

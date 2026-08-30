@@ -12,6 +12,7 @@ import {
   MOVE_CLASSIFICATIONS,
   PIECES,
   PROMOTIONS,
+  WDL_TOTAL,
   type Candidate,
   type ChessState,
   type LichessMove,
@@ -37,16 +38,16 @@ const uci = moveText.regex(
   /^(?!([a-h][1-8])\1)(?:[a-h][1-8][a-h][1-8]|(?:[a-h]7[a-h]8|[a-h]2[a-h]1)[qrbn])$/,
 );
 const wdlDescription =
-  "[wins, draws, losses]; the three counts must sum to 1000.";
+  `[wins, draws, losses]; the three counts must sum to ${WDL_TOTAL}.`;
 const wdl = z
   .tuple([
-    z.number().int().min(0).max(1_000),
-    z.number().int().min(0).max(1_000),
-    z.number().int().min(0).max(1_000),
+    z.number().int().min(0).max(WDL_TOTAL),
+    z.number().int().min(0).max(WDL_TOTAL),
+    z.number().int().min(0).max(WDL_TOTAL),
   ])
   .meta({ minItems: 3, maxItems: 3 })
-  .refine(([wins, draws, losses]) => wins + draws + losses === 1_000, {
-    message: "WDL counts must sum to 1000",
+  .refine(([wins, draws, losses]) => wins + draws + losses === WDL_TOTAL, {
+    message: `WDL counts must sum to ${WDL_TOTAL}`,
   })
   .describe(wdlDescription) satisfies z.ZodType<Wdl>;
 const nullableWdl = wdl.nullable().describe(wdlDescription);

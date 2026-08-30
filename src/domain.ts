@@ -45,6 +45,8 @@ export const MAX_ANALYSIS_DEPTH = 30;
 export const MAX_MULTIPV = 10;
 export const MAX_HUMAN_MOVES = 20;
 export const HUMAN_PROBABILITY_TOLERANCE = 1e-5;
+export const GAME_ID_MAX_LENGTH = 256;
+export const WDL_TOTAL = 1_000;
 
 export const MOVE_CLASSIFICATIONS = [
   "best",

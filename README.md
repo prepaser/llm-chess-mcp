@@ -286,11 +286,12 @@ rejected:
   after 30 minutes. An open GET/SSE stream keeps its session active.
 - HTTP accepts bodies up to 2 MiB. After body parsing, it permits 16 concurrent
   POST dispatches and downstream compute/network jobs process-wide, with two of
-  each per session. A separate bounded control lane keeps MCP cancellation
-  available when normal POST slots are full. Work keeps its slot after a raw
-  disconnect until it settles. HTTP
-  also caps connections at 128 and applies a 15-second body upload deadline
-  plus bounded header, socket, and keep-alive timeouts.
+  each per session. A separate bounded control lane prioritizes MCP cancellation
+  when normal POST capacity is full. If an existing-session POST response closes
+  before it finishes, its session is closed and its work is aborted; an
+  uncooperative downstream operation still holds capacity until it settles. HTTP
+  also caps connections at 128 and applies a 15-second body upload deadline plus
+  bounded header, socket, and keep-alive timeouts.
 
 Programmatic users can override the HTTP limits through `HttpServerOptions`.
 These safeguards do not replace public-edge quotas: a public deployment must
@@ -303,7 +304,9 @@ its UCI queue boundary, drains queued work during shutdown, and rejects new
 analysis until teardown completes. Lichess fetch and retry waits abort
 immediately. Maia runs native inference in dedicated child processes; cancelling
 active work terminates its child, while queued cancellation is immediate. A raw
-HTTP disconnect alone is not a cancellation signal.
+response disconnect for an existing-session POST closes that session and aborts
+its work. Reconnect with a new session, then re-read the process-shared game
+state before retrying a move.
 
 ## Intents
 

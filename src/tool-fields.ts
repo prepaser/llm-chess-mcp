@@ -1,7 +1,8 @@
 import * as z from "zod/v4";
+import { GAME_ID_MAX_LENGTH } from "./domain.js";
 import { unicodeLength } from "./string-length.js";
 
-export const GAME_ID_MAX_LENGTH = 256;
+export { GAME_ID_MAX_LENGTH };
 export const GameIdSchema = z
   .string()
   .superRefine((value, ctx) => {

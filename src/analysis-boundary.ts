@@ -1,4 +1,4 @@
-import { MAX_MULTIPV } from "./domain.js";
+import { MAX_MULTIPV, WDL_TOTAL } from "./domain.js";
 import type { SfLine } from "./domain.js";
 
 function validScore(value: unknown): value is number | null {
@@ -14,9 +14,9 @@ function validWdl(value: unknown): boolean {
           typeof count === "number" &&
           Number.isSafeInteger(count) &&
           count >= 0 &&
-          count <= 1_000,
+          count <= WDL_TOTAL,
       ) &&
-      value[0]! + value[1]! + value[2]! === 1_000);
+      value[0]! + value[1]! + value[2]! === WDL_TOTAL);
 }
 
 export function validateAnalysisLines(
@@ -57,7 +57,7 @@ export function validateAnalysisLines(
     if (!validWdl(line.wdl)) throw new RangeError("analysis line has invalid WDL");
     if (
       !Array.isArray(line.pv) ||
-      !line.pv.every(
+      !Array.from(line.pv).every(
         (move: unknown) => typeof move === "string" && move.length > 0,
       )
     ) {

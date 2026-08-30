@@ -57,7 +57,7 @@ export class MaiaAdmission {
   }
 
   run<T>(signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
-    if (signal?.aborted) signal.throwIfAborted();
+    if (signal?.aborted) return Promise.reject(signal.reason);
     if (this.#active < this.maxConcurrency) return this.#start(work);
     if (this.#queue.length >= this.maxQueue) {
       return Promise.reject(

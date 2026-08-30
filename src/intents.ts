@@ -360,15 +360,14 @@ export function createCandidateComputation(
       if (!lichess || !dependencies.explorerEnabled()) {
         return { status: "disabled", totalGames: null, moves: [] };
       }
+      let result: ExplorerResult;
       try {
-        return explorerCandidateData(
-          await dependencies.openingExplorer(
-            chess,
-            lichess.db,
-            lichess.speeds,
-            lichess.ratings,
-            workSignal,
-          ),
+        result = await dependencies.openingExplorer(
+          chess,
+          lichess.db,
+          lichess.speeds,
+          lichess.ratings,
+          workSignal,
         );
       } catch (error) {
         workSignal.throwIfAborted();
@@ -379,6 +378,7 @@ export function createCandidateComputation(
           moves: [],
         };
       }
+      return explorerCandidateData(result);
     };
 
     const [sfLines, maiaMoves, lichessResult] = await Promise.all([

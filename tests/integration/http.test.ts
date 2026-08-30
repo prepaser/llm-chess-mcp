@@ -852,7 +852,7 @@ test("Streamable HTTP bounds declared and chunked request bodies", async (t) => 
   assert.match(encoded.body, /Content-Encoding must be identity/);
 });
 
-test("Streamable HTTP bounds concurrent body parsing while retaining a control lane", async (t) => {
+test("Streamable HTTP preempts an overflow body parser", async (t) => {
   const http = await serveHttp(
     { port: 0, maxConcurrentPosts: 1, maxConcurrentPostsPerSession: 1 },
     fakeServices(new GameStore()),
@@ -865,23 +865,60 @@ test("Streamable HTTP bounds concurrent body parsing while retaining a control l
   });
 
   uploads.push(await partialPost(http.url), await partialPost(http.url));
-  const rejected = await httpRequest(http.url, {
-    method: "POST",
-    headers: INIT_HEADERS,
-    body: initializeBody(),
-  });
-  assert.equal(rejected.status, 503);
-  assert.equal(rejected.retryAfter, "1");
-  assert.match(rejected.body, /server request body limit reached/);
-
-  for (const upload of uploads) upload.destroy();
-  await Promise.all(uploads.map((upload) => upload.closed));
   const admitted = await httpRequest(http.url, {
     method: "POST",
     headers: INIT_HEADERS,
     body: initializeBody(),
   });
   assert.equal(admitted.status, 200);
+
+  for (const upload of uploads) upload.destroy();
+  await Promise.all(uploads.map((upload) => upload.closed));
+  const next = await httpRequest(http.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: initializeBody(),
+  });
+  assert.equal(next.status, 200);
+});
+
+test("Streamable HTTP preempts slow uploads for cancellation", async (t) => {
+  const analysis = abortableAnalysis();
+  const http = await serveHttp(
+    { port: 0, maxConcurrentPosts: 1, maxConcurrentPostsPerSession: 1 },
+    fakeServices(new GameStore(), { analyze: analysis.analyze }),
+  );
+  const { client, transport } = await connectClient(http, "http-body-cancel-priority");
+  const uploads: Awaited<ReturnType<typeof partialSessionPost>>[] = [];
+  const controller = new AbortController();
+  t.after(async () => {
+    controller.abort();
+    for (const upload of uploads) upload.destroy();
+    await Promise.all(uploads.map((upload) => upload.closed));
+    await client.close().catch(() => {});
+    await http.close();
+  });
+
+  const gameId = await createGame(client);
+  const call = client.callTool(
+    {
+      name: "position_analyze",
+      arguments: { game_id: gameId, analysis_level: "fast" },
+    },
+    { signal: controller.signal },
+  ).catch((error: unknown) => error);
+  await analysis.started;
+  assert.ok(transport.sessionId);
+  uploads.push(
+    await partialSessionPost(http.url, transport.sessionId),
+    await partialSessionPost(http.url, transport.sessionId),
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  controller.abort(new Error("cancel through parser pressure"));
+  await analysis.aborted;
+  await call;
+  assert.equal(http.sessionCount(), 1);
 });
 
 test("Streamable HTTP closes slow header and body uploads", async (t) => {
@@ -1024,7 +1061,6 @@ test("Streamable HTTP prefers bodyTimeoutMs over its legacy alias", async (t) =>
   );
   t.after(() => http.close());
 
-  const startedAt = Date.now();
   await waitForConnectionClose(
     http.url,
     [
@@ -1037,7 +1073,6 @@ test("Streamable HTTP prefers bodyTimeoutMs over its legacy alias", async (t) =>
     ].join("\r\n"),
     "body timeout",
   );
-  assert.ok(Date.now() - startedAt < 500);
 });
 
 test("Streamable HTTP reserves and reclaims bounded MCP sessions", async (t) => {

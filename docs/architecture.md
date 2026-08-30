@@ -123,30 +123,34 @@ MCP sessions are transport state only. They are not authentication credentials,
 are held in memory, and are not a persistence or ownership boundary. The
 application provides no event-replay guarantee: clients must not rely on SSE
 replay, a disconnected session, a proxy retry, or a process restart to recover
-an event stream. Re-read authoritative game state after reconnecting.
+an event stream. Reconnect with a new session and re-read authoritative,
+process-shared game state.
 
 MCP cancellation notifications, session deletion, and server shutdown abort
-the request signal passed into tools and services. A raw request disconnect is
-not transaction cancellation: work may continue after a client or proxy stops
-waiting. `expected_revision` makes a repeated move fail stale rather than apply
-to a newer position, so clients that lose a response should read game state
-before deciding what to do. Proxy timeouts are client-delivery limits, not proof
-that backend work was cancelled.
+the request signal passed into tools and services. If an existing-session POST
+response closes before it finishes, the server closes that MCP session and
+aborts its signal. Cooperative work stops promptly; an uncooperative downstream
+operation can continue to hold its work capacity until it settles. A caller
+that loses a response must initialize a new session and read game state before
+deciding whether to retry. `expected_revision` makes a repeated move fail stale
+rather than apply to a newer position. Proxy timeouts are client-delivery
+limits, not proof that backend work was cancelled.
 
 HTTP admission is bounded before SDK dispatch. POST bodies are parsed once with
 a 2 MiB byte cap; after parsing, only 16 normal POST dispatches process-wide or
 two per session may run concurrently. Initialization then reserves one of 64
 session slots atomically.
-A separately bounded control lane admits cancellation-only notifications when
-those slots are saturated. The same normal limits independently bound downstream
-compute and network jobs. A job retains its slot after the HTTP response or
-socket closes and releases it only when the service promise settles. Sessions
-with no active request expire after 30 minutes on a monotonic clock; expiry does
-not delete their process-shared games. Open GET SSE streams keep their session
-active without consuming POST permits. Header, upload, connection, socket, and
-keep-alive limits are enforced by the Node listener. Partial uploads consume
-connection and body limits but no POST dispatch permit. Deleting a session also
-aborts any body reader that has not reached SDK dispatch.
+A separately bounded control lane gives cancellation-only notifications priority
+when normal POST capacity is saturated. The same normal limits independently
+bound downstream compute and network jobs. A job retains its slot until its
+service promise settles, including after session closure if the downstream work
+does not cooperate with abort. Sessions with no active request expire after 30
+minutes on a monotonic clock; expiry does not delete their process-shared games.
+Open GET SSE streams keep their session active without consuming POST permits.
+Header, upload, connection, socket, and keep-alive limits are enforced by the
+Node listener. Partial uploads consume connection and body limits but no POST
+dispatch permit. Deleting a session also aborts any body reader that has not
+reached SDK dispatch.
 `bodyTimeoutMs` bounds body upload only; engine and network work use their own
 timeouts and MCP cancellation rather than a transport-wide request deadline.
 Session reservations/expiry, POST admission, and downstream work admission are
