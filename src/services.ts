@@ -2,6 +2,7 @@ import type { Chess } from "chess.js";
 import { snapshotChess } from "./chess.js";
 import { stockfish } from "./engines/stockfish.js";
 import {
+  createExplorerLimiter,
   ExplorerError,
   explorerEnabled,
   openingExplorer,
@@ -71,6 +72,17 @@ export interface AppServices
 
 let maiaModule: Promise<typeof import("./maia3/inference.js")> | undefined;
 let defaultShutdown: Promise<void> | null = null;
+type ExplorerGeneration = {
+  active: Set<Promise<void>>;
+  controller: AbortController;
+  limiter: ReturnType<typeof createExplorerLimiter>;
+};
+const createExplorerGeneration = (): ExplorerGeneration => ({
+  active: new Set(),
+  controller: new AbortController(),
+  limiter: createExplorerLimiter(),
+});
+let explorerGeneration = createExplorerGeneration();
 const shutdownError = (): Error | null =>
   defaultShutdown ? new Error("application services are shutting down") : null;
 const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) => {
@@ -111,13 +123,24 @@ const openExplorer: AppServices["openingExplorer"] = (
 ) => {
   const error = shutdownError();
   if (error) return Promise.reject(error);
-  return openingExplorer(
+  const generation = explorerGeneration;
+  const workSignal = signal
+    ? AbortSignal.any([signal, generation.controller.signal])
+    : generation.controller.signal;
+  const operation = openingExplorer(
     chess,
     db,
     speeds,
     ratings,
-    signal === undefined ? {} : { signal },
+    { limiter: generation.limiter, signal: workSignal },
   );
+  const settled = operation.then(
+    () => {},
+    () => {},
+  );
+  generation.active.add(settled);
+  void settled.then(() => generation.active.delete(settled));
+  return operation;
 };
 const computeCandidateSet = createCandidateComputation({
   analyze,
@@ -135,11 +158,14 @@ const computeCandidates: AppServices["computeCandidates"] = (...args) => {
 function quitDefaultServices(): Promise<void> {
   if (defaultShutdown) return defaultShutdown;
   const maia = maiaModule;
+  const explorer = explorerGeneration;
   let operation!: Promise<void>;
   operation = Promise.resolve()
     .then(async () => {
+      const explorerDrain = Promise.all([...explorer.active]).then(() => {});
       const results = await Promise.allSettled([
         stockfish.quit(),
+        explorerDrain,
         ...(maia ? [maia.then((module) => module.quitMaia())] : []),
       ]);
       const errors = results.flatMap((result) =>
@@ -154,6 +180,8 @@ function quitDefaultServices(): Promise<void> {
       if (defaultShutdown === operation) defaultShutdown = null;
     });
   defaultShutdown = operation;
+  explorerGeneration = createExplorerGeneration();
+  explorer.controller.abort(new Error("application services are shutting down"));
   return operation;
 }
 

@@ -383,6 +383,7 @@ test("custom positions reject impossible check topology conservatively", () => {
   for (const fen of [
     "4r2k/8/8/8/1b6/5n2/8/4K3 w - - 0 1",
     "7k/8/8/8/8/5n2/2n5/4K3 w - - 0 1",
+    "7k/8/8/8/1b5b/8/8/4K3 w - - 0 100",
   ]) {
     assert.throws(
       () => assertLegalPosition(new Chess(fen)),
@@ -392,7 +393,22 @@ test("custom positions reject impossible check topology conservatively", () => {
 
   assert.doesNotThrow(() =>
     assertLegalPosition(
-      new Chess("4r2k/8/8/8/1b6/8/8/4K3 w - - 0 1"),
+      new Chess("4r2k/8/8/8/1b6/8/8/4K3 w - - 1 2"),
+    ),
+  );
+  assert.doesNotThrow(() =>
+    assertLegalPosition(
+      new Chess("4r2k/8/8/8/8/3p4/4K3/8 w - - 0 3"),
+    ),
+  );
+  assert.doesNotThrow(() =>
+    assertLegalPosition(
+      new Chess("4R3/8/2BP4/8/4k3/8/8/K7 b - - 0 10"),
+    ),
+  );
+  assert.doesNotThrow(() =>
+    assertLegalPosition(
+      new Chess("7k/8/8/8/8/8/r5K1/4n3 w - - 0 2"),
     ),
   );
 });

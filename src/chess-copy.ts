@@ -109,6 +109,87 @@ function exactFen(chess: Chess): string {
   return chess.fen({ forceEnpassantSquare: true });
 }
 
+const FILES = "abcdefgh";
+
+function squareAt(file: number, rank: number): Square {
+  return `${FILES[file]}${rank}` as Square;
+}
+
+function squareCoordinates(square: Square): [number, number] {
+  return [square.charCodeAt(0) - 97, Number(square[1])];
+}
+
+function squaresBetween(from: Square, to: Square): Square[] {
+  const [fromFile, fromRank] = squareCoordinates(from);
+  const [toFile, toRank] = squareCoordinates(to);
+  const fileDistance = toFile - fromFile;
+  const rankDistance = toRank - fromRank;
+  if (
+    fileDistance !== 0 &&
+    rankDistance !== 0 &&
+    Math.abs(fileDistance) !== Math.abs(rankDistance)
+  ) {
+    return [];
+  }
+  const fileStep = Math.sign(fileDistance);
+  const rankStep = Math.sign(rankDistance);
+  const squares: Square[] = [];
+  let file = fromFile + fileStep;
+  let rank = fromRank + rankStep;
+  while (file !== toFile || rank !== toRank) {
+    squares.push(squareAt(file, rank));
+    file += fileStep;
+    rank += rankStep;
+  }
+  return squares;
+}
+
+function priorFullmove(fields: string[], previous: Color): number | null {
+  const fullmove = fields[5] ?? "";
+  if (!isSafeDecimal(fullmove, 1)) return null;
+  const value = Number(fullmove) - (previous === "b" ? 1 : 0);
+  return value >= 1 ? value : null;
+}
+
+function priorChess(
+  setup: Chess,
+  previous: Color,
+  castling: string,
+  enPassant: string,
+  halfmove: number,
+  fullmove: number,
+): Chess | null {
+  try {
+    return new Chess(
+      [
+        setup.fen().split(" ")[0],
+        previous,
+        castling,
+        enPassant,
+        String(halfmove),
+        String(fullmove),
+      ].join(" "),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function reachesPosition(
+  prior: Chess | null,
+  move: MoveDescriptor,
+  currentFen: string,
+): boolean {
+  if (!prior) return false;
+  try {
+    assertLegalPositionInternal(prior, false);
+    prior.move(move);
+    return exactFen(prior) === currentFen;
+  } catch {
+    return false;
+  }
+}
+
 function hasPiece(
   chess: Chess,
   square: Square,
@@ -226,6 +307,148 @@ function isSafeDecimal(value: string, minimum: number): boolean {
   );
 }
 
+const CAPTURED_PIECES = ["p", "n", "b", "r", "q"] as const;
+
+function ordinaryDoubleCheckPredecessor(
+  chess: Chess,
+  king: Square,
+  checkers: Square[],
+): boolean {
+  const currentFen = exactFen(chess);
+  const fields = currentFen.split(" ");
+  const previous: Color = chess.turn() === "w" ? "b" : "w";
+  const active: Color = chess.turn();
+  const fullmove = priorFullmove(fields, previous);
+  const currentHalfmove = Number(fields[4]);
+  if (fullmove === null || !Number.isSafeInteger(currentHalfmove)) return false;
+
+  for (let movedIndex = 0; movedIndex < 2; movedIndex += 1) {
+    const to = checkers[movedIndex]!;
+    const other = checkers[1 - movedIndex]!;
+    const moved = chess.get(to);
+    const otherType = chess.get(other)?.type;
+    if (
+      !moved ||
+      moved.color !== previous ||
+      (otherType !== "b" && otherType !== "r" && otherType !== "q")
+    ) {
+      continue;
+    }
+    for (const from of squaresBetween(other, king)) {
+      if (chess.get(from) !== undefined) continue;
+      for (const captured of [undefined, ...CAPTURED_PIECES] as const) {
+        if (
+          captured === "p" &&
+          (to[1] === "1" || to[1] === "8")
+        ) {
+          continue;
+        }
+        const halfmove = moved.type === "p" || captured ? 0 : currentHalfmove - 1;
+        if (halfmove < 0 || (moved.type === "p" || captured) && currentHalfmove !== 0) {
+          continue;
+        }
+        const setup = new Chess(currentFen);
+        setup.remove(to);
+        setup.put(moved, from);
+        if (captured) setup.put({ type: captured, color: active }, to);
+        const prior = priorChess(
+          setup,
+          previous,
+          fields[2]!,
+          "-",
+          halfmove,
+          fullmove,
+        );
+        if (reachesPosition(prior, { from, to }, currentFen)) return true;
+
+        const promotionRank = previous === "w" ? "8" : "1";
+        const pawnRank = previous === "w" ? "7" : "2";
+        if (
+          moved.type !== "p" &&
+          moved.type !== "k" &&
+          to[1] === promotionRank &&
+          from[1] === pawnRank
+        ) {
+          const promotedSetup = new Chess(currentFen);
+          promotedSetup.remove(to);
+          promotedSetup.put({ type: "p", color: previous }, from);
+          if (captured) {
+            promotedSetup.put({ type: captured, color: active }, to);
+          }
+          const promotionPrior = priorChess(
+            promotedSetup,
+            previous,
+            fields[2]!,
+            "-",
+            0,
+            fullmove,
+          );
+          if (
+            currentHalfmove === 0 &&
+            reachesPosition(
+              promotionPrior,
+              { from, to, promotion: moved.type },
+              currentFen,
+            )
+          ) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function enPassantDoubleCheckPredecessor(chess: Chess): boolean {
+  const currentFen = exactFen(chess);
+  const fields = currentFen.split(" ");
+  if (fields[3] !== "-" || fields[4] !== "0") return false;
+  const previous: Color = chess.turn() === "w" ? "b" : "w";
+  const active: Color = chess.turn();
+  const fullmove = priorFullmove(fields, previous);
+  if (fullmove === null) return false;
+  const destinationRank = previous === "w" ? 6 : 3;
+  const originRank = previous === "w" ? 5 : 4;
+  for (const to of chess.findPiece({ type: "p", color: previous })) {
+    if (Number(to[1]) !== destinationRank) continue;
+    const [toFile] = squareCoordinates(to);
+    const capturedSquare = squareAt(toFile, originRank);
+    if (chess.get(capturedSquare) !== undefined) continue;
+    for (const originFile of [toFile - 1, toFile + 1]) {
+      if (originFile < 0 || originFile > 7) continue;
+      const from = squareAt(originFile, originRank);
+      if (chess.get(from) !== undefined) continue;
+      const setup = new Chess(currentFen);
+      setup.remove(to);
+      setup.put({ type: "p", color: previous }, from);
+      setup.put({ type: "p", color: active }, capturedSquare);
+      const prior = priorChess(
+        setup,
+        previous,
+        fields[2]!,
+        to,
+        0,
+        fullmove,
+      );
+      if (reachesPosition(prior, { from, to }, currentFen)) return true;
+    }
+  }
+  return false;
+}
+
+function hasDoubleCheckPredecessor(
+  chess: Chess,
+  king: Square,
+  checkers: Square[],
+): boolean {
+  if (exactFen(chess).split(" ")[3] !== "-") return true;
+  return (
+    ordinaryDoubleCheckPredecessor(chess, king, checkers) ||
+    enPassantDoubleCheckPredecessor(chess)
+  );
+}
+
 export function assertSafeFenCounters(fen: string): void {
   const fields = fen.split(/\s+/);
   if (fields.length >= 5 && !isSafeDecimal(fields[4] ?? "", 0)) {
@@ -243,6 +466,13 @@ export function assertSafeFenCounters(fen: string): void {
 }
 
 export function assertLegalPosition(chess: Chess): void {
+  assertLegalPositionInternal(chess, true);
+}
+
+function assertLegalPositionInternal(
+  chess: Chess,
+  validateDoubleCheck: boolean,
+): void {
   for (const color of ["w", "b"] as const) {
     if (chess.findPiece({ type: "k", color }).length !== 1) {
       throw new ChessError(
@@ -331,6 +561,16 @@ export function assertLegalPosition(chess: Chess): void {
       throw new ChessError(
         "INVALID_FEN",
         "FEN contains an impossible check topology",
+      );
+    }
+    if (
+      validateDoubleCheck &&
+      checkers.length === 2 &&
+      !hasDoubleCheckPredecessor(chess, king, checkers)
+    ) {
+      throw new ChessError(
+        "INVALID_FEN",
+        "FEN double check has no legal previous move",
       );
     }
   }

@@ -688,7 +688,14 @@ export async function serveHttp(
       });
     });
   } catch (error) {
-    await lease?.release();
+    try {
+      await lease?.release();
+    } catch (releaseError) {
+      throw new AggregateError(
+        [error, releaseError],
+        "HTTP server startup and service release failed",
+      );
+    }
     throw error;
   }
   server.on("error", (error) => console.error("HTTP server failed", error));

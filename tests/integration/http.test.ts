@@ -553,6 +553,42 @@ test("Streamable HTTP validates resource limits before listening", async () => {
   await independentTimeouts.close();
 });
 
+test("Streamable HTTP preserves listen and service release failures", async (t) => {
+  const occupied = createServer();
+  await new Promise<void>((resolve, reject) => {
+    occupied.once("error", reject);
+    occupied.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        occupied.close((error) => (error ? reject(error) : resolve()));
+      }),
+  );
+  const address = occupied.address();
+  assert.ok(address && typeof address === "object");
+
+  const releaseError = new Error("release failed");
+  const quit = defaultAppServices.quit;
+  defaultAppServices.quit = () => Promise.reject(releaseError);
+  t.after(() => {
+    defaultAppServices.quit = quit;
+  });
+
+  await assert.rejects(
+    serveHttp({ port: address.port }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.message, "HTTP server startup and service release failed");
+      assert.equal(error.errors.length, 2);
+      const listenError = error.errors[0] as NodeJS.ErrnoException;
+      assert.equal(listenError.code, "EADDRINUSE");
+      assert.equal(error.errors[1], releaseError);
+      return true;
+    },
+  );
+});
+
 test("Streamable HTTP keeps the largest safe keep-alive timer reusable", async (t) => {
   const keepAliveTimeoutMs =
     2_147_483_647 - nodeKeepAliveTimeoutBuffer();

@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { McpServer } from "@modelcontextprotocol/server";
-import { acquireDefaultAppServices } from "./services.js";
+import { acquireDefaultAppServices, defaultAppServices } from "./services.js";
 import type { AppServices, DefaultAppServicesLease } from "./services.js";
 import { registerAnalysisTools } from "./tools/analysis.js";
 import { registerCandidateTools } from "./tools/candidates.js";
@@ -23,21 +23,19 @@ function buildServerWithServices(services: AppServices): McpServer {
   return server;
 }
 
-function buildServerWithLease(lease: DefaultAppServicesLease): McpServer {
-  try {
-    const server = buildServerWithServices(lease.services);
-    const closeServer = server.close.bind(server);
-    let shutdown: Promise<void> | undefined;
-    server.close = (): Promise<void> =>
-      (shutdown ??= closeServer().finally(() => lease.release()));
-    return server;
-  } catch (error) {
-    void lease.release();
-    throw error;
-  }
+function buildServerWithLease(
+  server: McpServer,
+  lease: DefaultAppServicesLease,
+): McpServer {
+  const closeServer = server.close.bind(server);
+  let shutdown: Promise<void> | undefined;
+  server.close = (): Promise<void> =>
+    (shutdown ??= closeServer().finally(() => lease.release()));
+  return server;
 }
 
 export function buildServer(services?: AppServices): McpServer {
   if (services !== undefined) return buildServerWithServices(services);
-  return buildServerWithLease(acquireDefaultAppServices());
+  const server = buildServerWithServices(defaultAppServices);
+  return buildServerWithLease(server, acquireDefaultAppServices());
 }

@@ -1,13 +1,35 @@
 import assert from "node:assert/strict";
 import { ChildProcess } from "node:child_process";
 import test from "node:test";
+import { McpServer } from "@modelcontextprotocol/server";
 import { Chess } from "chess.js";
 import { stockfish } from "../src/engines/stockfish.js";
+import { buildServer } from "../src/server.js";
 import {
   createAppServicesLeaseManager,
   defaultAppServices,
   type AppServices,
 } from "../src/services.js";
+
+test("default server construction acquires its lease only after registration", (t) => {
+  const registrationError = new Error("registration failed");
+  const releaseError = new Error("release failed");
+  let quitCalls = 0;
+  const quit = defaultAppServices.quit;
+  defaultAppServices.quit = () => {
+    quitCalls += 1;
+    return Promise.reject(releaseError);
+  };
+  t.after(() => {
+    defaultAppServices.quit = quit;
+  });
+  t.mock.method(McpServer.prototype, "registerTool", () => {
+    throw registrationError;
+  });
+
+  assert.throws(() => buildServer(), (error: unknown) => error === registrationError);
+  assert.equal(quitCalls, 0);
+});
 
 test("service leases reject reacquisition during asynchronous teardown", async () => {
   let finishQuit!: () => void;
@@ -149,6 +171,75 @@ test("cold default shutdown fences same-tick Maia work and permits restart", asy
     1,
   );
   await defaultAppServices.quit();
+});
+
+test("default shutdown aborts and isolates active Explorer work", async () => {
+  const previousToken = process.env.LICHESS_TOKEN;
+  const previousFetch = globalThis.fetch;
+  process.env.LICHESS_TOKEN = "token";
+  let calls = 0;
+  const requestSignals: AbortSignal[] = [];
+  let resolveFirst: ((response: Response) => void) | undefined;
+  let resolveCancelled: (() => void) | undefined;
+  const cancelled = new Promise<void>((resolve) => {
+    resolveCancelled = resolve;
+  });
+  globalThis.fetch = async (_input, init) => {
+    calls += 1;
+    if (init?.signal) requestSignals.push(init.signal);
+    if (calls > 1) {
+      return new Response(
+        JSON.stringify({ white: 0, draws: 0, black: 0, moves: [] }),
+      );
+    }
+    return await new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+  };
+
+  try {
+    const active = defaultAppServices.openingExplorer(
+      new Chess(),
+      "lichess",
+      [],
+      [],
+    );
+    const outcome = active.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+    const shuttingDown = defaultAppServices.quit();
+    assert.match(String(await outcome), /application services are shutting down/);
+    await shuttingDown;
+    assert.equal(requestSignals[0]?.aborted, true);
+
+    resolveFirst?.(
+      new Response(
+        new ReadableStream({
+          cancel() {
+            resolveCancelled?.();
+          },
+        }),
+        { status: 429, headers: { "Retry-After": "60" } },
+      ),
+    );
+    await cancelled;
+
+    const restarted = await defaultAppServices.openingExplorer(
+      new Chess(),
+      "masters",
+      [],
+      [],
+    );
+    assert.deepEqual(restarted.moves, []);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousToken === undefined) delete process.env.LICHESS_TOKEN;
+    else process.env.LICHESS_TOKEN = previousToken;
+    await defaultAppServices.quit();
+  }
 });
 
 test("default shutdown awaits Maia teardown before preserving a Stockfish failure", async () => {

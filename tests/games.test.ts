@@ -399,6 +399,7 @@ test("GameStore rejects invalid castling and en passant state before snapshottin
     "4k3/8/8/8/8/8/P7/4K3 w KQkq - 0 1",
     "4k3/8/8/3P4/8/8/P7/4K3 w - e6 0 1",
     "k6r/8/8/3Pp3/8/8/8/7K w - e6 0 2",
+    "7k/8/8/8/1b5b/8/8/4K3 w - - 0 100",
   ]) {
     expectChessError("INVALID_FEN", () => store.createGame(fen));
   }

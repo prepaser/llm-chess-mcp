@@ -137,7 +137,7 @@ export function resolveStockfishFlavor(value?: string): StockfishFlavor {
   return normalized as StockfishFlavor;
 }
 
-function loadStockfish(): StockfishInit {
+function loadStockfish(captureGrace: number): StockfishInit {
   const entry = require.resolve("stockfish");
   const packageRoot = dirname(entry) + sep;
   const packageEntry = (id: string) => id === entry || id.startsWith(packageRoot);
@@ -162,7 +162,7 @@ function loadStockfish(): StockfishInit {
       let engine: StockfishEngine;
       const initEngines = new Set<StockfishEngine>();
       const disposedInitEngines = new WeakSet<StockfishEngine>();
-      const hooks = captureProcessHooks();
+      const hooks = captureProcessHooks(captureGrace);
       const disposeInitEngine = (initializedEngine: StockfishEngine) => {
         if (disposedInitEngines.has(initializedEngine)) return;
         disposedInitEngines.add(initializedEngine);
@@ -196,7 +196,8 @@ function loadStockfish(): StockfishInit {
         engine = hooks.run(() => {
           const init = require(entry) as StockfishInit;
           return init(flavor, (error, initializedEngine) => {
-            hooks.release();
+            const releaseError = hooks.release();
+            error ??= releaseError;
             if (phase === "pending") {
               initEngines.add(initializedEngine);
               pendingCallbacks.push([error, initializedEngine]);
@@ -265,6 +266,8 @@ type HookCapture = {
   remove: typeof process.removeListener;
   resources: Set<number>;
   terminal: boolean;
+  expiry: NodeJS.Timeout | null;
+  grace: number;
 };
 
 const hookMethodNames: HookMethodName[] = [
@@ -277,24 +280,51 @@ const hookMethodNames: HookMethodName[] = [
 const hookStorage = new AsyncLocalStorage<HookCapture>();
 const activeHookCaptures = new Set<HookCapture>();
 const hookResources = new Map<number, HookCapture>();
+const terminalExecutions = new Map<number, HookCapture>();
 let hookMethods:
   | {
       descriptors: Record<HookMethodName, PropertyDescriptor | undefined>;
       original: Record<HookMethodName, HookMethod>;
+      wrappers: Record<HookMethodName, HookMethod>;
     }
   | undefined;
+const terminalExecutionDepth = new Map<HookCapture, number>();
+let hookTrackerEnabled = false;
+
+function enableHookTracker(): void {
+  if (hookTrackerEnabled) return;
+  hookTracker.enable();
+  hookTrackerEnabled = true;
+}
+
+function disableIdleHookTracker(): void {
+  if (!hookTrackerEnabled || hookMethods || hookResources.size !== 0) return;
+  hookTracker.disable();
+  hookTrackerEnabled = false;
+}
+
+function discardHookResources(capture: HookCapture): void {
+  for (const asyncId of capture.resources) hookResources.delete(asyncId);
+  capture.resources.clear();
+  disableIdleHookTracker();
+}
+
+function finishTerminalCapture(capture: HookCapture): void {
+  capture.terminal = false;
+  if (capture.expiry) clearTimeout(capture.expiry);
+  capture.expiry = null;
+  discardHookResources(capture);
+}
 
 function releaseHookResource(asyncId: number): void {
   const capture = hookResources.get(asyncId);
   if (!capture) return;
   hookResources.delete(asyncId);
   capture.resources.delete(asyncId);
-  if (!capture.terminal || capture.resources.size !== 0) return;
-  capture.terminal = false;
-  activeHookCaptures.delete(capture);
-  try {
-    restoreHookMethods();
-  } catch {}
+  if (capture.terminal && capture.resources.size === 0) {
+    finishTerminalCapture(capture);
+  }
+  disableIdleHookTracker();
 }
 
 const hookTracker = createHook({
@@ -303,6 +333,35 @@ const hookTracker = createHook({
     if (!capture || (!capture.active && !capture.terminal)) return;
     capture.resources.add(asyncId);
     hookResources.set(asyncId, capture);
+  },
+  before(asyncId) {
+    const capture = hookResources.get(asyncId);
+    if (!capture?.terminal) return;
+    terminalExecutions.set(asyncId, capture);
+    const depth = terminalExecutionDepth.get(capture) ?? 0;
+    terminalExecutionDepth.set(capture, depth + 1);
+    if (depth !== 0) return;
+    try {
+      installHookMethods();
+      activeHookCaptures.add(capture);
+    } catch {}
+  },
+  after(asyncId) {
+    const capture = terminalExecutions.get(asyncId);
+    if (!capture) return;
+    terminalExecutions.delete(asyncId);
+    const depth = terminalExecutionDepth.get(capture);
+    if (!depth) return;
+    if (depth > 1) {
+      terminalExecutionDepth.set(capture, depth - 1);
+      return;
+    }
+    terminalExecutionDepth.delete(capture);
+    activeHookCaptures.delete(capture);
+    try {
+      restoreHookMethods();
+    } catch {}
+    disableIdleHookTracker();
   },
   destroy: releaseHookResource,
   promiseResolve: releaseHookResource,
@@ -315,7 +374,8 @@ function hookRaw(event: HookEvent): HookListener[] {
 function restoreHookMethods(): void {
   if (!hookMethods || activeHookCaptures.size !== 0) return;
   const mutable = process as unknown as Record<HookMethodName, HookMethod>;
-  const { descriptors } = hookMethods;
+  const methods = hookMethods;
+  const { descriptors } = methods;
   let failure: unknown;
   for (const name of hookMethodNames) {
     try {
@@ -326,10 +386,24 @@ function restoreHookMethods(): void {
       failure ??= error;
     }
   }
+  if (failure) {
+    for (const name of hookMethodNames) {
+      try {
+        const descriptor = descriptors[name];
+        if (descriptor && Object.hasOwn(descriptor, "value")) {
+          Object.defineProperty(process, name, {
+            ...descriptor,
+            value: methods.wrappers[name],
+          });
+        } else {
+          mutable[name] = methods.wrappers[name];
+        }
+      } catch {}
+    }
+    throw failure;
+  }
   hookMethods = undefined;
-  hookTracker.disable();
-  hookResources.clear();
-  if (failure) throw failure;
+  disableIdleHookTracker();
 }
 
 function installHookMethods(): void {
@@ -344,8 +418,7 @@ function installHookMethods(): void {
       Object.getOwnPropertyDescriptor(process, name),
     ]),
   ) as Record<HookMethodName, PropertyDescriptor | undefined>;
-  hookMethods = { descriptors, original };
-  hookTracker.enable();
+  enableHookTracker();
 
   const isHookEvent = (event: string | symbol): event is HookEvent =>
     event === "uncaughtException" || event === "unhandledRejection";
@@ -405,13 +478,20 @@ function installHookMethods(): void {
     }
   };
 
+  const on = intercept("on", false);
+  const wrappers: Record<HookMethodName, HookMethod> = {
+    on,
+    addListener:
+      original.on === original.addListener
+        ? on
+        : intercept("addListener", false),
+    prependListener: intercept("prependListener", false),
+    once: intercept("once", true),
+    prependOnceListener: intercept("prependOnceListener", true),
+  };
+  hookMethods = { descriptors, original, wrappers };
   try {
-    const on = intercept("on", false);
-    setMethod("on", on);
-    setMethod("addListener", original.on === original.addListener ? on : intercept("addListener", false));
-    setMethod("prependListener", intercept("prependListener", false));
-    setMethod("once", intercept("once", true));
-    setMethod("prependOnceListener", intercept("prependOnceListener", true));
+    for (const name of hookMethodNames) setMethod(name, wrappers[name]);
   } catch (error) {
     activeHookCaptures.clear();
     try {
@@ -421,10 +501,10 @@ function installHookMethods(): void {
   }
 }
 
-function captureProcessHooks(): {
+function captureProcessHooks(grace: number): {
   cleanup: () => void;
   cleanupSilently: () => void;
-  release: () => void;
+  release: () => Error | null;
   run: <T>(fn: () => T) => T;
 } {
   const capture: HookCapture = {
@@ -437,20 +517,33 @@ function captureProcessHooks(): {
     remove: process.removeListener,
     resources: new Set(),
     terminal: false,
+    expiry: null,
+    grace,
   };
   const release = () => {
-    if (!capture.active) return;
+    if (!capture.active) return null;
     capture.active = false;
+    finishTerminalCapture(capture);
     activeHookCaptures.delete(capture);
-    restoreHookMethods();
+    try {
+      restoreHookMethods();
+      return null;
+    } catch (error) {
+      return asError(error);
+    }
   };
   const retire = () => {
     if (!capture.active) return;
     capture.active = false;
-    capture.terminal = true;
-    if (capture.resources.size !== 0) return;
-    capture.terminal = false;
     activeHookCaptures.delete(capture);
+    capture.terminal = capture.resources.size !== 0;
+    if (capture.terminal && !capture.expiry) {
+      capture.expiry = setTimeout(
+        () => finishTerminalCapture(capture),
+        capture.grace,
+      );
+      capture.expiry.unref();
+    }
     restoreHookMethods();
   };
   const cleanupEvent = (event: HookEvent) => {
@@ -486,6 +579,11 @@ function captureProcessHooks(): {
       } catch (error) {
         failure ??= error;
       }
+    }
+    try {
+      restoreHookMethods();
+    } catch (error) {
+      failure ??= error;
     }
     if (failure) throw failure;
   };
@@ -709,7 +807,7 @@ export class Stockfish {
       const selectedFlavor = resolveStockfishFlavor(
         this.configuredFlavor ?? process.env.STOCKFISH_FLAVOR,
       );
-      const engine = (this.initEngine ?? loadStockfish())(
+      const engine = (this.initEngine ?? loadStockfish(this.timeouts.init))(
         selectedFlavor,
         (error, initializedEngine) =>
           this.completeInit(attempt, error, initializedEngine),

@@ -2450,6 +2450,169 @@ test("shared initializer engines retain every process-hook cleanup", async () =>
   });
 });
 
+test("terminal interval hooks are suppressed without retaining process wrappers", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const names = ["on", "addListener", "prependListener", "once", "prependOnceListener"];
+    const methods = names.map((name) => process[name]);
+    const hook = () => {};
+    let interval;
+    let start;
+    const started = new Promise((resolve) => start = resolve);
+    let tick;
+    const ticked = new Promise((resolve) => tick = resolve);
+    let ticks = 0;
+    const engine = { listener: null, sendCommand() {}, terminate() {} };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return () => {
+          interval = setInterval(() => {
+            process.on("uncaughtException", hook);
+            if (++ticks === 2) tick();
+          }, 30);
+          interval.unref();
+          start();
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      const analysis = stockfish.analyze("fen", 1, 1).catch(() => {});
+      await started;
+      await stockfish.quit();
+      await analysis;
+      const restoredBeforeTick = names.every((name, index) => process[name] === methods[index]);
+      await Promise.race([
+        ticked,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("missing interval ticks")), 100)),
+      ]);
+      const leaked = process.listeners("uncaughtException").includes(hook);
+      const restoredAfterTick = names.every((name, index) => process[name] === methods[index]);
+      clearInterval(interval);
+      process.stdout.write(JSON.stringify({ restoredBeforeTick, leaked, restoredAfterTick }));
+    } finally {
+      Module._load = load;
+      clearInterval(interval);
+      process.removeListener("uncaughtException", hook);
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    restoredBeforeTick: true,
+    leaked: false,
+    restoredAfterTick: true,
+  });
+});
+
+test("terminal promise reactions restore wrappers after promiseResolve", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const methods = [process.on, process.addListener];
+    const hook = () => {};
+    let start;
+    const started = new Promise((resolve) => start = resolve);
+    const engine = { listener: null, sendCommand() {}, terminate() {} };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return () => {
+          setTimeout(() => Promise.resolve().then(() => process.on("uncaughtException", hook)), 30);
+          start();
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      const analysis = stockfish.analyze("fen", 1, 1).catch(() => {});
+      await started;
+      await stockfish.quit();
+      await analysis;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      process.stdout.write(JSON.stringify({
+        leaked: process.listeners("uncaughtException").includes(hook),
+        restored: process.on === methods[0] && process.addListener === methods[1],
+      }));
+    } finally {
+      Module._load = load;
+      process.removeListener("uncaughtException", hook);
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), { leaked: false, restored: true });
+});
+
+test("process hook restoration failures reject initialization", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const engine = { listener: null, sendCommand() {}, terminate() {} };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          Object.defineProperty(process, "on", {
+            value: process.on,
+            writable: true,
+            enumerable: true,
+            configurable: false,
+          });
+          setTimeout(() => callback(null, engine), 0);
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    const stockfish = new Stockfish({
+      timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+    });
+    const outcome = await stockfish
+      .analyze("fen", 1, 1)
+      .then(() => "resolved", (error) => String(error));
+    await stockfish.quit();
+    process.stdout.write(JSON.stringify({
+      outcome,
+      alias: process.on === process.addListener,
+    }));
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    outcome: "TypeError: Cannot delete property 'on' of #<process>",
+    alias: true,
+  });
+});
+
 test(
   "real lite-single quit stops active search without leaking stdout",
   { timeout: 15_000 },
