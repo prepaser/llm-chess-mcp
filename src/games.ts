@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { Chess } from "chess.js";
 import type { Move } from "chess.js";
+import { materializeMove } from "./chess-move.js";
 import {
   assertLegalPosition,
   assertSafeFenCounters,
@@ -92,12 +93,7 @@ export class GameStore {
     assertLegalPosition(chess);
     const now = this.clockTime();
     this.cleanupGamesAt(now);
-    if (this.games.size >= this.maxGames) {
-      throw new ChessError(
-        "GAME_LIMIT_REACHED",
-        `game session limit reached: ${this.maxGames}`,
-      );
-    }
+    this.assertCapacity();
 
     this.availableIdGeneration();
     const rawId = this.createId();
@@ -122,19 +118,10 @@ export class GameStore {
     }
     this.nextIdGeneration =
       generation === Number.MAX_SAFE_INTEGER ? null : generation + 1;
-    if (this.games.has(id)) {
-      throw new ChessError("GAME_ID_COLLISION", `game ID already exists: ${id}`);
-    }
+    this.assertUnique(id);
     const snapshot = snapshotChess(chess);
-    if (this.games.size >= this.maxGames) {
-      throw new ChessError(
-        "GAME_LIMIT_REACHED",
-        `game session limit reached: ${this.maxGames}`,
-      );
-    }
-    if (this.games.has(id)) {
-      throw new ChessError("GAME_ID_COLLISION", `game ID already exists: ${id}`);
-    }
+    this.assertCapacity();
+    this.assertUnique(id);
     this.games.set(id, {
       chess: snapshot,
       createdAt: now,
@@ -150,12 +137,7 @@ export class GameStore {
   }
 
   applyMove(id: string, expectedRevision: number, move: Move): GameSnapshot {
-    const promotion = move.promotion;
-    const materialized = {
-      from: move.from,
-      to: move.to,
-      ...(promotion ? { promotion } : {}),
-    } as Move;
+    const materialized = materializeMove(move);
     const game = this.getLiveGame(id);
     if (expectedRevision !== game.revision) {
       throw new ChessError(
@@ -221,6 +203,21 @@ export class GameStore {
       );
     }
     return this.nextIdGeneration;
+  }
+
+  private assertCapacity(): void {
+    if (this.games.size >= this.maxGames) {
+      throw new ChessError(
+        "GAME_LIMIT_REACHED",
+        `game session limit reached: ${this.maxGames}`,
+      );
+    }
+  }
+
+  private assertUnique(id: string): void {
+    if (this.games.has(id)) {
+      throw new ChessError("GAME_ID_COLLISION", `game ID already exists: ${id}`);
+    }
   }
 
   private validateCleanupTime(now: number): number {

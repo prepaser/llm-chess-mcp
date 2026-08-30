@@ -1,14 +1,17 @@
-import { Chess } from "chess.js";
+import { Chess, type Move } from "chess.js";
 import {
   assertLegalPosition,
   assertSafeFenCounters,
   snapshotChess,
 } from "./chess-copy.js";
 import { ChessError } from "./errors.js";
+import { commentSpan, quotedSpan, wordSpan } from "./pgn-lex.js";
 import {
   assertPgnPlyLimit,
   canonicalPgnHeaderName,
   MAX_PGN_PLIES,
+  pgnHeaderIndex,
+  pgnSetupHeaders,
   replacePgnHeaders,
 } from "./pgn-shared.js";
 
@@ -43,30 +46,6 @@ function assertPgnSize(pgn: string): void {
       `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
     );
   }
-}
-
-type PgnSpan = { start: number; end: number };
-
-function scanPgnSpan(
-  pgn: string,
-  start: number,
-  boundary: (char: string) => boolean,
-): PgnSpan {
-  let end = start;
-  while (end < pgn.length && !boundary(pgn[end]!)) end += 1;
-  return { start, end };
-}
-
-function pgnLineSpan(pgn: string, start: number): PgnSpan {
-  return scanPgnSpan(pgn, start, (char) => char === "\r" || char === "\n");
-}
-
-function pgnWordSpan(
-  pgn: string,
-  start: number,
-  delimiters: RegExp,
-): PgnSpan {
-  return scanPgnSpan(pgn, start, (char) => delimiters.test(char));
 }
 
 function splitPgnWord(value: string, emit: (token: string) => void): void {
@@ -131,39 +110,23 @@ function assertPgnLexicalSizes(pgn: string): void {
       continue;
     }
     if (char === '"') {
-      const start = ++index;
-      let escaped = false;
-      let end = pgn.length;
-      while (index < pgn.length) {
-        const current = pgn[index++]!;
-        if (escaped) escaped = false;
-        else if (current === "\\") escaped = true;
-        else if (current === '"') {
-          end = index - 1;
-          break;
-        }
-      }
-      assertPgnTokenSize(pgn.slice(start, end));
+      const span = quotedSpan(pgn, index);
+      assertPgnTokenSize(pgn.slice(span.contentStart, span.contentEnd));
+      index = span.end;
       continue;
     }
-    if (char === "{") {
-      const end = pgn.indexOf("}", index + 1);
-      if (end < 0) return;
-      assertPgnTokenSize(pgn.slice(index + 1, end));
-      index = end + 1;
-      continue;
-    }
-    if (char === ";") {
-      const start = ++index;
-      index = pgnLineSpan(pgn, index).end;
-      assertPgnTokenSize(pgn.slice(start, index));
+    const comment = commentSpan(pgn, index);
+    if (comment) {
+      if (!comment.closed) return;
+      assertPgnTokenSize(pgn.slice(comment.contentStart, comment.contentEnd));
+      index = comment.end;
       continue;
     }
     if (char === "[" || char === "]") {
       index += 1;
       continue;
     }
-    const word = pgnWordSpan(pgn, index + 1, /[\s[\]{}();"]/);
+    const word = wordSpan(pgn, index + 1, /[\s[\]{}();"]/);
     splitPgnWord(pgn.slice(index, word.end), assertPgnTokenSize);
     index = word.end;
   }
@@ -257,6 +220,7 @@ function renderUnsafePgnComments(
 
 function prepareHeaders(pgn: string): {
   headers: PgnHeader[];
+  headerIndex: Map<string, string>;
   loaderPgn: string;
   movetextPgn: string;
 } {
@@ -317,14 +281,34 @@ function prepareHeaders(pgn: string): {
     loaderPgn += line;
     movetextPgn += line;
   }
-  return { headers, loaderPgn, movetextPgn };
+  return {
+    headers,
+    headerIndex: pgnHeaderIndex(
+      headers.map(({ name, value }) => [name, value] as const),
+    ),
+    loaderPgn,
+    movetextPgn,
+  };
 }
 
 function withoutPgnEscapeLines(pgn: string): string {
   return pgn.replace(/^%[^\r\n]*(?:\r\n|\r|\n|$)/gm, "");
 }
 
-function assertPgnExportHeaders(chess: Chess): {
+type PgnExportContext = {
+  history: Move[];
+  initialFen: string;
+};
+
+function pgnExportContext(chess: Chess): PgnExportContext {
+  const history = chess.history({ verbose: true });
+  return { history, initialFen: history[0]?.before ?? chess.fen() };
+}
+
+function assertPgnExportHeaders(
+  chess: Chess,
+  context: PgnExportContext,
+): {
   headers: [string, string][];
   result: PgnResult | undefined;
 } {
@@ -335,22 +319,14 @@ function assertPgnExportHeaders(chess: Chess): {
       `PGN exceeds the ${MAX_PGN_HEADERS}-header limit`,
     );
   }
-  const values = new Map<string, string>();
   for (const [name, value] of headers) {
     assertPgnTokenSize(name);
     assertPgnTokenSize(encodeHeaderValue(value));
     if (!HEADER_NAME.test(name)) {
       throw new ChessError("INVALID_PGN", "invalid PGN header name");
     }
-    const key = name.toLowerCase();
-    if (values.has(key)) {
-      throw new ChessError(
-        "INVALID_PGN",
-        `PGN must not repeat ${name} headers`,
-      );
-    }
-    values.set(key, value);
   }
+  const values = pgnHeaderIndex(headers);
   if (
     headers.some(
       ([name, value]) => /[\r\n]/.test(name) || /[\r\n]/.test(value),
@@ -358,21 +334,8 @@ function assertPgnExportHeaders(chess: Chess): {
   ) {
     throw new ChessError("INVALID_PGN", "PGN headers cannot contain line breaks");
   }
-  const result = values.get("result");
-  if (result !== undefined && !isPgnResult(result)) {
-    throw new ChessError("INVALID_PGN", "invalid PGN result");
-  }
-  const setup = values.get("setup");
-  const fen = values.get("fen");
-  if (setup !== undefined && setup !== "0" && setup !== "1") {
-    throw new ChessError("INVALID_PGN", "PGN SetUp must be 0 or 1");
-  }
-  if ((setup === "1") !== (fen !== undefined)) {
-    throw new ChessError(
-      "INVALID_PGN",
-      "PGN SetUp 1 and FEN headers must appear together",
-    );
-  }
+  const result = pgnHeaderResult(values.get("result"));
+  const { fen } = pgnSetupHeaders(values);
   let expectedInitialFen = new Chess().fen();
   if (fen !== undefined) {
     assertSafeFenCounters(fen);
@@ -385,8 +348,7 @@ function assertPgnExportHeaders(chess: Chess): {
     assertLegalPosition(setupChess);
     expectedInitialFen = setupChess.fen();
   }
-  const actualInitialFen = chess.history({ verbose: true })[0]?.before ?? chess.fen();
-  if (actualInitialFen !== expectedInitialFen) {
+  if (context.initialFen !== expectedInitialFen) {
     throw new ChessError(
       "INVALID_PGN",
       "PGN setup headers do not match the initial position",
@@ -395,8 +357,8 @@ function assertPgnExportHeaders(chess: Chess): {
   return { headers, result };
 }
 
-function pgnText(chess: Chess): string {
-  const { headers, result } = assertPgnExportHeaders(chess);
+function pgnText(chess: Chess, context: PgnExportContext): string {
+  const { headers, result } = assertPgnExportHeaders(chess, context);
   validateResultForPosition(chess, result);
   const comments = chess.getComments();
   for (const { comment } of comments) assertPgnTokenSize(comment);
@@ -427,78 +389,15 @@ function pgnText(chess: Chess): string {
   return pgn;
 }
 
-function withoutPgnComments(pgn: string): string {
-  let result = "";
-  let braceComment = false;
-  let lineComment = false;
-  let quoted = false;
-  let escaped = false;
-
-  for (const char of pgn) {
-    if (braceComment) {
-      if (char === "}") braceComment = false;
-      result += char === "\n" || char === "\r" ? char : " ";
-      continue;
-    }
-    if (lineComment) {
-      if (char === "\n" || char === "\r") {
-        lineComment = false;
-        result += char;
-      } else {
-        result += " ";
-      }
-      continue;
-    }
-    if (quoted) {
-      result += char;
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') quoted = false;
-      continue;
-    }
-    if (char === '"') {
-      quoted = true;
-      result += char;
-      continue;
-    }
-    if (char === "{") {
-      braceComment = true;
-      result += " ";
-    } else if (char === ";") {
-      lineComment = true;
-      result += " ";
-    } else {
-      result += char;
-    }
-  }
-  return result;
-}
-
 function isPgnResult(value: string): value is PgnResult {
   return (PGN_RESULTS as readonly string[]).includes(value);
 }
 
-function declaredPgnResult(pgn: string): PgnResult | undefined {
-  const visiblePgn = withoutPgnComments(pgn);
-  const headerResults = [
-    ...visiblePgn.matchAll(
-      /^\s*\[\s*Result\s+"((?:\\.|[^"\\])*)"\s*\]\s*$/gim,
-    ),
-  ].map((match) => match[1] ?? "");
-  const movetext = visiblePgn.replace(/^\s*\[[^\r\n]*\]\s*$/gm, "");
-  const markers = [
-    ...movetext.matchAll(/(1-0|0-1|1\/2-1\/2|\*)(?=\s|$)/g),
-  ].map((match) => match[1] ?? "");
-  const results = [...headerResults, ...markers];
-
-  if (!results.every(isPgnResult)) {
+function pgnHeaderResult(value: string | undefined): PgnResult | undefined {
+  if (value !== undefined && !isPgnResult(value)) {
     throw new ChessError("INVALID_PGN", "invalid PGN result");
   }
-  const result = results[0];
-  if (results.some((value) => value !== result)) {
-    throw new ChessError("INVALID_PGN", "PGN result header and marker disagree");
-  }
-  return result;
+  return value;
 }
 
 type MovetextToken =
@@ -543,21 +442,16 @@ function movetextTokens(pgn: string): MovetextToken[] {
       index += 1;
       continue;
     }
-    if (char === "{") {
-      const end = movetext.indexOf("}", index + 1);
-      if (end < 0) {
+    const comment = commentSpan(movetext, index);
+    if (comment) {
+      if (!comment.closed) {
         throw new ChessError("INVALID_PGN", "unterminated PGN comment");
       }
-      assertPgnTokenSize(movetext.slice(index + 1, end));
+      assertPgnTokenSize(
+        movetext.slice(comment.contentStart, comment.contentEnd),
+      );
       push({ kind: "comment" });
-      index = end + 1;
-      continue;
-    }
-    if (char === ";") {
-      const start = index + 1;
-      index = pgnLineSpan(movetext, index).end;
-      assertPgnTokenSize(movetext.slice(start, index));
-      push({ kind: "comment" });
+      index = comment.end;
       continue;
     }
     if (char === "(") {
@@ -570,15 +464,34 @@ function movetextTokens(pgn: string): MovetextToken[] {
       index += 1;
       continue;
     }
-    const word = pgnWordSpan(movetext, index + 1, /[\s{}();]/);
+    const word = wordSpan(movetext, index + 1, /[\s{}();]/);
     pushWord(movetext.slice(index, word.end));
     index = word.end;
   }
   return tokens;
 }
 
-function validatePgnMoves(pgn: string, initialFen: string): void {
-  const tokens = movetextTokens(pgn);
+function declaredPgnResult(
+  headerResult: PgnResult | undefined,
+  tokens: readonly MovetextToken[],
+): PgnResult | undefined {
+  const results = [
+    ...(headerResult === undefined ? [] : [headerResult]),
+    ...tokens.flatMap((token) =>
+      token.kind === "word" && isPgnResult(token.value) ? [token.value] : [],
+    ),
+  ];
+  const result = results[0];
+  if (results.some((value) => value !== result)) {
+    throw new ChessError("INVALID_PGN", "PGN result header and marker disagree");
+  }
+  return result;
+}
+
+function validatePgnMoves(
+  tokens: readonly MovetextToken[],
+  initialFen: string,
+): void {
   type Phase =
     | "after-en-passant"
     | "after-move"
@@ -738,44 +651,25 @@ function validatePgnMoves(pgn: string, initialFen: string): void {
 function withoutVariations(pgn: string): string {
   let result = "";
   let depth = 0;
-  let braceComment = false;
-  let lineComment = false;
-  let quoted = false;
-  let escaped = false;
-  for (const char of pgn) {
-    if (braceComment) {
-      if (depth === 0) result += char;
-      if (char === "}") braceComment = false;
-      continue;
-    }
-    if (lineComment) {
-      if (depth === 0) result += char;
-      if (char === "\r" || char === "\n") lineComment = false;
-      continue;
-    }
-    if (quoted) {
-      if (depth === 0) result += char;
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') quoted = false;
-      continue;
-    }
-    if (char === "{") {
-      braceComment = true;
-      if (depth === 0) result += char;
-    } else if (char === ";") {
-      lineComment = true;
-      if (depth === 0) result += char;
-    } else if (char === '"') {
-      quoted = true;
-      if (depth === 0) result += char;
+  for (let index = 0; index < pgn.length; ) {
+    const char = pgn[index]!;
+    const span =
+      char === '"' ? quotedSpan(pgn, index) : commentSpan(pgn, index);
+    if (span) {
+      if (depth === 0) result += pgn.slice(index, span.end);
+      index = span.end;
     } else if (char === "(") {
       if (depth === 0) result += " ";
       depth += 1;
+      index += 1;
     } else if (char === ")") {
       depth -= 1;
+      index += 1;
     } else if (depth === 0) {
       result += char;
+      index += 1;
+    } else {
+      index += 1;
     }
   }
   return result;
@@ -784,34 +678,18 @@ function withoutVariations(pgn: string): string {
 function withoutMainlineEnPassant(pgn: string): string {
   let result = "";
   let index = 0;
-  let quoted = false;
-  let escaped = false;
   while (index < pgn.length) {
     const char = pgn[index]!;
-    if (quoted) {
-      result += char;
-      index += 1;
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') quoted = false;
-      continue;
-    }
     if (char === '"') {
-      quoted = true;
-      result += char;
-      index += 1;
+      const span = quotedSpan(pgn, index);
+      result += pgn.slice(index, span.end);
+      index = span.end;
       continue;
     }
-    if (char === "{") {
-      const end = pgn.indexOf("}", index + 1) + 1;
-      result += pgn.slice(index, end);
-      index = end;
-      continue;
-    }
-    if (char === ";") {
-      const line = pgnLineSpan(pgn, index + 1);
-      result += pgn.slice(index, line.end);
-      index = line.end;
+    const comment = commentSpan(pgn, index);
+    if (comment) {
+      result += pgn.slice(index, comment.end);
+      index = comment.end;
       continue;
     }
     if (/\s/.test(char)) {
@@ -819,7 +697,7 @@ function withoutMainlineEnPassant(pgn: string): string {
       index += 1;
       continue;
     }
-    const span = pgnWordSpan(pgn, index + 1, /[\s{}();"]/);
+    const span = wordSpan(pgn, index + 1, /[\s{}();"]/);
     const word = pgn.slice(index, span.end);
     if (word.startsWith("e.p.")) result += word.slice("e.p.".length);
     else result += word;
@@ -828,75 +706,72 @@ function withoutMainlineEnPassant(pgn: string): string {
   return result;
 }
 
+function normalizeCommentCluster(
+  pgn: string,
+  start: number,
+  output: string,
+): { output: string; end: number } {
+  const moveNumber = /(^|\s)(\d+\.+(?:\s*\.+)*)\s*$/.exec(output);
+  let deferredNumber = moveNumber?.[2] ?? "";
+  let result = moveNumber
+    ? output.slice(0, moveNumber.index + moveNumber[1]!.length)
+    : output;
+  const comments: string[] = [];
+  const nags: string[] = [];
+  let trailing = "";
+  let index = start;
+  while (index < pgn.length) {
+    const comment = commentSpan(pgn, index);
+    if (comment) {
+      let value = pgn.slice(comment.contentStart, comment.contentEnd);
+      if (pgn[index] === "{") value = value.replace(/[\r\n]+/g, " ");
+      else value = value.trim();
+      comments.push(value);
+      index = comment.end;
+    } else {
+      let end = wordSpan(pgn, index, /[\s{}();"]/).end;
+      const word = pgn.slice(index, end);
+      const nag = /^(?:\$\d+)+/.exec(word)?.[0];
+      if (!deferredNumber && nag) {
+        nags.push(nag);
+        end = index + nag.length;
+      } else if (!deferredNumber && /^\d+\.+$/.test(word)) {
+        deferredNumber = word;
+      } else if (deferredNumber && /^\.+$/.test(word)) {
+        deferredNumber += ` ${word}`;
+      } else {
+        break;
+      }
+      index = end;
+    }
+    const whitespaceStart = index;
+    while (index < pgn.length && /\s/.test(pgn[index]!)) index += 1;
+    trailing = pgn.slice(whitespaceStart, index);
+  }
+  const value = comments.join(" ");
+  if (nags.length) result += `${nags.join(" ")} `;
+  result += value.includes("}") ? `;${value}\n` : `{${value}}`;
+  if (deferredNumber) result += ` ${deferredNumber}`;
+  result += trailing;
+  return { output: result, end: index };
+}
+
 function normalizeMainlinePgn(input: string): string {
   const pgn = withoutMainlineEnPassant(input);
   let result = "";
   let index = 0;
-  let quoted = false;
-  let escaped = false;
-  const comment = (): string => {
-    if (pgn[index] === "{") {
-      const end = pgn.indexOf("}", index + 1);
-      const value = pgn.slice(index + 1, end).replace(/[\r\n]+/g, " ");
-      index = end + 1;
-      return value;
-    }
-    const line = pgnLineSpan(pgn, index + 1);
-    const value = pgn.slice(index + 1, line.end).trim();
-    index = line.end;
-    return value;
-  };
   while (index < pgn.length) {
     const char = pgn[index]!;
-    if (quoted) {
-      result += char;
-      index += 1;
-      if (escaped) escaped = false;
-      else if (char === "\\") escaped = true;
-      else if (char === '"') quoted = false;
-      continue;
-    }
     if (char === '"') {
-      quoted = true;
-      result += char;
-      index += 1;
+      const span = quotedSpan(pgn, index);
+      result += pgn.slice(index, span.end);
+      index = span.end;
       continue;
     }
     if (char === "{" || char === ";") {
-      const moveNumber = /(^|\s)(\d+\.+(?:\s*\.+)*)\s*$/.exec(result);
-      let deferredNumber = moveNumber?.[2] ?? "";
-      if (moveNumber) result = result.slice(0, moveNumber.index + moveNumber[1]!.length);
-      const comments: string[] = [];
-      const nags: string[] = [];
-      let trailing = "";
-      while (index < pgn.length) {
-        if (pgn[index] === "{" || pgn[index] === ";") {
-          comments.push(comment());
-        } else {
-          let end = pgnWordSpan(pgn, index, /[\s{}();"]/).end;
-          const word = pgn.slice(index, end);
-          const nag = /^(?:\$\d+)+/.exec(word)?.[0];
-          if (!deferredNumber && nag) {
-            nags.push(nag);
-            end = index + nag.length;
-          } else if (!deferredNumber && /^\d+\.+$/.test(word)) {
-            deferredNumber = word;
-          } else if (deferredNumber && /^\.+$/.test(word)) {
-            deferredNumber += ` ${word}`;
-          } else {
-            break;
-          }
-          index = end;
-        }
-        const whitespaceStart = index;
-        while (index < pgn.length && /\s/.test(pgn[index]!)) index += 1;
-        trailing = pgn.slice(whitespaceStart, index);
-      }
-      const value = comments.join(" ");
-      if (nags.length) result += `${nags.join(" ")} `;
-      result += value.includes("}") ? `;${value}\n` : `{${value}}`;
-      if (deferredNumber) result += ` ${deferredNumber}`;
-      result += trailing;
+      const cluster = normalizeCommentCluster(pgn, index, result);
+      result = cluster.output;
+      index = cluster.end;
       continue;
     }
     if (/\s/.test(char)) {
@@ -904,58 +779,23 @@ function normalizeMainlinePgn(input: string): string {
       index += 1;
       continue;
     }
-    const word = pgnWordSpan(pgn, index + 1, /[\s{}();"]/);
+    const word = wordSpan(pgn, index + 1, /[\s{}();"]/);
     result += pgn.slice(index, word.end);
     index = word.end;
   }
   return result;
 }
 
-function headerValues(pgn: string, name: string): string[] {
-  const visiblePgn = withoutPgnComments(pgn);
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return [
-    ...visiblePgn.matchAll(
-      new RegExp(
-        `^\\s*\\[\\s*${escaped}\\s+"((?:\\\\.|[^"\\\\])*)"\\s*\\]\\s*$`,
-        "gim",
-      ),
-    ),
-  ].map((match) => match[1] ?? "");
-}
-
-function validatePgnSetup(pgn: string): void {
-  const setup = headerValues(pgn, "SetUp");
-  const fens = headerValues(pgn, "FEN");
-  if (setup.length > 1 || fens.length > 1) {
-    throw new ChessError(
-      "INVALID_PGN",
-      "PGN must not repeat SetUp or FEN headers",
-    );
+function validatePgnSetupFen(fen: string | undefined): void {
+  if (fen === undefined) return;
+  assertSafeFenCounters(fen);
+  let chess: Chess;
+  try {
+    chess = new Chess(fen);
+  } catch {
+    throw new ChessError("INVALID_FEN", "invalid FEN");
   }
-
-  const setupValue = setup[0];
-  if (setupValue !== undefined && setupValue !== "0" && setupValue !== "1") {
-    throw new ChessError("INVALID_PGN", "PGN SetUp must be 0 or 1");
-  }
-  if ((setupValue === "1") !== (fens.length === 1)) {
-    throw new ChessError(
-      "INVALID_PGN",
-      "PGN SetUp 1 and FEN headers must appear together",
-    );
-  }
-
-  const fen = fens[0];
-  if (fen !== undefined) {
-    assertSafeFenCounters(fen);
-    let chess: Chess;
-    try {
-      chess = new Chess(fen);
-    } catch {
-      throw new ChessError("INVALID_FEN", "invalid FEN");
-    }
-    assertLegalPosition(chess);
-  }
+  assertLegalPosition(chess);
 }
 
 function restoreHeaders(
@@ -989,30 +829,32 @@ function validateResultForPosition(chess: Chess, result: PgnResult | undefined):
 
 export function pgnOf(chess: Chess): string {
   const snapshot = snapshotChess(chess);
-  assertPgnPlyLimit(snapshot.history().length);
+  const context = pgnExportContext(snapshot);
   const result = snapshot.isCheckmate()
     ? (snapshot.turn() === "w" ? "0-1" : "1-0")
     : snapshot.isDraw()
       ? "1/2-1/2"
       : undefined;
-  if (result === undefined) return pgnText(snapshot);
+  if (result === undefined) return pgnText(snapshot, context);
 
-  assertPgnExportHeaders(snapshot);
+  assertPgnExportHeaders(snapshot, context);
   snapshot.setHeader("Result", result);
-  return pgnText(snapshot);
+  return pgnText(snapshot, context);
 }
 
 export function parseImportedPgn(pgn: string): Chess {
   assertPgnSize(pgn);
   const normalizedPgn = withoutPgnEscapeLines(stripBom(pgn));
   assertPgnLexicalSizes(normalizedPgn);
-  const { headers, loaderPgn, movetextPgn } = prepareHeaders(normalizedPgn);
-  validatePgnSetup(normalizedPgn);
-  const result = declaredPgnResult(normalizedPgn);
-  const setup = headers.find(({ name }) => name.toLowerCase() === "setup")?.value;
-  const fen = headers.find(({ name }) => name.toLowerCase() === "fen")?.value;
+  const { headers, headerIndex, loaderPgn, movetextPgn } =
+    prepareHeaders(normalizedPgn);
+  const { setup, fen } = pgnSetupHeaders(headerIndex);
+  validatePgnSetupFen(fen);
+  const headerResult = pgnHeaderResult(headerIndex.get("result"));
   const initialFen = setup === "1" && fen ? fen : new Chess().fen();
-  validatePgnMoves(movetextPgn, initialFen);
+  const tokens = movetextTokens(movetextPgn);
+  const result = declaredPgnResult(headerResult, tokens);
+  validatePgnMoves(tokens, initialFen);
 
   let chess: Chess;
   try {

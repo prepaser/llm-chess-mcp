@@ -21,6 +21,41 @@ export function canonicalPgnHeaderName(name: string): string {
   return CANONICAL_HEADERS.get(name.toLowerCase()) ?? name;
 }
 
+export type PgnHeaderSource = Iterable<readonly [name: string, value: string]>;
+
+export function pgnHeaderIndex(headers: PgnHeaderSource): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const [name, value] of headers) {
+    const key = name.toLowerCase();
+    if (values.has(key)) {
+      throw new ChessError(
+        "INVALID_PGN",
+        `PGN must not repeat ${name} headers`,
+      );
+    }
+    values.set(key, value);
+  }
+  return values;
+}
+
+export function pgnSetupHeaders(headers: ReadonlyMap<string, string>): {
+  setup: string | undefined;
+  fen: string | undefined;
+} {
+  const setup = headers.get("setup");
+  const fen = headers.get("fen");
+  if (setup !== undefined && setup !== "0" && setup !== "1") {
+    throw new ChessError("INVALID_PGN", "PGN SetUp must be 0 or 1");
+  }
+  if ((setup === "1") !== (fen !== undefined)) {
+    throw new ChessError(
+      "INVALID_PGN",
+      "PGN SetUp 1 and FEN headers must appear together",
+    );
+  }
+  return { setup, fen };
+}
+
 export function replacePgnHeaders(
   chess: Chess,
   source: readonly (readonly [string, string])[],

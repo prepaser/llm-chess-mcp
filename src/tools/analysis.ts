@@ -141,7 +141,6 @@ export function registerAnalysisTools(
           })),
         };
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.position_analyze,
           payload,
           `Analyzed game ${game_id} at revision ${revision}; ${payload.lines.length} lines`,
         );
@@ -181,7 +180,6 @@ export function registerAnalysisTools(
           moves,
         };
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.human_move_distribution,
           payload,
           `${moves.length} Maia3 moves for game ${game_id} at revision ${revision}`,
         );
@@ -282,7 +280,6 @@ export function registerAnalysisTools(
         }
 
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.move_evaluate,
           { game_id, revision, results },
           `Evaluated ${results.length} move${results.length === 1 ? "" : "s"} in game ${game_id}`,
         );

@@ -51,7 +51,6 @@ export function registerExplorerTool(
         );
         validateMoveIdentities(result.moves, legal);
         return toolResult(
-          OpeningExplorerOutputSchema,
           {
             game_id,
             revision,

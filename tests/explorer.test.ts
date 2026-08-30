@@ -1320,7 +1320,7 @@ test("does not trust early cooldown sleeps or ignore cooldown extensions", async
     let calls = 0;
     let wake: (() => void) | undefined;
     const limiter = createExplorerLimiter(() => now);
-    limiter.cooldown(1_000, 0);
+    limiter.cooldown(1_000);
     const pending = limiter.run(
       {
         callerSignal: undefined,
@@ -1336,7 +1336,7 @@ test("does not trust early cooldown sleeps or ignore cooldown extensions", async
       },
     );
     await new Promise<void>((resolve) => setImmediate(resolve));
-    if (extend) limiter.cooldown(5_000, 0);
+    if (extend) limiter.cooldown(5_000);
     wake?.();
 
     await assert.rejects(pending, expectKind("rate_limited"));
@@ -1416,12 +1416,12 @@ test("fails fast for invalid or backward limiter clocks", async () => {
     );
     if (values.length === 1) {
       assert.throws(
-        () => limiter.cooldown(1_000, 0),
+        () => limiter.cooldown(1_000),
         expectKind("invalid_input"),
       );
       continue;
     }
-    limiter.cooldown(1_000, 0);
+    limiter.cooldown(1_000);
     await assert.rejects(
       limiter.run(
         {
@@ -1445,7 +1445,7 @@ test("allows safe limiter clocks to advance after boundary cooldowns", async () 
     let now = start;
     let calls = 0;
     const limiter = createExplorerLimiter(() => now);
-    limiter.cooldown(EXPLORER_MAX_COOLDOWN_MS, 0);
+    limiter.cooldown(EXPLORER_MAX_COOLDOWN_MS);
     now += 1;
     await limiter.run(
       {
@@ -1471,7 +1471,7 @@ test("rejects unsafe limiter clocks and cooldown sums", () => {
   ]) {
     const limiter = createExplorerLimiter(() => now);
     assert.throws(
-      () => limiter.cooldown(0, 0),
+      () => limiter.cooldown(0),
       expectKind("invalid_input"),
     );
   }
@@ -1480,7 +1480,7 @@ test("rejects unsafe limiter clocks and cooldown sums", () => {
     () => Number.MAX_SAFE_INTEGER - EXPLORER_MAX_COOLDOWN_MS + 1,
   );
   assert.throws(
-    () => limiter.cooldown(EXPLORER_MAX_COOLDOWN_MS, 0),
+    () => limiter.cooldown(EXPLORER_MAX_COOLDOWN_MS),
     expectKind("invalid_input"),
   );
 });
@@ -1488,7 +1488,12 @@ test("rejects unsafe limiter clocks and cooldown sums", () => {
 test("validates cooldown durations before mutating limiter state", async () => {
   let now = 0;
   const limiter = createExplorerLimiter(() => now);
-  limiter.cooldown(1_000, 0);
+  const legacyCall = () => {
+    // @ts-expect-error The limiter owns its clock; callers pass only a delay.
+    limiter.cooldown(1_000, 0);
+  };
+  assert.equal(typeof legacyCall, "function");
+  limiter.cooldown(1_000);
   for (const delay of [
     Number.NaN,
     Infinity,
@@ -1497,7 +1502,7 @@ test("validates cooldown durations before mutating limiter state", async () => {
     EXPLORER_MAX_COOLDOWN_MS + 1,
   ]) {
     assert.throws(
-      () => limiter.cooldown(delay, 0),
+      () => limiter.cooldown(delay),
       expectKind("invalid_input"),
     );
   }
@@ -1526,7 +1531,7 @@ test("validates cooldown durations before mutating limiter state", async () => {
   );
 
   const zero = createExplorerLimiter(() => 0);
-  zero.cooldown(0, 0);
+  zero.cooldown(0);
   await zero.run(
     {
       callerSignal: undefined,
@@ -1539,7 +1544,7 @@ test("validates cooldown durations before mutating limiter state", async () => {
 
   let maximumNow = 0;
   const maximum = createExplorerLimiter(() => maximumNow);
-  maximum.cooldown(EXPLORER_MAX_COOLDOWN_MS, 0);
+  maximum.cooldown(EXPLORER_MAX_COOLDOWN_MS);
   maximumNow = EXPLORER_MAX_COOLDOWN_MS;
   await maximum.run(
     {
@@ -1600,7 +1605,7 @@ test("uses a one-minute shared cooldown when a 429 lacks Retry-After", async () 
 test("fails fast when a shared cooldown exceeds the request budget", async () => {
   const limiter = createExplorerLimiter(() => 0);
   const delays: number[] = [];
-  limiter.cooldown(EXPLORER_RATE_LIMIT_COOLDOWN_MS, 0);
+  limiter.cooldown(EXPLORER_RATE_LIMIT_COOLDOWN_MS);
 
   await assert.rejects(
     openingExplorer(
@@ -1625,7 +1630,7 @@ test("cancels while waiting for a shared cooldown", async () => {
   const cause = new Error("caller cancelled during cooldown");
   let calls = 0;
   let startedSleep: (() => void) | undefined;
-  limiter.cooldown(1_000, 0);
+  limiter.cooldown(1_000);
 
   const pending = openingExplorer(
     new Chess(),

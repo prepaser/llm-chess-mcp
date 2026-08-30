@@ -72,19 +72,19 @@ export interface AppServices
 
 let maiaModule: Promise<typeof import("./maia3/inference.js")> | undefined;
 let defaultShutdown: Promise<void> | null = null;
-type ExplorerGeneration = {
+type DefaultGeneration = {
   active: Set<Promise<void>>;
   controller: AbortController;
   limiter: ReturnType<typeof createExplorerLimiter>;
 };
-const createExplorerGeneration = (): ExplorerGeneration => ({
+const createDefaultGeneration = (): DefaultGeneration => ({
   active: new Set(),
   controller: new AbortController(),
   limiter: createExplorerLimiter(),
 });
-let explorerGeneration = createExplorerGeneration();
+let defaultGeneration = createDefaultGeneration();
 function trackGeneration<T>(
-  generation: ExplorerGeneration,
+  generation: DefaultGeneration,
   operation: Promise<T>,
 ): Promise<T> {
   const settled = operation.then(
@@ -97,6 +97,18 @@ function trackGeneration<T>(
 }
 const shutdownError = (): Error | null =>
   defaultShutdown ? new Error("application services are shutting down") : null;
+function runInGeneration<T>(
+  signal: AbortSignal | undefined,
+  start: (generation: DefaultGeneration, signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const error = shutdownError();
+  if (error) return Promise.reject(error);
+  const generation = defaultGeneration;
+  const workSignal = signal
+    ? AbortSignal.any([signal, generation.controller.signal])
+    : generation.controller.signal;
+  return trackGeneration(generation, start(generation, workSignal));
+}
 const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) => {
   const error = shutdownError();
   return error
@@ -132,21 +144,13 @@ const openExplorer: AppServices["openingExplorer"] = (
   speeds,
   ratings,
   signal,
-) => {
-  const error = shutdownError();
-  if (error) return Promise.reject(error);
-  const generation = explorerGeneration;
-  const workSignal = signal
-    ? AbortSignal.any([signal, generation.controller.signal])
-    : generation.controller.signal;
-  return trackGeneration(
-    generation,
+) =>
+  runInGeneration(signal, (generation, workSignal) =>
     openingExplorer(chess, db, speeds, ratings, {
       limiter: generation.limiter,
       signal: workSignal,
     }),
   );
-};
 const computeCandidateSet = createCandidateComputation({
   analyze,
   humanMoveDistribution,
@@ -163,15 +167,8 @@ const computeCandidates: AppServices["computeCandidates"] = (
   maiaTopN,
   lichess,
   signal,
-) => {
-  const error = shutdownError();
-  if (error) return Promise.reject(error);
-  const generation = explorerGeneration;
-  const workSignal = signal
-    ? AbortSignal.any([signal, generation.controller.signal])
-    : generation.controller.signal;
-  return trackGeneration(
-    generation,
+) =>
+  runInGeneration(signal, (_generation, workSignal) =>
     computeCandidateSet(
       chess,
       elo,
@@ -182,19 +179,20 @@ const computeCandidates: AppServices["computeCandidates"] = (
       workSignal,
     ),
   );
-};
 
 function quitDefaultServices(): Promise<void> {
   if (defaultShutdown) return defaultShutdown;
   const maia = maiaModule;
-  const explorer = explorerGeneration;
+  const generation = defaultGeneration;
   let operation!: Promise<void>;
   operation = Promise.resolve()
     .then(async () => {
-      const explorerDrain = Promise.all([...explorer.active]).then(() => {});
+      const generationDrain = Promise.all([...generation.active]).then(
+        () => {},
+      );
       const results = await Promise.allSettled([
         stockfish.quit(),
-        explorerDrain,
+        generationDrain,
         ...(maia ? [maia.then((module) => module.quitMaia())] : []),
       ]);
       const errors = results.flatMap((result) =>
@@ -209,8 +207,10 @@ function quitDefaultServices(): Promise<void> {
       if (defaultShutdown === operation) defaultShutdown = null;
     });
   defaultShutdown = operation;
-  explorerGeneration = createExplorerGeneration();
-  explorer.controller.abort(new Error("application services are shutting down"));
+  defaultGeneration = createDefaultGeneration();
+  generation.controller.abort(
+    new Error("application services are shutting down"),
+  );
   return operation;
 }
 

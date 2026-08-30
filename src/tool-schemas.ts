@@ -1,4 +1,5 @@
 import * as z from "zod/v4";
+import { MAX_EVALUATED_MOVES } from "./chess.js";
 import {
   ANALYSIS_LEVELS,
   COLORS,
@@ -6,6 +7,7 @@ import {
   HUMAN_PROBABILITY_TOLERANCE,
   INTENTS,
   MAX_HUMAN_MOVES,
+  MAX_MULTIPV,
   MOVE_EVALUATION_RESULTS,
   MOVE_CLASSIFICATIONS,
   PIECES,
@@ -136,7 +138,7 @@ export const AnalysisLineSchema = z
 
 const analysisLines = z
   .array(AnalysisLineSchema)
-  .max(10)
+  .max(MAX_MULTIPV)
   .superRefine((lines, ctx) => {
     const ranks = new Set<number>();
     for (const [index, line] of lines.entries()) {
@@ -150,7 +152,7 @@ const analysisLines = z
       ranks.add(line.multipv);
     }
   })
-  .describe("At most 10 analysis lines with unique multipv ranks.");
+  .describe(`At most ${MAX_MULTIPV} analysis lines with unique multipv ranks.`);
 
 const openingStatsValues = {
   games: safeCount.nullable(),
@@ -376,7 +378,7 @@ const moveEvaluation = z.strictObject({
 export const MoveEvaluateOutputSchema = z.strictObject({
   game_id: GameIdSchema,
   revision,
-  results: z.array(moveEvaluation).min(1).max(10),
+  results: z.array(moveEvaluation).min(1).max(MAX_EVALUATED_MOVES),
 });
 
 export const MoveSensitivitySchema = z.strictObject({

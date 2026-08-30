@@ -51,21 +51,26 @@ export {
   snapshotChess,
 } from "./chess.js";
 
-function installShutdown(closeTransport: () => Promise<void>): () => Promise<void> {
+function installShutdown(
+  closeTransport: () => Promise<void>,
+): (exit: boolean) => void {
   let shutdown: Promise<void> | undefined;
   const close = (): Promise<void> =>
     (shutdown ??= closeTransport());
-  const onSignal = (): void => {
+  const request = (exit: boolean): void => {
     void close()
-      .then(() => process.exit(process.exitCode ?? 0))
+      .then(() => {
+        if (exit) process.exit(process.exitCode ?? 0);
+      })
       .catch((error: unknown) => {
         console.error("shutdown failed", error);
-        process.exit(1);
+        if (exit) process.exit(1);
+        else process.exitCode = 1;
       });
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
-  return close;
+  process.once("SIGINT", () => request(true));
+  process.once("SIGTERM", () => request(true));
+  return request;
 }
 
 async function main(): Promise<void> {
@@ -83,15 +88,9 @@ async function main(): Promise<void> {
         process.exitCode = 1;
       },
     });
-    const close = installShutdown(() => handle.close());
-    const onClose = (): void => {
-      void close().catch((error: unknown) => {
-        console.error("shutdown failed", error);
-        process.exitCode = 1;
-      });
-    };
-    process.stdin.once("end", onClose);
-    process.stdin.once("close", onClose);
+    const shutdown = installShutdown(() => handle.close());
+    process.stdin.once("end", () => shutdown(false));
+    process.stdin.once("close", () => shutdown(false));
     return;
   }
 

@@ -145,6 +145,17 @@ interface ExplorerSetup extends ExplorerLimiterOptions {
   wallNow: () => number;
 }
 
+function applyRateLimitCooldown(
+  limiter: ExplorerLimiter,
+  retryAfter: string | null,
+  wallNow: () => number,
+  elapsed = 0,
+): number {
+  const delay = rateLimitCooldownMs(retryAfter, wallNow(), elapsed);
+  limiter.cooldown(delay);
+  return delay;
+}
+
 function setupExplorerRequest(
   chess: Chess,
   db: "lichess" | "masters",
@@ -203,11 +214,11 @@ function setupExplorerRequest(
     now,
     onLateResponse: (response) => {
       if (response.status !== 429) return;
-      const delay = rateLimitCooldownMs(
+      applyRateLimitCooldown(
+        limiter,
         response.headers.get("retry-after"),
-        wallNow(),
+        wallNow,
       );
-      limiter.cooldown(delay, now());
     },
     request: options.fetch ?? globalThis.fetch,
     sleep:
@@ -276,15 +287,13 @@ async function attemptRequest(
           }
           const delay =
             transport.error.kind === "rate_limited"
-              ? rateLimitCooldownMs(
+              ? applyRateLimitCooldown(
+                  setup.limiter,
                   transport.retryAfter,
-                  setup.wallNow(),
+                  setup.wallNow,
                   elapsed,
                 )
               : retryAfterMs(transport.retryAfter, setup.wallNow(), elapsed);
-          if (transport.error.kind === "rate_limited") {
-            setup.limiter.cooldown(delay, failedAt);
-          }
           return failureFor(
             setup,
             transport.error,

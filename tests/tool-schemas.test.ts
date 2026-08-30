@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as z from "zod/v4";
+import { MAX_EVALUATED_MOVES } from "../src/chess.js";
+import { MAX_MULTIPV } from "../src/domain.js";
 import { EXPLORER_MAX_MOVES, EXPLORER_MAX_STRING_LENGTH } from "../src/explorer-core.js";
 import { GAME_ID_MAX_LENGTH, GameIdSchema } from "../src/tool-fields.js";
 import {
@@ -415,4 +417,18 @@ test("every game-id output exposes the shared length bounds", () => {
     assert.equal(gameId.minLength, 1, name);
     assert.equal(gameId.maxLength, GAME_ID_MAX_LENGTH, name);
   }
+});
+
+test("analysis outputs expose the shared cardinality limits", () => {
+  const position = z.toJSONSchema(PositionAnalyzeOutputSchema) as {
+    properties?: { lines?: { maxItems?: number } };
+  };
+  const evaluation = z.toJSONSchema(MoveEvaluateOutputSchema) as {
+    properties?: { results?: { maxItems?: number } };
+  };
+  assert.equal(position.properties?.lines?.maxItems, MAX_MULTIPV);
+  assert.equal(
+    evaluation.properties?.results?.maxItems,
+    MAX_EVALUATED_MOVES,
+  );
 });

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as z from "zod/v4";
+import { MAX_EVALUATED_MOVES } from "../src/chess.js";
+import {
+  MAX_ANALYSIS_DEPTH,
+  MAX_HUMAN_MOVES,
+  MAX_MULTIPV,
+} from "../src/domain.js";
 import { TOOL_INPUT_SCHEMAS } from "../src/tool-inputs.js";
 
 const validInputs = {
@@ -69,5 +75,35 @@ test("every game-id input enforces the shared length bounds", () => {
     };
     assert.equal(wire.properties?.game_id?.minLength, 1, name);
     assert.equal(wire.properties?.game_id?.maxLength, 256, name);
+  }
+});
+
+test("analysis and move inputs expose the shared limits", () => {
+  type Property = { maximum?: number };
+  const properties = (schema: z.ZodType) =>
+    (z.toJSONSchema(schema) as { properties?: Record<string, Property> })
+      .properties ?? {};
+
+  const position = properties(TOOL_INPUT_SCHEMAS.position_analyze);
+  assert.equal(position.depth?.maximum, MAX_ANALYSIS_DEPTH);
+  assert.equal(position.multipv?.maximum, MAX_MULTIPV);
+
+  const evaluation = z.toJSONSchema(TOOL_INPUT_SCHEMAS.move_evaluate) as {
+    properties?: Record<string, Property & { anyOf?: Array<{ maxItems?: number }> }>;
+  };
+  assert.equal(evaluation.properties?.depth?.maximum, MAX_ANALYSIS_DEPTH);
+  assert.equal(
+    evaluation.properties?.move?.anyOf?.[1]?.maxItems,
+    MAX_EVALUATED_MOVES,
+  );
+
+  for (const schema of [
+    TOOL_INPUT_SCHEMAS.move_candidates,
+    TOOL_INPUT_SCHEMAS.move_candidates_by_intent,
+  ]) {
+    const candidate = properties(schema);
+    assert.equal(candidate.sf_depth?.maximum, MAX_ANALYSIS_DEPTH);
+    assert.equal(candidate.sf_multipv?.maximum, MAX_MULTIPV);
+    assert.equal(candidate.maia_top_n?.maximum, MAX_HUMAN_MOVES);
   }
 });

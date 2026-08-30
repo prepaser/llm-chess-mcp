@@ -12,14 +12,26 @@ function context(signal: AbortSignal): ServerContext {
 }
 
 test("toolResult keeps canonical data out of text content", () => {
-  const outputSchema = z.object({ game_id: z.string(), revision: z.number() });
   const data = { game_id: "game", revision: 2 };
-  const result = toolResult(outputSchema, data, "Game game at revision 2");
+  const result = toolResult(data, "Game game at revision 2");
 
   assert.equal(result.content[0]?.text, "Game game at revision 2");
   assert.equal(result.content[0]?.text.includes(JSON.stringify(data)), false);
   assert.deepEqual(result.structuredContent, data);
   assert.equal(result.isError, undefined);
+});
+
+test("safeHandler contextually checks toolResult payloads", () => {
+  const inputSchema = z.strictObject({});
+  const outputSchema = z.strictObject({ value: z.number() });
+  const invalid = safeHandler(
+    inputSchema,
+    outputSchema,
+    // @ts-expect-error The result payload must match the output schema.
+    async () => toolResult({ value: "wrong" }, "invalid"),
+  );
+
+  assert.equal(typeof invalid, "function");
 });
 
 test("toolError returns a structured MCP tool error", () => {
@@ -39,7 +51,7 @@ test("safeHandler forwards the MCP cancellation signal", async () => {
   const outputSchema = z.object({});
   const handler = safeHandler(inputSchema, outputSchema, async (_args, signal) => {
     received = signal;
-    return toolResult(outputSchema, {}, "ok");
+    return toolResult({}, "ok");
   });
 
   await handler({}, context(controller.signal));
@@ -55,14 +67,14 @@ test("safeHandler parses direct calls and rejects invalid input", async () => {
     outputSchema,
     async ({ value }) => {
       calls += 1;
-      return toolResult(outputSchema, { value }, "ok");
+      return toolResult({ value }, "ok");
     },
   );
 
-  assert.deepEqual(await handler({}), toolResult(outputSchema, { value: 3 }, "ok"));
+  assert.deepEqual(await handler({}), toolResult({ value: 3 }, "ok"));
   assert.deepEqual(
     await handler({ value: "4" }),
-    toolResult(outputSchema, { value: 4 }, "ok"),
+    toolResult({ value: 4 }, "ok"),
   );
   assert.deepEqual(await handler({ value: "nope" }), toolError("INVALID_INPUT", "invalid tool input"));
   assert.equal(calls, 2);
@@ -85,12 +97,12 @@ test("safeHandler prevalidates successful output", async () => {
     value: z.string().refine((value) => value.length > 0),
   });
   const handler = safeHandler(z.strictObject({}), outputSchema, async () =>
-    toolResult(outputSchema, { value: "result" }, "ok"),
+    toolResult({ value: "result" }, "ok"),
   );
 
   assert.deepEqual(
     await handler({}),
-    toolResult(outputSchema, { value: "result" }, "ok"),
+    toolResult({ value: "result" }, "ok"),
   );
 });
 
@@ -102,7 +114,7 @@ test("safeHandler rejects non-wire schemas before tool registration", async (t) 
     "valid_tool",
     { inputSchema, outputSchema },
     safeHandler(inputSchema, outputSchema, async () =>
-      toolResult(outputSchema, { value: 1 }, "ok"),
+      toolResult({ value: 1 }, "ok"),
     ),
   );
   assert.throws(
@@ -110,7 +122,7 @@ test("safeHandler rejects non-wire schemas before tool registration", async (t) 
       safeHandler(
         z.strictObject({ value: z.string().transform(Number) }),
         outputSchema,
-        async () => toolResult(outputSchema, { value: 1 }, "unreachable"),
+        async () => toolResult({ value: 1 }, "unreachable"),
       ),
     /MCP input schema must be representable as JSON Schema/,
   );
@@ -120,7 +132,7 @@ test("safeHandler rejects non-wire schemas before tool registration", async (t) 
   assert.throws(
     () =>
       safeHandler(inputSchema, transformedOutput, async () =>
-        toolResult(transformedOutput, { value: 1 }, "unreachable"),
+        toolResult({ value: 1 }, "unreachable"),
       ),
     /MCP output schema must be representable as JSON Schema/,
   );
@@ -141,7 +153,7 @@ test("safeHandler rejects non-wire schemas before tool registration", async (t) 
 test("safeHandler masks invalid successful output", async () => {
   const outputSchema = z.strictObject({ value: z.number() });
   const handler = safeHandler(z.strictObject({}), outputSchema, async () =>
-    toolResult(outputSchema, { value: Number.NaN }, "invalid"),
+    toolResult({ value: Number.NaN }, "invalid"),
   );
 
   assert.deepEqual(
@@ -192,7 +204,7 @@ test("safeHandler rejects pre-aborted requests without running the handler", asy
   const outputSchema = z.object({});
   const handler = safeHandler(z.object({}), outputSchema, async () => {
     called = true;
-    return toolResult(outputSchema, {}, "unexpected");
+    return toolResult({}, "unexpected");
   });
 
   await assert.rejects(handler({}, context(controller.signal)), /cancelled/);
@@ -217,7 +229,7 @@ test("safeHandler rethrows cancellation during async output validation", async (
     }),
   });
   const handler = safeHandler(z.strictObject({}), outputSchema, async () =>
-    toolResult(outputSchema, { value: "ok" }, "ok"),
+    toolResult({ value: "ok" }, "ok"),
   );
   const result = handler({}, context(controller.signal));
   await validationStarted;

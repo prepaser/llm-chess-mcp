@@ -1,5 +1,5 @@
 import { Chess } from "chess.js";
-import type { Move, PieceSymbol, Square } from "chess.js";
+import type { Move } from "chess.js";
 export {
   assertLegalPosition,
   assertSafeFenCounters,
@@ -15,19 +15,9 @@ export {
 } from "./pgn.js";
 import { ChessError } from "./errors.js";
 import type { ChessState, DrawResult } from "./domain.js";
+import { materializeMove, type MoveDescriptor } from "./chess-move.js";
 
 export const MAX_EVALUATED_MOVES = 10;
-
-type MoveDescriptor = {
-  from: Square;
-  to: Square;
-  promotion?: PieceSymbol;
-};
-
-function moveDescriptor(move: Move): MoveDescriptor {
-  const base = { from: move.from, to: move.to };
-  return move.promotion ? { ...base, promotion: move.promotion } : base;
-}
 
 export function drawResult(chess: Chess): DrawResult | null {
   if (chess.isCheckmate() || !chess.isDraw()) return null;
@@ -42,7 +32,8 @@ export function stateOf<Revision extends number>(
   chess: Chess,
   revision: Revision,
 ): ChessState & { revision: Revision } {
-  const last = chess.history({ verbose: true }).at(-1);
+  const history = chess.history({ verbose: true });
+  const last = history.at(-1);
   const isCheckmate = chess.isCheckmate();
   return {
     fen: chess.fen(),
@@ -57,7 +48,7 @@ export function stateOf<Revision extends number>(
     isThreefoldRepetition: !isCheckmate && chess.isThreefoldRepetition(),
     isDrawByFiftyMoves: !isCheckmate && chess.isDrawByFiftyMoves(),
     moveNumber: chess.moveNumber(),
-    history: chess.history(),
+    history: history.map((move) => move.san),
     lastMove: last ? { san: last.san, uci: last.lan } : null,
     castling: {
       whiteKingside: chess.getCastlingRights("w").k,
@@ -82,8 +73,8 @@ export function parseMove(chess: Chess, move: string): Move {
   return found;
 }
 
-export function playParsedMove(chess: Chess, move: Move): Move {
-  return chess.move(moveDescriptor(move));
+export function playParsedMove(chess: Chess, move: MoveDescriptor): Move {
+  return chess.move(materializeMove(move));
 }
 
 export function pvToSan(chess: Chess, pv: readonly string[]): string[] {

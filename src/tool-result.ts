@@ -20,11 +20,12 @@ type SchemaOutput<Schema extends z.ZodType> = z.output<Schema> extends Record<
   ? z.output<Schema>
   : never;
 
-export function toolResult<Schema extends z.ZodType>(
-  _schema: Schema,
-  structuredContent: SchemaOutput<Schema>,
+export function toolResult<
+  StructuredContent extends Record<string, unknown>,
+>(
+  structuredContent: StructuredContent,
   summary: string,
-): ToolResult<SchemaOutput<Schema>> {
+): ToolResult<StructuredContent> {
   return {
     content: [{ type: "text", text: summary }],
     structuredContent,

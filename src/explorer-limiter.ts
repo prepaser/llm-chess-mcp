@@ -31,7 +31,7 @@ export interface ExplorerLimiter {
     options: ExplorerLimiterOptions,
     request: () => Promise<T>,
   ): Promise<T>;
-  cooldown(ms: number, now: number): void;
+  cooldown(ms: number): void;
 }
 
 interface QueuedRequest {
@@ -52,7 +52,7 @@ class RequestLimiter implements ExplorerLimiter {
     return this.#queue.length;
   }
 
-  cooldown(ms: number, _now: number): void {
+  cooldown(ms: number): void {
     if (
       !Number.isSafeInteger(ms) ||
       ms < 0 ||

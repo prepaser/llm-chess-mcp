@@ -24,7 +24,6 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
         signal.throwIfAborted();
         const id = services.games.createGame(fen);
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.create_game,
           { game_id: id, revision: 0 },
           `Created game ${id} at revision 0`,
         );
@@ -49,7 +48,6 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
           throw new ChessError("GAME_NOT_FOUND", `game not found: ${game_id}`);
         }
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.delete_game,
           { game_id, deleted: true },
           `Deleted game ${game_id}`,
         );
@@ -71,7 +69,6 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
         const { chess, revision } = services.games.getSnapshot(game_id);
         const state = stateOf(chess, revision);
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.game_state,
           {
             game_id,
             ...state,
@@ -112,7 +109,6 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
           parsed,
         );
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.game_play_move,
           { game_id, move: parsed.san, ...stateOf(next, newRevision) },
           `Played ${parsed.san} in game ${game_id}; revision ${newRevision}`,
         );
@@ -134,7 +130,6 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
         const { chess, revision } = services.games.getSnapshot(game_id);
         if (chess.isGameOver()) {
           return toolResult(
-            TOOL_OUTPUT_SCHEMAS.game_legal_moves,
             { game_id, revision, count: 0, moves: [] },
             `Game ${game_id} is over`,
           );
@@ -161,7 +156,6 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
           });
         }
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.game_legal_moves,
           { game_id, revision, count: moves.length, moves },
           `${moves.length} legal moves in game ${game_id} at revision ${revision}`,
         );
@@ -182,7 +176,6 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
       async ({ game_id }) => {
         const { chess, revision } = services.games.getSnapshot(game_id);
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.game_pgn,
           { game_id, revision, pgn: pgnOf(chess) },
           `Exported PGN for game ${game_id} at revision ${revision}`,
         );
@@ -205,7 +198,6 @@ export function registerGameTools(server: McpServer, services: GameServices): vo
         signal.throwIfAborted();
         const id = services.games.createGameFromChess(chess);
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.game_import_pgn,
           { game_id: id, ...stateOf(chess, 0) },
           `Imported game ${id} with ${chess.history().length} plies`,
         );

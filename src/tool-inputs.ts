@@ -6,7 +6,13 @@ import {
   lichessRatingSchema,
   lichessSpeedSchema,
 } from "./explorer.js";
-import { ANALYSIS_LEVELS, INTENTS, MAX_HUMAN_MOVES } from "./domain.js";
+import {
+  ANALYSIS_LEVELS,
+  INTENTS,
+  MAX_ANALYSIS_DEPTH,
+  MAX_HUMAN_MOVES,
+  MAX_MULTIPV,
+} from "./domain.js";
 import type { ToolName } from "./tool-names.js";
 import { GameIdSchema } from "./tool-fields.js";
 
@@ -33,15 +39,15 @@ const explorerFilterFields = {
   ratings: lichessRatingsSchema.default([]),
 };
 
-type ExplorerFilterKeys = {
-  db: string;
-  speeds: string;
-  ratings: string;
+type ExplorerFilterKeys<Fields extends z.ZodRawShape> = {
+  db: Extract<keyof Fields, string>;
+  speeds: Extract<keyof Fields, string>;
+  ratings: Extract<keyof Fields, string>;
 };
 
 function strictExplorerInputSchema<const Fields extends z.ZodRawShape>(
   fields: Fields,
-  keys: ExplorerFilterKeys,
+  keys: ExplorerFilterKeys<Fields>,
 ) {
   const { db, speeds, ratings } = keys;
   return z
@@ -119,8 +125,8 @@ export const GamePlayMoveInputSchema = z.strictObject({
 export const PositionAnalyzeInputSchema = z.strictObject({
   game_id: GameIdSchema,
   analysis_level: z.enum(ANALYSIS_LEVELS).default("normal"),
-  depth: z.number().int().min(1).max(30).optional(),
-  multipv: z.number().int().min(1).max(10).optional(),
+  depth: z.number().int().min(1).max(MAX_ANALYSIS_DEPTH).optional(),
+  multipv: z.number().int().min(1).max(MAX_MULTIPV).optional(),
 });
 export const HumanMoveDistributionInputSchema = z.strictObject({
   game_id: GameIdSchema,
@@ -134,15 +140,15 @@ export const MoveEvaluateInputSchema = z.strictObject({
     z.string(),
     z.array(z.string()).min(1).max(MAX_EVALUATED_MOVES),
   ]),
-  depth: z.number().int().min(1).max(30).default(15),
+  depth: z.number().int().min(1).max(MAX_ANALYSIS_DEPTH).default(15),
 });
 
 const candidateFields = {
   game_id: GameIdSchema,
   elo: z.number().int().min(600).max(2600).default(1500),
   analysis_level: z.enum(ANALYSIS_LEVELS).default("normal"),
-  sf_depth: z.number().int().min(1).max(30).optional(),
-  sf_multipv: z.number().int().min(1).max(10).optional(),
+  sf_depth: z.number().int().min(1).max(MAX_ANALYSIS_DEPTH).optional(),
+  sf_multipv: z.number().int().min(1).max(MAX_MULTIPV).optional(),
   lichess_db: explorerFilterFields.db.default("lichess"),
   lichess_speeds: explorerFilterFields.speeds,
   lichess_ratings: explorerFilterFields.ratings,
@@ -151,7 +157,7 @@ const candidateFields = {
 export const MoveCandidatesInputSchema = strictExplorerInputSchema(
   {
     ...candidateFields,
-    maia_top_n: z.number().int().min(1).max(20).default(5),
+    maia_top_n: z.number().int().min(1).max(MAX_HUMAN_MOVES).default(5),
   },
   {
     db: "lichess_db",
@@ -164,7 +170,7 @@ export const MoveCandidatesByIntentInputSchema = strictExplorerInputSchema(
   {
     ...candidateFields,
     intent: z.enum(INTENTS),
-    maia_top_n: z.number().int().min(1).max(20).default(10),
+    maia_top_n: z.number().int().min(1).max(MAX_HUMAN_MOVES).default(10),
   },
   {
     db: "lichess_db",

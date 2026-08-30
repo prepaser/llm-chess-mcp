@@ -138,7 +138,6 @@ export function registerCandidateTools(
         const { payload } = await candidatePayload(services, input, signal);
 
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.move_candidates,
           payload,
           `${payload.candidates.length} candidates for game ${payload.game_id} at revision ${payload.revision}`,
         );
@@ -168,7 +167,6 @@ export function registerCandidateTools(
         validateRankedCandidates(candidates, source, legal);
 
         return toolResult(
-          TOOL_OUTPUT_SCHEMAS.move_candidates_by_intent,
           {
             ...payload,
             intent,
