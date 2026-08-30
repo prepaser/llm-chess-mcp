@@ -12,6 +12,7 @@ import {
   MoveEvaluateOutputSchema,
   OpeningExplorerOutputSchema,
   OpeningStatsSchema,
+  PositionAnalyzeOutputSchema,
   TOOL_OUTPUT_SCHEMAS,
 } from "../src/tool-schemas.js";
 
@@ -310,6 +311,40 @@ test("analysis outputs require matching UCI and SAN PV lengths", () => {
     pvSan: [],
   };
   assert.equal(AnalysisLineSchema.safeParse(line).success, false);
+  assert.equal(
+    AnalysisLineSchema.safeParse({
+      ...line,
+      scoreMate: 3,
+      pvSan: ["e4"],
+    }).success,
+    false,
+  );
+  const validLine = { ...line, pvSan: ["e4"] };
+  assert.equal(
+    PositionAnalyzeOutputSchema.safeParse({
+      game_id: "game",
+      fen: "fen",
+      turn: "w",
+      revision: 0,
+      analysis_level: "normal",
+      lines: [validLine, validLine],
+    }).success,
+    false,
+  );
+  assert.equal(
+    PositionAnalyzeOutputSchema.safeParse({
+      game_id: "game",
+      fen: "fen",
+      turn: "w",
+      revision: 0,
+      analysis_level: "normal",
+      lines: Array.from({ length: 11 }, (_, index) => ({
+        ...validLine,
+        multipv: index + 1,
+      })),
+    }).success,
+    false,
+  );
   assert.equal(
     MoveEvaluateOutputSchema.safeParse({
       game_id: "game",

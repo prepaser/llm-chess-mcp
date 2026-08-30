@@ -31,6 +31,8 @@ import {
   validateMoveIdentities,
 } from "./move-boundary.js";
 
+type AnalysisLine = Awaited<ReturnType<AnalysisServices["analyze"]>>[number];
+
 type PositionAnalysis = z.output<
   typeof TOOL_OUTPUT_SCHEMAS.position_analyze
 >;
@@ -45,6 +47,30 @@ type AnalysisServices = Pick<
   AppServices,
   "games" | "analyze" | "humanMoveDistribution"
 >;
+
+function validateAnalysisLines(
+  lines: readonly AnalysisLine[],
+  multipv: number,
+): void {
+  if (lines.length > multipv) {
+    throw new RangeError("analysis returned too many lines");
+  }
+  const ranks = new Set<number>();
+  for (const line of lines) {
+    if (
+      !Number.isSafeInteger(line.multipv) ||
+      line.multipv < 1 ||
+      line.multipv > multipv ||
+      ranks.has(line.multipv)
+    ) {
+      throw new RangeError("invalid analysis multipv rank");
+    }
+    ranks.add(line.multipv);
+    if (line.scoreCp !== null && line.scoreMate !== null) {
+      throw new RangeError("analysis line has conflicting scores");
+    }
+  }
+}
 
 function completePvSan(
   chess: Parameters<typeof pvToSan>[0],
@@ -95,7 +121,10 @@ export function registerAnalysisTools(
         const preset = ANALYSIS_PRESETS[analysis_level];
         const d = depth ?? preset.depth;
         const mpv = multipv ?? preset.multipv;
-        const lines = await services.analyze(chess.fen(), d, mpv, signal);
+        const lines = structuredClone(
+          await services.analyze(chess.fen(), d, mpv, signal),
+        );
+        validateAnalysisLines(lines, mpv);
         const payload: PositionAnalysis = {
           game_id,
           fen: chess.fen(),
@@ -176,8 +205,11 @@ export function registerAnalysisTools(
           throw new ChessError("GAME_OVER", "game is already over");
         }
         const moves = Array.isArray(move) ? move : [move];
-        const beforeLines = await services.analyze(chess.fen(), depth, 1, signal);
+        const beforeLines = structuredClone(
+          await services.analyze(chess.fen(), depth, 1, signal),
+        );
         signal.throwIfAborted();
+        validateAnalysisLines(beforeLines, 1);
         const before = beforeLines[0];
         const beforeEval = before ? toEval(before) : null;
         const beforeCp = beforeEval ? evalToCp(beforeEval) : null;
@@ -222,8 +254,11 @@ export function registerAnalysisTools(
             continue;
           }
 
-          const afterLines = await services.analyze(copy.fen(), depth, 1, signal);
+          const afterLines = structuredClone(
+            await services.analyze(copy.fen(), depth, 1, signal),
+          );
           signal.throwIfAborted();
+          validateAnalysisLines(afterLines, 1);
           const after = afterLines[0];
           const afterEval = after ? toEval(after) : null;
           const moverEval = afterEval ? negateEval(afterEval) : null;

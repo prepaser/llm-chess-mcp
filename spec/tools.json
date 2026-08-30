@@ -2942,9 +2942,10 @@
             "type": "string"
           },
           "lines": {
+            "description": "At most 10 analysis lines with unique multipv ranks.",
             "items": {
               "additionalProperties": false,
-              "description": "pv and pvSan contain the same continuation and must have equal lengths.",
+              "description": "scoreCp and scoreMate cannot both be present; pv and pvSan contain the same continuation and must have equal lengths.",
               "properties": {
                 "multipv": {
                   "maximum": 9007199254740991,
@@ -3025,6 +3026,7 @@
               ],
               "type": "object"
             },
+            "maxItems": 10,
             "type": "array"
           },
           "revision": {

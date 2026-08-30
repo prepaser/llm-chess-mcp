@@ -90,26 +90,67 @@ export const StateSchema = z.strictObject({
   }),
 }) satisfies z.ZodType<ChessState>;
 
-export const SfLineSchema = z.strictObject({
+const sfLineShape = {
   multipv: z.number().int().min(1),
   scoreCp: z.number().nullable(),
   scoreMate: z.number().nullable(),
   wdl: nullableWdl,
   pv: z.array(z.string()),
-}) satisfies z.ZodType<SfLine>;
+};
 
-export const AnalysisLineSchema = z.strictObject({
-  ...SfLineSchema.shape,
-  pvSan: z.array(z.string()),
-}).superRefine(({ pv, pvSan }, ctx) => {
-  if (pv.length !== pvSan.length) {
+function addScoreIssue(
+  value: { scoreCp: number | null; scoreMate: number | null },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.scoreCp !== null && value.scoreMate !== null) {
     ctx.addIssue({
       code: "custom",
-      message: "pv and pvSan must have equal lengths",
-      path: ["pvSan"],
+      message: "scoreCp and scoreMate cannot both be present",
+      path: ["scoreMate"],
     });
   }
-}).describe("pv and pvSan contain the same continuation and must have equal lengths.");
+}
+
+export const SfLineSchema = z
+  .strictObject(sfLineShape)
+  .superRefine(addScoreIssue) satisfies z.ZodType<SfLine>;
+
+export const AnalysisLineSchema = z
+  .strictObject({
+    ...sfLineShape,
+    pvSan: z.array(z.string()),
+  })
+  .superRefine((line, ctx) => {
+    addScoreIssue(line, ctx);
+    if (line.pv.length !== line.pvSan.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "pv and pvSan must have equal lengths",
+        path: ["pvSan"],
+      });
+    }
+  })
+  .describe(
+    "scoreCp and scoreMate cannot both be present; pv and pvSan contain the same continuation and must have equal lengths.",
+  );
+
+const analysisLines = z
+  .array(AnalysisLineSchema)
+  .max(10)
+  .superRefine((lines, ctx) => {
+    const ranks = new Set<number>();
+    for (const [index, line] of lines.entries()) {
+      if (ranks.has(line.multipv)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "analysis multipv ranks must be unique",
+          path: [index, "multipv"],
+        });
+      }
+      ranks.add(line.multipv);
+    }
+  })
+  .describe("At most 10 analysis lines with unique multipv ranks.");
 
 const openingStatsValues = {
   games: safeCount.nullable(),
@@ -263,7 +304,7 @@ export const PositionAnalyzeOutputSchema = z.strictObject({
   turn: color,
   revision,
   analysis_level: z.enum(ANALYSIS_LEVELS),
-  lines: z.array(AnalysisLineSchema),
+  lines: analysisLines,
 });
 
 export const Maia3MoveSchema = z.strictObject({

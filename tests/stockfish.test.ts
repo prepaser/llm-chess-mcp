@@ -2119,6 +2119,217 @@ test("captured process methods preserve once and borrowed receiver semantics", a
   });
 });
 
+test("async initializer hooks stay owned without capturing unrelated work", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const names = ["on", "addListener", "prependListener", "once", "prependOnceListener"];
+    const methods = names.map((name) => process[name]);
+    const own = names.map((name) => Object.hasOwn(process, name));
+    let packageHits = 0;
+    let appHits = 0;
+    let aliasDuring = false;
+    const packageHook = () => packageHits++;
+    const appHook = () => appHits++;
+    const engine = {
+      listener: null,
+      sendCommand(command) {
+        if (command === "uci") queueMicrotask(() => this.listener?.("uciok"));
+        else if (command === "isready") queueMicrotask(() => this.listener?.("readyok"));
+        else if (command.startsWith("go depth ")) {
+          queueMicrotask(() => this.listener?.("bestmove e2e4"));
+        }
+      },
+      terminate() {},
+    };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          aliasDuring = process.on === process.addListener;
+          setTimeout(() => {
+            process.on("uncaughtException", packageHook);
+            callback(null, engine);
+          }, 20);
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      const analysis = stockfish.analyze("fen", 1, 1);
+      setTimeout(() => process.on("uncaughtException", appHook), 5);
+      await analysis;
+      await stockfish.quit();
+      process.emit("uncaughtException", new Error("probe"), "uncaughtException");
+      process.stdout.write(JSON.stringify({
+        aliasDuring,
+        appHits,
+        packageHits,
+        packageHook: process.listeners("uncaughtException").includes(packageHook),
+        appHook: process.listeners("uncaughtException").includes(appHook),
+        restored: names.every(
+          (name, index) => process[name] === methods[index] && Object.hasOwn(process, name) === own[index],
+        ),
+      }));
+    } finally {
+      Module._load = load;
+      process.removeListener("uncaughtException", packageHook);
+      process.removeListener("uncaughtException", appHook);
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    aliasDuring: true,
+    appHits: 1,
+    packageHits: 0,
+    packageHook: false,
+    appHook: true,
+    restored: true,
+  });
+});
+
+test("nested hook captures retain independent cleanup ownership", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    let calls = 0;
+    let outerHits = 0;
+    let innerHits = 0;
+    let innerReady;
+    const outerHook = () => outerHits++;
+    const innerHook = () => innerHits++;
+    const engine = () => ({
+      listener: null,
+      sendCommand(command) {
+        if (command === "uci") queueMicrotask(() => this.listener?.("uciok"));
+        else if (command === "isready") queueMicrotask(() => this.listener?.("readyok"));
+        else if (command.startsWith("go depth ")) {
+          queueMicrotask(() => this.listener?.("bestmove e2e4"));
+        }
+      },
+      terminate() {},
+    });
+    const outerEngine = engine();
+    const innerEngine = engine();
+    const inner = new Stockfish({
+      timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+    });
+    const outer = new Stockfish({
+      timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+    });
+    Module._load = function(request, parent, isMain) {
+      if (request === entry && ++calls === 1) {
+        return (_flavor, callback) => {
+          process.on("uncaughtException", outerHook);
+          innerReady = inner.init();
+          queueMicrotask(() => callback(null, outerEngine));
+          return outerEngine;
+        };
+      }
+      if (request === entry) {
+        return (_flavor, callback) => {
+          process.on("uncaughtException", innerHook);
+          queueMicrotask(() => callback(null, innerEngine));
+          return innerEngine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      await outer.analyze("fen", 1, 1);
+      await innerReady;
+      await inner.quit();
+      process.emit("uncaughtException", new Error("inner closed"), "uncaughtException");
+      const afterInner = { outerHits, innerHits };
+      await outer.quit();
+      process.emit("uncaughtException", new Error("outer closed"), "uncaughtException");
+      process.stdout.write(JSON.stringify({ afterInner, afterOuter: { outerHits, innerHits } }));
+    } finally {
+      Module._load = load;
+      process.removeListener("uncaughtException", outerHook);
+      process.removeListener("uncaughtException", innerHook);
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    afterInner: { outerHits: 1, innerHits: 0 },
+    afterOuter: { outerHits: 1, innerHits: 0 },
+  });
+});
+
+test("callback timeout releases hook capture and restores process methods", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const names = ["on", "addListener", "prependListener", "once", "prependOnceListener"];
+    const methods = names.map((name) => process[name]);
+    const own = names.map((name) => Object.hasOwn(process, name));
+    const hook = () => {};
+    const engine = { listener: null, sendCommand() {}, terminate() {} };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return () => {
+          process.on("uncaughtException", hook);
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 20, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      const outcome = await stockfish
+        .analyze("fen", 1, 1)
+        .then(() => "resolved", (error) => String(error));
+      await stockfish.quit();
+      process.stdout.write(JSON.stringify({
+        outcome,
+        hook: process.listeners("uncaughtException").includes(hook),
+        restored: names.every(
+          (name, index) => process[name] === methods[index] && Object.hasOwn(process, name) === own[index],
+        ),
+      }));
+    } finally {
+      Module._load = load;
+      process.removeListener("uncaughtException", hook);
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    outcome: "Error: stockfish init timeout",
+    hook: false,
+    restored: true,
+  });
+});
+
 test(
   "real lite-single quit stops active search without leaking stdout",
   { timeout: 15_000 },

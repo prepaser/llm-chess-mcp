@@ -207,9 +207,10 @@ human-readable summary and must not be parsed as data.
   `best / excellent / good / inaccuracy / mistake / blunder`.
 - `maia3Prob` is a **human-likelihood**, not move quality. A high-probability move
   can still be objectively bad.
-- Analysis continuations return `pv` in UCI and the same legal prefix in
-  `pvSan` as SAN. If an engine line contains an invalid move, `pvSan` stops
-  before it while the original `pv` remains unchanged.
+- Successful analysis continuations return corresponding `pv` and `pvSan`
+  arrays of equal length in UCI and SAN. An invalid engine continuation is
+  rejected at the internal tool boundary instead of returning a truncated
+  `pvSan`.
 
 ## Candidate structure
 

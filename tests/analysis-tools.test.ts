@@ -280,6 +280,142 @@ test("position_analyze rejects partially consumable injected PVs", async (t) => 
   });
 });
 
+test("position_analyze rejects invalid injected MultiPV sets", async (t) => {
+  const games = new GameStore({ createId: () => "position-multipv" });
+  const gameId = games.createGame();
+  const line = {
+    multipv: 1,
+    scoreCp: 10,
+    scoreMate: 3,
+    wdl: null,
+    pv: ["e2e4"],
+  };
+  const server = buildServer(
+    analysisServices(games, async () => [], async () => [line, { ...line }]),
+  );
+  const client = new Client({ name: "analysis-tests", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const response = await client.callTool({
+    name: "position_analyze",
+    arguments: { game_id: gameId, multipv: 1 },
+  });
+  assert.equal(response.isError, true);
+  assert.deepEqual(response.structuredContent, {
+    error: { code: "INTERNAL", message: "internal tool error" },
+  });
+});
+
+test("analysis adapters clone injected results before use", async () => {
+  const games = new GameStore({ createId: () => "analysis-clone" });
+  const gameId = games.createGame();
+  const retained = [
+    {
+      multipv: 1,
+      scoreCp: 10,
+      scoreMate: null,
+      wdl: null,
+      pv: ["e2e4"],
+    },
+  ];
+  const { server, handlers } = captureHandlers();
+  registerAnalysisTools(
+    server,
+    analysisServices(games, async () => [], async () => retained),
+  );
+  const handler = handlers.get("position_analyze");
+  assert.ok(handler);
+  const result = await handler(
+    { game_id: gameId, analysis_level: "normal", multipv: 1 },
+    { mcpReq: { signal: new AbortController().signal } } as ServerContext,
+  ) as { structuredContent: { lines: Array<{ pv: string[] }> } };
+  retained[0]!.pv.push("e7e5");
+
+  assert.deepEqual(result.structuredContent.lines[0]?.pv, ["e2e4"]);
+});
+
+test("analysis adapters mask uncloneable injected results", async (t) => {
+  const games = new GameStore({ createId: () => "analysis-proxy" });
+  const gameId = games.createGame();
+  const lines = new Proxy(
+    [
+      {
+        multipv: 1,
+        scoreCp: 10,
+        scoreMate: null,
+        wdl: null,
+        pv: ["e2e4"],
+      },
+    ],
+    {},
+  );
+  const server = buildServer(
+    analysisServices(games, async () => [], async () => lines),
+  );
+  const client = new Client({ name: "analysis-tests", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const response = await client.callTool({
+    name: "position_analyze",
+    arguments: { game_id: gameId },
+  });
+  assert.equal(response.isError, true);
+  assert.deepEqual(response.structuredContent, {
+    error: { code: "INTERNAL", message: "internal tool error" },
+  });
+});
+
+test("move_evaluate clones both injected analysis results", async (t) => {
+  const games = new GameStore({ createId: () => "evaluate-proxy" });
+  const gameId = games.createGame();
+  let calls = 0;
+  const valid = [
+    {
+      multipv: 1,
+      scoreCp: 10,
+      scoreMate: null,
+      wdl: null,
+      pv: ["e2e4"],
+    },
+  ];
+  const server = buildServer(
+    analysisServices(games, async () => [], async () => {
+      calls += 1;
+      return calls === 1 ? valid : new Proxy(valid, {});
+    }),
+  );
+  const client = new Client({ name: "analysis-tests", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const response = await client.callTool({
+    name: "move_evaluate",
+    arguments: { game_id: gameId, move: "e4", depth: 1 },
+  });
+  assert.equal(response.isError, true);
+  assert.deepEqual(response.structuredContent, {
+    error: { code: "INTERNAL", message: "internal tool error" },
+  });
+  assert.equal(calls, 2);
+});
+
 test("move_evaluate rejects partially consumable successor PVs", async (t) => {
   const games = new GameStore({ createId: () => "evaluate-pv" });
   const gameId = games.createGame();

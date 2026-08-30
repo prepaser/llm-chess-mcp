@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
 import { dirname, sep } from "node:path";
 import type { SfLine } from "../domain.js";
@@ -157,10 +158,10 @@ function loadStockfish(): StockfishInit {
         callback(error, initializedEngine);
       };
       try {
-        hooks.install();
-        try {
+        engine = hooks.run(() => {
           const init = require(entry) as StockfishInit;
-          engine = init(flavor, (error, initializedEngine) => {
+          return init(flavor, (error, initializedEngine) => {
+            hooks.release();
             if (phase === "pending") {
               initEngines.add(initializedEngine);
               pendingCallbacks.push([error, initializedEngine]);
@@ -172,12 +173,9 @@ function loadStockfish(): StockfishInit {
             }
             deliver(error, initializedEngine);
           });
-        } finally {
-          hooks.restore();
-        }
+        });
         initEngines.add(engine);
       } catch (error) {
-        hooks.restore();
         rollbackInitEngines();
         hooks.cleanupSilently();
         throw error;
@@ -225,90 +223,106 @@ type HookMethodName =
   | "once"
   | "prependOnceListener";
 
-function captureProcessHooks(): {
-  cleanup: () => void;
-  cleanupSilently: () => void;
-  install: () => void;
-  restore: () => void;
-} {
+type HookCapture = {
+  active: boolean;
+  pending: Record<HookEvent, Set<HookListener>>;
+  registering: boolean;
+  remove: typeof process.removeListener;
+};
+
+const hookMethodNames: HookMethodName[] = [
+  "on",
+  "addListener",
+  "prependListener",
+  "once",
+  "prependOnceListener",
+];
+const hookStorage = new AsyncLocalStorage<HookCapture>();
+const activeHookCaptures = new Set<HookCapture>();
+let hookMethods:
+  | {
+      descriptors: Record<HookMethodName, PropertyDescriptor | undefined>;
+      original: Record<HookMethodName, HookMethod>;
+    }
+  | undefined;
+
+function hookRaw(event: HookEvent): HookListener[] {
+  return process.rawListeners(event) as HookListener[];
+}
+
+function restoreHookMethods(): void {
+  if (!hookMethods || activeHookCaptures.size !== 0) return;
   const mutable = process as unknown as Record<HookMethodName, HookMethod>;
-  const names: HookMethodName[] = [
-    "on",
-    "addListener",
-    "prependListener",
-    "once",
-    "prependOnceListener",
-  ];
+  const { descriptors } = hookMethods;
+  let failure: unknown;
+  for (const name of hookMethodNames) {
+    try {
+      const descriptor = descriptors[name];
+      if (descriptor) Object.defineProperty(process, name, descriptor);
+      else delete mutable[name];
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  hookMethods = undefined;
+  if (failure) throw failure;
+}
+
+function installHookMethods(): void {
+  if (hookMethods) return;
+  const mutable = process as unknown as Record<HookMethodName, HookMethod>;
   const original = Object.fromEntries(
-    names.map((name) => [name, mutable[name]]),
+    hookMethodNames.map((name) => [name, mutable[name]]),
   ) as Record<HookMethodName, HookMethod>;
   const descriptors = Object.fromEntries(
-    names.map((name) => [name, Object.getOwnPropertyDescriptor(process, name)]),
+    hookMethodNames.map((name) => [
+      name,
+      Object.getOwnPropertyDescriptor(process, name),
+    ]),
   ) as Record<HookMethodName, PropertyDescriptor | undefined>;
-  const remove = process.removeListener;
-  const pending: Record<HookEvent, Set<HookListener>> = {
-    uncaughtException: new Set(),
-    unhandledRejection: new Set(),
-  };
-  let installed = false;
-  let registering = false;
+  hookMethods = { descriptors, original };
 
   const isHookEvent = (event: string | symbol): event is HookEvent =>
     event === "uncaughtException" || event === "unhandledRejection";
-  const raw = (event: HookEvent) =>
-    process.rawListeners(event) as HookListener[];
-  const register = (
-    event: HookEvent,
-    listener: HookListener,
-    once: boolean,
-  ): HookListener => {
-    const registration = function registeredProcessHook(
-      this: NodeJS.Process,
-      ...args: unknown[]
-    ) {
-      if (once) Reflect.apply(remove, this, [event, registration]);
-      Reflect.apply(listener, this, args);
-    };
-    Object.defineProperty(registration, "listener", { value: listener });
-    return registration;
-  };
-  const intercept = (
-    name: HookMethodName,
-    once: boolean,
-  ): HookMethod =>
+  const intercept = (name: HookMethodName, once: boolean): HookMethod =>
     function interceptedProcessHook(
       this: NodeJS.Process,
       event,
       listener,
     ) {
+      const capture = hookStorage.getStore();
       if (
         this !== process ||
+        !capture?.active ||
         !isHookEvent(event) ||
-        typeof listener !== "function"
+        typeof listener !== "function" ||
+        capture.registering
       ) {
         return Reflect.apply(original[name], this, [event, listener]);
       }
-      if (registering) {
-        return Reflect.apply(original[name], this, [event, listener]);
-      }
-
-      const registration = register(event, listener, once);
+      const registration = function registeredProcessHook(
+        this: NodeJS.Process,
+        ...args: unknown[]
+      ) {
+        if (once) Reflect.apply(capture.remove, this, [event, registration]);
+        Reflect.apply(listener, this, args);
+      };
+      Object.defineProperty(registration, "listener", { value: listener });
       const method = once
         ? name === "prependOnceListener"
           ? original.prependListener
           : original.on
         : original[name];
-      registering = true;
+      capture.registering = true;
       try {
         return Reflect.apply(method, this, [event, registration]);
       } finally {
-        registering = false;
-        if (raw(event).includes(registration)) {
-          pending[event].add(registration);
+        capture.registering = false;
+        if (hookRaw(event).includes(registration)) {
+          capture.pending[event].add(registration);
         }
       }
     };
-
   const setMethod = (name: HookMethodName, method: HookMethod) => {
     const descriptor = descriptors[name];
     if (descriptor && Object.hasOwn(descriptor, "value")) {
@@ -318,63 +332,71 @@ function captureProcessHooks(): {
     }
   };
 
-  const restore = () => {
-    if (!installed) return;
-    let failure: unknown;
-    for (const name of names) {
-      try {
-        const descriptor = descriptors[name];
-        if (descriptor) Object.defineProperty(process, name, descriptor);
-        else delete mutable[name];
-      } catch (error) {
-        failure ??= error;
-      }
-    }
-    installed = false;
-    if (failure) throw failure;
-  };
-  const install = () => {
-    if (installed) return;
-    installed = true;
+  try {
+    const on = intercept("on", false);
+    setMethod("on", on);
+    setMethod("addListener", original.on === original.addListener ? on : intercept("addListener", false));
+    setMethod("prependListener", intercept("prependListener", false));
+    setMethod("once", intercept("once", true));
+    setMethod("prependOnceListener", intercept("prependOnceListener", true));
+  } catch (error) {
+    activeHookCaptures.clear();
     try {
-      setMethod("on", intercept("on", false));
-      setMethod("addListener", intercept("addListener", false));
-      setMethod("prependListener", intercept("prependListener", false));
-      setMethod("once", intercept("once", true));
-      setMethod("prependOnceListener", intercept("prependOnceListener", true));
-    } catch (error) {
-      try {
-        restore();
-      } catch {}
-      throw error;
-    }
+      restoreHookMethods();
+    } catch {}
+    throw error;
+  }
+}
+
+function captureProcessHooks(): {
+  cleanup: () => void;
+  cleanupSilently: () => void;
+  release: () => void;
+  run: <T>(fn: () => T) => T;
+} {
+  const capture: HookCapture = {
+    active: false,
+    pending: {
+      uncaughtException: new Set(),
+      unhandledRejection: new Set(),
+    },
+    registering: false,
+    remove: process.removeListener,
+  };
+  const release = () => {
+    if (!capture.active) return;
+    capture.active = false;
+    activeHookCaptures.delete(capture);
+    restoreHookMethods();
   };
   const cleanupEvent = (event: HookEvent) => {
     let failure: unknown;
-    for (let attempt = 0; attempt < 2 && pending[event].size !== 0; attempt++) {
+    for (let attempt = 0; attempt < 2 && capture.pending[event].size !== 0; attempt++) {
       failure = undefined;
-      for (const registration of pending[event]) {
+      for (const registration of capture.pending[event]) {
         try {
-          Reflect.apply(remove, process, [event, registration]);
+          Reflect.apply(capture.remove, process, [event, registration]);
         } catch (error) {
           failure ??= error;
         } finally {
-          if (!raw(event).includes(registration)) {
-            pending[event].delete(registration);
+          if (!hookRaw(event).includes(registration)) {
+            capture.pending[event].delete(registration);
           }
         }
       }
     }
-    if (pending[event].size !== 0) {
+    if (capture.pending[event].size !== 0) {
       throw failure ?? new Error("stockfish process listener cleanup failed");
     }
   };
   const cleanup = () => {
     let failure: unknown;
-    for (const event of [
-      "uncaughtException",
-      "unhandledRejection",
-    ] as const) {
+    try {
+      release();
+    } catch (error) {
+      failure = error;
+    }
+    for (const event of ["uncaughtException", "unhandledRejection"] as const) {
       try {
         cleanupEvent(event);
       } catch (error) {
@@ -391,8 +413,16 @@ function captureProcessHooks(): {
         cleanup();
       } catch {}
     },
-    install,
-    restore,
+    release,
+    run: <T>(fn: () => T) => {
+      if (!capture.active) {
+        installHookMethods();
+        capture.active = true;
+        activeHookCaptures.add(capture);
+        capture.remove = process.removeListener;
+      }
+      return hookStorage.run(capture, fn);
+    },
   };
 }
 
