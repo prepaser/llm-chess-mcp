@@ -3,6 +3,7 @@ import test from "node:test";
 import { Chess } from "chess.js";
 import { parseMove } from "../src/chess.js";
 import { ChessError } from "../src/errors.js";
+import { unicodeLength } from "../src/string-length.js";
 import {
   GAME_TTL_MS,
   GameStore,
@@ -166,7 +167,14 @@ test("GameStore validates limits and generations distinguish repeated ID sources
 });
 
 test("GameStore rejects invalid generated IDs without consuming capacity", () => {
-  for (const id of [42, null, {}, "", "x".repeat(245)]) {
+  for (const id of [
+    42,
+    null,
+    {},
+    "",
+    "x".repeat(245),
+    "😀".repeat(245),
+  ]) {
     const store = new GameStore({
       maxGames: 1,
       clock: () => 0,
@@ -215,6 +223,20 @@ test("GameStore bounds generated IDs and fails closed on generation exhaustion",
   assert.equal(exhausted.deleteGame(last), true);
   expectChessError("GAME_ID_GENERATION_FAILED", () => exhausted.createGame());
   assert.equal(exhausted.gameCount(), 0);
+});
+
+test("GameStore measures generated ID limits in Unicode code points", () => {
+  const store = new GameStore({
+    clock: () => 0,
+    createId: () => "😀".repeat(244),
+  });
+  (store as unknown as { nextIdGeneration: number | null })
+    .nextIdGeneration = Number.MAX_SAFE_INTEGER;
+
+  const id = store.createGame();
+  assert.equal(unicodeLength(id), 256);
+  assert.ok(id.length > 256);
+  assert.equal(store.getSnapshot(id).revision, 0);
 });
 
 test("GameStore generation exhaustion fails before invoking the ID source", () => {

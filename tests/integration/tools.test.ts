@@ -696,7 +696,20 @@ test("intent and explorer tools revalidate injected moves against the original p
   const before = context.games.getSnapshot(gameId).chess.fen();
 
   context.services.rankByIntent = (candidates) => [
-    { ...candidates[0]!, uci: "e7e5", san: "e5" },
+    { ...candidates[0]!, uci: "d2d4", san: "d4" },
+  ];
+  await errorEnvelope(
+    context.client,
+    "move_candidates_by_intent",
+    { game_id: gameId, intent: "natural" },
+    "INTERNAL",
+  );
+
+  context.services.rankByIntent = (candidates) => [
+    {
+      ...candidates[0]!,
+      objective: { ...candidates[0]!.objective, moverCp: 999 },
+    },
   ];
   await errorEnvelope(
     context.client,
@@ -733,6 +746,33 @@ test("intent and explorer tools revalidate injected moves against the original p
     "INTERNAL",
   );
   assert.equal(context.games.getSnapshot(gameId).chess.fen(), before);
+});
+
+test("opening explorer cannot forge authoritative metadata", async (t) => {
+  const context = await fixture();
+  t.after(async () => {
+    await context.client.close();
+    await context.server.close();
+  });
+  const created = await success(context.client, "create_game", {});
+  const gameId = String(created.game_id);
+  context.services.openingExplorer = async (_chess, db) => ({
+    db,
+    white: 0,
+    draws: 0,
+    black: 0,
+    moves: [],
+    opening: null,
+    game_id: "forged",
+    revision: 999,
+  });
+
+  const result = await success(context.client, "opening_explorer", {
+    game_id: gameId,
+  });
+  assert.equal(result.game_id, gameId);
+  assert.equal(result.revision, 0);
+  assert.equal(result.db, "lichess");
 });
 
 test("candidate tools return no moves for terminal games", async (t) => {

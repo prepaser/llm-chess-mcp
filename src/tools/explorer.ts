@@ -52,7 +52,16 @@ export function registerExplorerTool(
         validateMoveIdentities(result.moves, legal);
         return toolResult(
           OpeningExplorerOutputSchema,
-          { game_id, revision, ...result, db: filters.db },
+          {
+            game_id,
+            revision,
+            db: filters.db,
+            white: result.white,
+            draws: result.draws,
+            black: result.black,
+            moves: result.moves,
+            opening: result.opening,
+          },
           `Lichess ${db} returned ${result.moves.length} moves for game ${game_id}`,
         );
       },

@@ -52,9 +52,15 @@ test("every game-id input enforces the shared length bounds", () => {
       name as keyof typeof TOOL_INPUT_SCHEMAS
     ] as z.ZodType;
     assert.equal(schema.safeParse({ ...input, game_id: "g".repeat(256) }).success, true, name);
+    assert.equal(schema.safeParse({ ...input, game_id: "😀".repeat(256) }).success, true, name);
     assert.equal(schema.safeParse({ ...input, game_id: "" }).success, false, name);
     assert.equal(
       schema.safeParse({ ...input, game_id: "g".repeat(257) }).success,
+      false,
+      name,
+    );
+    assert.equal(
+      schema.safeParse({ ...input, game_id: "😀".repeat(257) }).success,
       false,
       name,
     );

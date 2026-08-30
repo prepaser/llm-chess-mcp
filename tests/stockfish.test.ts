@@ -1422,22 +1422,10 @@ test("owned listener tokens survive public wrapper removal and prepending", asyn
       process.emit("unhandledRejection", {}, Promise.resolve());
       process.stdout.write(JSON.stringify({
         uncaughtSequence: remainingUncaught.map((listener) =>
-          listener === uncaught[1]
-            ? "prepend"
-            : listener === markerUncaught
-              ? "marker"
-              : listener === uncaught[0]
-                ? "readd"
-                : "unknown",
+          listener === markerUncaught ? "marker" : "shared",
         ),
         unhandledSequence: remainingUnhandled.map((listener) =>
-          listener === unhandled[1]
-            ? "prepend"
-            : listener === markerUnhandled
-              ? "marker"
-              : listener === unhandled[0]
-                ? "readd"
-                : "unknown",
+          listener === markerUnhandled ? "marker" : "shared",
         ),
         uncaughtOrder,
         unhandledOrder,
@@ -1460,8 +1448,8 @@ test("owned listener tokens survive public wrapper removal and prepending", asyn
     { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
   );
   assert.deepEqual(JSON.parse(stdout), {
-    uncaughtSequence: ["prepend", "marker", "readd"],
-    unhandledSequence: ["prepend", "marker", "readd"],
+    uncaughtSequence: ["shared", "marker", "shared"],
+    unhandledSequence: ["shared", "marker", "shared"],
     uncaughtOrder: ["hook", "marker", "hook"],
     unhandledOrder: ["hook", "marker", "hook"],
     ownedUncaughtLeft: false,
@@ -1564,7 +1552,7 @@ test("throwing process removal observers cannot strand engine teardown", async (
   assert.deepEqual(JSON.parse(stdout), {
     result: "resolved",
     observerThrows: 4,
-    preRemovalThrows: 3,
+    preRemovalThrows: 0,
     teardownPending: 0,
     uncaught: 1,
     unhandled: 0,
@@ -1579,6 +1567,9 @@ test("init failure preserves its error while cleaning throwing process hooks", a
     const require = createRequire(import.meta.url);
     const entry = require.resolve("stockfish");
     const load = Module._load;
+    const methodNames = ["on", "addListener", "prependListener", "once", "prependOnceListener"];
+    const methods = methodNames.map((name) => process[name]);
+    const methodOwn = methodNames.map((name) => Object.hasOwn(process, name));
     const swallow = () => {};
     const uncaught = () => {};
     const unhandled = () => {};
@@ -1618,6 +1609,10 @@ test("init failure preserves its error while cleaning throwing process hooks", a
       process.stdout.write(JSON.stringify({
         outcome,
         observerThrows,
+        methodsRestored: methodNames.every(
+          (name, index) =>
+            process[name] === methods[index] && Object.hasOwn(process, name) === methodOwn[index],
+        ),
         uncaught: process.listeners("uncaughtException").includes(uncaught),
         unhandled: process.listeners("unhandledRejection").includes(unhandled),
       }));
@@ -1637,6 +1632,7 @@ test("init failure preserves its error while cleaning throwing process hooks", a
   assert.deepEqual(JSON.parse(stdout), {
     outcome: "Error: init failed",
     observerThrows: 4,
+    methodsRestored: true,
     uncaught: false,
     unhandled: false,
   });
@@ -1653,20 +1649,27 @@ test("listener ownership failure disposes its orphan engine transactionally", as
     const swallow = () => {};
     const uncaught = () => {};
     const unhandled = () => {};
-    const engine = (name) => ({
+    const engine = (name, respond) => ({
       listener: null,
       commands: [],
       terminations: 0,
       sendCommand(command) {
         this.commands.push(command);
+        if (respond && command === "uci") {
+          queueMicrotask(() => this.listener?.("uciok"));
+        } else if (respond && command === "isready") {
+          queueMicrotask(() => this.listener?.("readyok"));
+        } else if (respond && command.startsWith("go depth ")) {
+          queueMicrotask(() => this.listener?.("bestmove e2e4"));
+        }
       },
       terminate() {
         this.terminations++;
       },
       name,
     });
-    const returned = engine("returned");
-    const initialized = engine("initialized");
+    const returned = engine("returned", false);
+    const initialized = engine("initialized", true);
     process.prependListener("uncaughtException", swallow);
     let active = true;
     let observerThrows = 0;
@@ -1700,13 +1703,14 @@ test("listener ownership failure disposes its orphan engine transactionally", as
       const outcome = await stockfish
         .analyze("fen", 1, 1)
         .then(() => "resolved", (error) => String(error));
+      await stockfish.quit();
       active = false;
       process.stdout.write(JSON.stringify({
         outcome,
         observerThrows,
         engines: [returned, initialized].map((current) => ({
           name: current.name,
-          commands: current.commands,
+          quitCommands: current.commands.filter((command) => command === "quit").length,
           terminations: current.terminations,
         })),
         uncaught: process.listeners("uncaughtException").includes(uncaught),
@@ -1726,11 +1730,11 @@ test("listener ownership failure disposes its orphan engine transactionally", as
     { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
   );
   assert.deepEqual(JSON.parse(stdout), {
-    outcome: "Error: observer failed",
-    observerThrows: 6,
+    outcome: "resolved",
+    observerThrows: 4,
     engines: [
-      { name: "returned", commands: ["quit"], terminations: 1 },
-      { name: "initialized", commands: ["quit"], terminations: 1 },
+      { name: "returned", quitCommands: 1, terminations: 1 },
+      { name: "initialized", quitCommands: 1, terminations: 1 },
     ],
     uncaught: false,
     unhandled: false,
@@ -1822,6 +1826,14 @@ test("prepended duplicate hooks preserve preexisting once occurrences", async ()
     const marker = () => markers++;
     process.on("uncaughtException", marker);
     process.once("uncaughtException", shared);
+    let blocked = 0;
+    const blocker = (_event, listener) => {
+      if (listener === marker) {
+        blocked++;
+        throw new Error("blocked marker restore");
+      }
+    };
+    process.on("newListener", blocker);
     const engine = {
       listener: null,
       sendCommand(command) {
@@ -1860,9 +1872,10 @@ test("prepended duplicate hooks preserve preexisting once occurrences", async ()
       );
       process.emit("uncaughtException", new Error("first"), "uncaughtException");
       process.emit("uncaughtException", new Error("second"), "uncaughtException");
-      process.stdout.write(JSON.stringify({ hooks, markers, order }));
+      process.stdout.write(JSON.stringify({ blocked, hooks, markers, order }));
     } finally {
       Module._load = load;
+      process.removeListener("newListener", blocker);
       process.removeAllListeners("uncaughtException");
     }
   `;
@@ -1872,6 +1885,7 @@ test("prepended duplicate hooks preserve preexisting once occurrences", async ()
     { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
   );
   assert.deepEqual(JSON.parse(stdout), {
+    blocked: 0,
     hooks: 1,
     markers: 2,
     order: ["marker", "once-shared"],
@@ -1947,6 +1961,9 @@ test("ordinary listener acquisition does not re-register preexisting hooks", asy
     const require = createRequire(import.meta.url);
     const entry = require.resolve("stockfish");
     const load = Module._load;
+    const methodNames = ["on", "addListener", "prependListener", "once", "prependOnceListener"];
+    const methods = methodNames.map((name) => process[name]);
+    const methodOwn = methodNames.map((name) => Object.hasOwn(process, name));
     const markerUncaught = () => {};
     const markerUnhandled = () => {};
     const uncaught = () => {};
@@ -1991,7 +2008,14 @@ test("ordinary listener acquisition does not re-register preexisting hooks", asy
       });
       await stockfish.analyze("fen", 1, 1);
       await stockfish.quit();
-      process.stdout.write(JSON.stringify({ markerAdds, markerRemovals }));
+      process.stdout.write(JSON.stringify({
+        markerAdds,
+        markerRemovals,
+        methodsRestored: methodNames.every(
+          (name, index) =>
+            process[name] === methods[index] && Object.hasOwn(process, name) === methodOwn[index],
+        ),
+      }));
     } finally {
       Module._load = load;
       process.removeAllListeners("newListener");
@@ -2005,7 +2029,94 @@ test("ordinary listener acquisition does not re-register preexisting hooks", asy
     ["--import", "tsx", "--input-type=module", "--eval", source],
     { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
   );
-  assert.deepEqual(JSON.parse(stdout), { markerAdds: 0, markerRemovals: 0 });
+  assert.deepEqual(JSON.parse(stdout), {
+    markerAdds: 0,
+    markerRemovals: 0,
+    methodsRestored: true,
+  });
+});
+
+test("captured process methods preserve once and borrowed receiver semantics", async () => {
+  const moduleUrl = new URL("../src/engines/stockfish.ts", import.meta.url).href;
+  const source = `
+    import { EventEmitter } from "node:events";
+    import Module, { createRequire } from "node:module";
+    import { Stockfish } from ${JSON.stringify(moduleUrl)};
+    const require = createRequire(import.meta.url);
+    const entry = require.resolve("stockfish");
+    const load = Module._load;
+    const order = [];
+    let borrowed = 0;
+    let invalid = false;
+    process.on("uncaughtException", () => order.push("marker"));
+    const engine = {
+      listener: null,
+      sendCommand(command) {
+        if (command === "uci") queueMicrotask(() => this.listener?.("uciok"));
+        else if (command === "isready") queueMicrotask(() => this.listener?.("readyok"));
+        else if (command.startsWith("go depth ")) {
+          queueMicrotask(() => this.listener?.("bestmove e2e4"));
+        }
+      },
+      terminate() {},
+    };
+    Module._load = function(request, parent, isMain) {
+      if (request === entry) {
+        return (_flavor, callback) => {
+          process.on("uncaughtException", () => order.push("on"));
+          process.addListener("uncaughtException", () => order.push("add"));
+          process.prependListener("uncaughtException", () => order.push("prepend"));
+          process.once("uncaughtException", () => order.push("once"));
+          process.prependOnceListener("uncaughtException", () => order.push("prependOnce"));
+          const emitter = new EventEmitter();
+          process.on.call(emitter, "uncaughtException", () => borrowed++);
+          emitter.emit("uncaughtException", new Error("borrowed"));
+          try {
+            process.on("uncaughtException", null);
+          } catch (error) {
+            invalid = error instanceof TypeError;
+          }
+          queueMicrotask(() => callback(null, engine));
+          return engine;
+        };
+      }
+      return load.call(this, request, parent, isMain);
+    };
+    try {
+      const stockfish = new Stockfish({
+        timeouts: { init: 100, handshake: 100, analyze: 100, stopGrace: 5 },
+      });
+      await stockfish.analyze("fen", 1, 1);
+      process.emit("uncaughtException", new Error("first"), "uncaughtException");
+      process.emit("uncaughtException", new Error("second"), "uncaughtException");
+      await stockfish.quit();
+      process.stdout.write(JSON.stringify({ borrowed, invalid, order }));
+    } finally {
+      Module._load = load;
+      process.removeAllListeners("uncaughtException");
+    }
+  `;
+  const { stdout } = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", source],
+    { cwd: process.cwd(), encoding: "utf8", timeout: 5_000 },
+  );
+  assert.deepEqual(JSON.parse(stdout), {
+    borrowed: 1,
+    invalid: true,
+    order: [
+      "prependOnce",
+      "prepend",
+      "marker",
+      "on",
+      "add",
+      "once",
+      "prepend",
+      "marker",
+      "on",
+      "add",
+    ],
+  });
 });
 
 test(

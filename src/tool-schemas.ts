@@ -101,7 +101,15 @@ export const SfLineSchema = z.strictObject({
 export const AnalysisLineSchema = z.strictObject({
   ...SfLineSchema.shape,
   pvSan: z.array(z.string()),
-});
+}).superRefine(({ pv, pvSan }, ctx) => {
+  if (pv.length !== pvSan.length) {
+    ctx.addIssue({
+      code: "custom",
+      message: "pv and pvSan must have equal lengths",
+      path: ["pvSan"],
+    });
+  }
+}).describe("pv and pvSan contain the same continuation and must have equal lengths.");
 
 const openingStatsValues = {
   games: safeCount.nullable(),
@@ -314,7 +322,15 @@ const moveEvaluation = z.strictObject({
     .nullable(),
   pv: z.array(z.string()),
   pvSan: z.array(z.string()),
-});
+}).superRefine(({ pv, pvSan }, ctx) => {
+  if (pv.length !== pvSan.length) {
+    ctx.addIssue({
+      code: "custom",
+      message: "pv and pvSan must have equal lengths",
+      path: ["pvSan"],
+    });
+  }
+}).describe("pv and pvSan contain the same continuation and must have equal lengths.");
 
 export const MoveEvaluateOutputSchema = z.strictObject({
   game_id: GameIdSchema,

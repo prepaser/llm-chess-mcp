@@ -17,10 +17,11 @@ type Handler = (
 function analysisServices(
   games: GameStore,
   humanMoveDistribution: AppServices["humanMoveDistribution"],
+  analyze: AppServices["analyze"] = async () => [],
 ): AppServices {
   return {
     games,
-    analyze: async () => [],
+    analyze,
     quit: async () => undefined,
     humanMoveDistribution,
     explorerEnabled: () => false,
@@ -244,4 +245,70 @@ test("human_move_distribution validates against the original position on wire", 
     error: { code: "INTERNAL", message: "internal tool error" },
   });
   assert.equal(games.getSnapshot(gameId).chess.turn(), "w");
+});
+
+test("position_analyze rejects partially consumable injected PVs", async (t) => {
+  const games = new GameStore({ createId: () => "position-pv" });
+  const gameId = games.createGame();
+  const server = buildServer(
+    analysisServices(games, async () => [], async () => [
+      {
+        multipv: 1,
+        scoreCp: 10,
+        scoreMate: null,
+        wdl: null,
+        pv: ["e7e5"],
+      },
+    ]),
+  );
+  const client = new Client({ name: "analysis-tests", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const response = await client.callTool({
+    name: "position_analyze",
+    arguments: { game_id: gameId },
+  });
+  assert.equal(response.isError, true);
+  assert.deepEqual(response.structuredContent, {
+    error: { code: "INTERNAL", message: "internal tool error" },
+  });
+});
+
+test("move_evaluate rejects partially consumable successor PVs", async (t) => {
+  const games = new GameStore({ createId: () => "evaluate-pv" });
+  const gameId = games.createGame();
+  const server = buildServer(
+    analysisServices(games, async () => [], async () => [
+      {
+        multipv: 1,
+        scoreCp: 10,
+        scoreMate: null,
+        wdl: null,
+        pv: ["e2e4"],
+      },
+    ]),
+  );
+  const client = new Client({ name: "analysis-tests", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const response = await client.callTool({
+    name: "move_evaluate",
+    arguments: { game_id: gameId, move: "e4", depth: 1 },
+  });
+  assert.equal(response.isError, true);
+  assert.deepEqual(response.structuredContent, {
+    error: { code: "INTERNAL", message: "internal tool error" },
+  });
 });

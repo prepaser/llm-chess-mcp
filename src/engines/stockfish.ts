@@ -25,15 +25,6 @@ export type StockfishEngine = {
 
 const processListenerCleanups = new WeakMap<StockfishEngine, () => void>();
 
-type UncaughtExceptionListener = (
-  error: Error,
-  origin: "uncaughtException" | "unhandledRejection",
-) => void;
-type UnhandledRejectionListener = (
-  reason: unknown,
-  promise: Promise<unknown>,
-) => void;
-
 export type StockfishInit = (
   flavor: string,
   cb: (err: Error | null, engine: StockfishEngine) => void,
@@ -117,12 +108,6 @@ function loadStockfish(): StockfishInit {
   const packageRoot = dirname(entry) + sep;
   const packageEntry = (id: string) => id === entry || id.startsWith(packageRoot);
   return (flavor, callback) => {
-    const uncaught = process.rawListeners(
-      "uncaughtException",
-    ) as UncaughtExceptionListener[];
-    const unhandled = process.rawListeners(
-      "unhandledRejection",
-    ) as UnhandledRejectionListener[];
     const cached = new Map(
       Object.entries(require.cache).filter(
         (entry): entry is [string, NodeModule] =>
@@ -143,6 +128,7 @@ function loadStockfish(): StockfishInit {
       let engine: StockfishEngine;
       const initEngines = new Set<StockfishEngine>();
       const disposedInitEngines = new WeakSet<StockfishEngine>();
+      const hooks = captureProcessHooks();
       const disposeInitEngine = (initializedEngine: StockfishEngine) => {
         if (disposedInitEngines.has(initializedEngine)) return;
         disposedInitEngines.add(initializedEngine);
@@ -171,115 +157,33 @@ function loadStockfish(): StockfishInit {
         callback(error, initializedEngine);
       };
       try {
-        const init = require(entry) as StockfishInit;
-        engine = init(flavor, (error, initializedEngine) => {
-          if (phase === "pending") {
-            initEngines.add(initializedEngine);
-            pendingCallbacks.push([error, initializedEngine]);
-            return;
-          }
-          if (phase === "failed") {
-            disposeInitEngine(initializedEngine);
-            return;
-          }
-          deliver(error, initializedEngine);
-        });
+        hooks.install();
+        try {
+          const init = require(entry) as StockfishInit;
+          engine = init(flavor, (error, initializedEngine) => {
+            if (phase === "pending") {
+              initEngines.add(initializedEngine);
+              pendingCallbacks.push([error, initializedEngine]);
+              return;
+            }
+            if (phase === "failed") {
+              disposeInitEngine(initializedEngine);
+              return;
+            }
+            deliver(error, initializedEngine);
+          });
+        } finally {
+          hooks.restore();
+        }
         initEngines.add(engine);
       } catch (error) {
+        hooks.restore();
         rollbackInitEngines();
-        cleanupAddedProcessListeners(uncaught, unhandled);
+        hooks.cleanupSilently();
         throw error;
       }
 
-      let cleanupUncaught: () => void;
-      let cleanupUnhandled: () => void;
-      try {
-        cleanupUncaught = ownAddedListeners<UncaughtExceptionListener>(
-          uncaught,
-          process.rawListeners(
-            "uncaughtException",
-          ) as UncaughtExceptionListener[],
-          (listener) => process.removeListener("uncaughtException", listener),
-          (listener) => process.on("uncaughtException", listener),
-          (listener) =>
-            process.rawListeners("uncaughtException").includes(listener),
-          (listener) =>
-            function ownedUncaughtException(
-              this: NodeJS.Process,
-              error,
-              origin,
-            ) {
-              Reflect.apply(listener, this, [error, origin]);
-            },
-          (listener) => {
-            const registration = function registeredUncaughtException(
-              this: NodeJS.Process,
-              error: Error,
-              origin: "uncaughtException" | "unhandledRejection",
-            ) {
-              Reflect.apply(listener, this, [error, origin]);
-            };
-            Object.defineProperty(registration, "listener", { value: listener });
-            return registration;
-          },
-        );
-        cleanupUnhandled = ownAddedListeners<UnhandledRejectionListener>(
-          unhandled,
-          process.rawListeners(
-            "unhandledRejection",
-          ) as UnhandledRejectionListener[],
-          (listener) => process.removeListener("unhandledRejection", listener),
-          (listener) => process.on("unhandledRejection", listener),
-          (listener) =>
-            process.rawListeners("unhandledRejection").includes(listener),
-          (listener) =>
-            function ownedUnhandledRejection(
-              this: NodeJS.Process,
-              reason,
-              promise,
-            ) {
-              Reflect.apply(listener, this, [reason, promise]);
-            },
-          (listener) => {
-            const registration = function registeredUnhandledRejection(
-              this: NodeJS.Process,
-              reason: unknown,
-              promise: Promise<unknown>,
-            ) {
-              Reflect.apply(listener, this, [reason, promise]);
-            };
-            Object.defineProperty(registration, "listener", { value: listener });
-            return registration;
-          },
-        );
-      } catch (error) {
-        rollbackInitEngines();
-        cleanupAddedProcessListeners(uncaught, unhandled);
-        throw error;
-      }
-      let uncaughtCleaned = false;
-      let unhandledCleaned = false;
-      const cleanup = () => {
-        let failure: unknown;
-        if (!uncaughtCleaned) {
-          try {
-            cleanupUncaught();
-            uncaughtCleaned = true;
-          } catch (error) {
-            failure = error;
-          }
-        }
-        if (!unhandledCleaned) {
-          try {
-            cleanupUnhandled();
-            unhandledCleaned = true;
-          } catch (error) {
-            failure ??= error;
-          }
-        }
-        if (failure) throw failure;
-      };
-      processListenerCleanups.set(engine, cleanup);
+      processListenerCleanups.set(engine, hooks.cleanup);
       owner = engine;
       phase = "active";
       for (const [error, initializedEngine] of pendingCallbacks) {
@@ -296,83 +200,6 @@ function loadStockfish(): StockfishInit {
   };
 }
 
-function addedListenerIndexes<T>(before: T[], after: T[]): number[] {
-  const added = Array.from({ length: after.length }, () => true);
-  let beforeIndex = before.length - 1;
-  for (let index = after.length - 1; index >= 0 && beforeIndex >= 0; index--) {
-    if (after[index] !== before[beforeIndex]) continue;
-    added[index] = false;
-    beforeIndex--;
-  }
-  if (beforeIndex >= 0) {
-    const remaining = [...before];
-    return after.flatMap((listener, afterIndex) => {
-      const index = remaining.indexOf(listener);
-      if (index < 0) return [afterIndex];
-      remaining.splice(index, 1);
-      return [];
-    });
-  }
-  return added.flatMap((isAdded, index) => (isAdded ? [index] : []));
-}
-
-function addedListeners<T>(before: T[], after: T[]): T[] {
-  return addedListenerIndexes(before, after).map((index) => after[index]!);
-}
-
-function removeAddedListeners<T>(
-  before: T[],
-  current: () => T[],
-  remove: (listener: T) => void,
-  add: (listener: T) => void,
-): void {
-  const after = current();
-  const added = addedListenerIndexes(before, after);
-  const firstAdded = after.length - added.length;
-  if (!added.every((index) => index >= firstAdded)) {
-    for (let index = after.length - 1; index >= 0; index--) {
-      try {
-        remove(after[index]!);
-      } catch {}
-    }
-    for (const listener of before) {
-      try {
-        add(listener);
-      } catch {}
-    }
-    return;
-  }
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const pending = addedListeners(before, current());
-    if (pending.length === 0) return;
-    for (let index = pending.length - 1; index >= 0; index--) {
-      try {
-        remove(pending[index]!);
-      } catch {}
-    }
-  }
-}
-
-function cleanupAddedProcessListeners(
-  uncaught: UncaughtExceptionListener[],
-  unhandled: UnhandledRejectionListener[],
-): void {
-  removeAddedListeners(
-    uncaught,
-    () =>
-      process.rawListeners("uncaughtException") as UncaughtExceptionListener[],
-    (listener) => process.removeListener("uncaughtException", listener),
-    (listener) => process.on("uncaughtException", listener),
-  );
-  removeAddedListeners(
-    unhandled,
-    () =>
-      process.rawListeners("unhandledRejection") as UnhandledRejectionListener[],
-    (listener) => process.removeListener("unhandledRejection", listener),
-    (listener) => process.on("unhandledRejection", listener),
-  );
-}
-
 function disposeOrphanEngine(engine: StockfishEngine): void {
   try {
     engine.listener = () => {};
@@ -385,71 +212,187 @@ function disposeOrphanEngine(engine: StockfishEngine): void {
   } catch {}
 }
 
-function ownAddedListeners<T>(
-  before: T[],
-  after: T[],
-  remove: (listener: T) => void,
-  add: (listener: T) => void,
-  has: (listener: T) => boolean,
-  wrap: (listener: T) => T,
-  register: (listener: T) => T,
-): () => void {
-  const added = new Set(addedListenerIndexes(before, after));
-  const owned = new Map<number, T>();
-  for (const index of added) owned.set(index, register(wrap(after[index]!)));
-  let failure: unknown;
-  const firstAdded = after.length - added.size;
-  const appended = [...added].every((index) => index >= firstAdded);
-  if (appended) {
-    for (let index = after.length - 1; index >= firstAdded; index--) {
-      try {
-        remove(after[index]!);
-      } catch (error) {
-        failure ??= error;
+type HookEvent = "uncaughtException" | "unhandledRejection";
+type HookListener = (...args: unknown[]) => void;
+type HookMethod = (
+  event: string | symbol,
+  listener: HookListener,
+) => NodeJS.Process;
+type HookMethodName =
+  | "on"
+  | "addListener"
+  | "prependListener"
+  | "once"
+  | "prependOnceListener";
+
+function captureProcessHooks(): {
+  cleanup: () => void;
+  cleanupSilently: () => void;
+  install: () => void;
+  restore: () => void;
+} {
+  const mutable = process as unknown as Record<HookMethodName, HookMethod>;
+  const names: HookMethodName[] = [
+    "on",
+    "addListener",
+    "prependListener",
+    "once",
+    "prependOnceListener",
+  ];
+  const original = Object.fromEntries(
+    names.map((name) => [name, mutable[name]]),
+  ) as Record<HookMethodName, HookMethod>;
+  const descriptors = Object.fromEntries(
+    names.map((name) => [name, Object.getOwnPropertyDescriptor(process, name)]),
+  ) as Record<HookMethodName, PropertyDescriptor | undefined>;
+  const remove = process.removeListener;
+  const pending: Record<HookEvent, Set<HookListener>> = {
+    uncaughtException: new Set(),
+    unhandledRejection: new Set(),
+  };
+  let installed = false;
+  let registering = false;
+
+  const isHookEvent = (event: string | symbol): event is HookEvent =>
+    event === "uncaughtException" || event === "unhandledRejection";
+  const raw = (event: HookEvent) =>
+    process.rawListeners(event) as HookListener[];
+  const register = (
+    event: HookEvent,
+    listener: HookListener,
+    once: boolean,
+  ): HookListener => {
+    const registration = function registeredProcessHook(
+      this: NodeJS.Process,
+      ...args: unknown[]
+    ) {
+      if (once) Reflect.apply(remove, this, [event, registration]);
+      Reflect.apply(listener, this, args);
+    };
+    Object.defineProperty(registration, "listener", { value: listener });
+    return registration;
+  };
+  const intercept = (
+    name: HookMethodName,
+    once: boolean,
+  ): HookMethod =>
+    function interceptedProcessHook(
+      this: NodeJS.Process,
+      event,
+      listener,
+    ) {
+      if (
+        this !== process ||
+        !isHookEvent(event) ||
+        typeof listener !== "function"
+      ) {
+        return Reflect.apply(original[name], this, [event, listener]);
       }
-    }
-    for (let index = firstAdded; index < after.length; index++) {
-      try {
-        add(owned.get(index)!);
-      } catch (error) {
-        failure ??= error;
+      if (registering) {
+        return Reflect.apply(original[name], this, [event, listener]);
       }
-    }
-  } else {
-    for (let index = after.length - 1; index >= 0; index--) {
+
+      const registration = register(event, listener, once);
+      const method = once
+        ? name === "prependOnceListener"
+          ? original.prependListener
+          : original.on
+        : original[name];
+      registering = true;
       try {
-        remove(after[index]!);
-      } catch (error) {
-        failure ??= error;
+        return Reflect.apply(method, this, [event, registration]);
+      } finally {
+        registering = false;
+        if (raw(event).includes(registration)) {
+          pending[event].add(registration);
+        }
       }
+    };
+
+  const setMethod = (name: HookMethodName, method: HookMethod) => {
+    const descriptor = descriptors[name];
+    if (descriptor && Object.hasOwn(descriptor, "value")) {
+      Object.defineProperty(process, name, { ...descriptor, value: method });
+    } else {
+      mutable[name] = method;
     }
-    for (const [index, listener] of after.entries()) {
-      try {
-        add(owned.get(index) ?? listener);
-      } catch (error) {
-        failure ??= error;
-      }
-    }
-  }
-  if (failure) throw failure;
-  const pending = new Set(owned.values());
-  return () => {
+  };
+
+  const restore = () => {
+    if (!installed) return;
     let failure: unknown;
-    for (let attempt = 0; attempt < 2 && pending.size !== 0; attempt++) {
+    for (const name of names) {
+      try {
+        const descriptor = descriptors[name];
+        if (descriptor) Object.defineProperty(process, name, descriptor);
+        else delete mutable[name];
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    installed = false;
+    if (failure) throw failure;
+  };
+  const install = () => {
+    if (installed) return;
+    installed = true;
+    try {
+      setMethod("on", intercept("on", false));
+      setMethod("addListener", intercept("addListener", false));
+      setMethod("prependListener", intercept("prependListener", false));
+      setMethod("once", intercept("once", true));
+      setMethod("prependOnceListener", intercept("prependOnceListener", true));
+    } catch (error) {
+      try {
+        restore();
+      } catch {}
+      throw error;
+    }
+  };
+  const cleanupEvent = (event: HookEvent) => {
+    let failure: unknown;
+    for (let attempt = 0; attempt < 2 && pending[event].size !== 0; attempt++) {
       failure = undefined;
-      for (const registration of pending) {
+      for (const registration of pending[event]) {
         try {
-          remove(registration);
+          Reflect.apply(remove, process, [event, registration]);
         } catch (error) {
           failure ??= error;
         } finally {
-          if (!has(registration)) pending.delete(registration);
+          if (!raw(event).includes(registration)) {
+            pending[event].delete(registration);
+          }
         }
       }
     }
-    if (pending.size !== 0) {
+    if (pending[event].size !== 0) {
       throw failure ?? new Error("stockfish process listener cleanup failed");
     }
+  };
+  const cleanup = () => {
+    let failure: unknown;
+    for (const event of [
+      "uncaughtException",
+      "unhandledRejection",
+    ] as const) {
+      try {
+        cleanupEvent(event);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    if (failure) throw failure;
+  };
+
+  return {
+    cleanup,
+    cleanupSilently: () => {
+      try {
+        cleanup();
+      } catch {}
+    },
+    install,
+    restore,
   };
 }
 

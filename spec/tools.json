@@ -2492,6 +2492,7 @@
           "results": {
             "items": {
               "additionalProperties": false,
+              "description": "pv and pvSan contain the same continuation and must have equal lengths.",
               "properties": {
                 "bestCp": {
                   "anyOf": [
@@ -2943,6 +2944,7 @@
           "lines": {
             "items": {
               "additionalProperties": false,
+              "description": "pv and pvSan contain the same continuation and must have equal lengths.",
               "properties": {
                 "multipv": {
                   "maximum": 9007199254740991,

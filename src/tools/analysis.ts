@@ -46,6 +46,15 @@ type AnalysisServices = Pick<
   "games" | "analyze" | "humanMoveDistribution"
 >;
 
+function completePvSan(
+  chess: Parameters<typeof pvToSan>[0],
+  pv: readonly string[],
+): string[] {
+  const san = pvToSan(chess, pv);
+  if (san.length !== pv.length) throw new RangeError("invalid analysis PV");
+  return san;
+}
+
 function validateHumanMoves(
   moves: Maia3Move[],
   topN: number,
@@ -99,7 +108,7 @@ export function registerAnalysisTools(
             scoreMate: line.scoreMate,
             wdl: line.wdl,
             pv: line.pv,
-            pvSan: pvToSan(chess, line.pv),
+            pvSan: completePvSan(chess, line.pv),
           })),
         };
         return toolResult(
@@ -233,7 +242,7 @@ export function registerAnalysisTools(
             cpLoss,
             classification: cpLoss !== null ? classifyCpLoss(cpLoss) : null,
             pv,
-            pvSan: pvToSan(copy, pv),
+            pvSan: completePvSan(copy, pv),
           });
         }
 

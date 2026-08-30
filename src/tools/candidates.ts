@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
+import { isDeepStrictEqual } from "node:util";
 import type * as z from "zod/v4";
 import { snapshotChess } from "../chess.js";
 import { ANALYSIS_PRESETS } from "../eval.js";
@@ -36,6 +37,21 @@ type CandidateResult = {
   payload: CandidatePayload;
   legal: LegalMoveMap;
 };
+
+function validateRankedCandidates(
+  candidates: Candidate[],
+  source: readonly Candidate[],
+  legal: LegalMoveMap,
+): void {
+  validateMoveIdentities(candidates, legal);
+  const sourceByUci = new Map(source.map((candidate) => [candidate.uci, candidate]));
+  for (const candidate of candidates) {
+    const original = sourceByUci.get(candidate.uci);
+    if (!original || !isDeepStrictEqual(candidate, original)) {
+      throw new RangeError("ranked candidates must be an unchanged subset");
+    }
+  }
+}
 
 async function candidatePayload(
   services: CandidateServices,
@@ -143,12 +159,13 @@ export function registerCandidateTools(
       TOOL_OUTPUT_SCHEMAS.move_candidates_by_intent,
       async ({ intent, ...input }, signal) => {
         const { payload, legal } = await candidatePayload(services, input, signal);
+        const source = structuredClone(payload.candidates);
         const candidates = structuredClone(
-          payload.candidates.length
-            ? services.rankByIntent(payload.candidates, intent)
+          source.length
+            ? services.rankByIntent(structuredClone(source), intent)
             : [],
         );
-        validateMoveIdentities(candidates, legal);
+        validateRankedCandidates(candidates, source, legal);
 
         return toolResult(
           TOOL_OUTPUT_SCHEMAS.move_candidates_by_intent,

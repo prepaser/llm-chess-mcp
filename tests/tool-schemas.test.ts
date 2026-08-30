@@ -4,10 +4,12 @@ import * as z from "zod/v4";
 import { EXPLORER_MAX_MOVES, EXPLORER_MAX_STRING_LENGTH } from "../src/explorer-core.js";
 import { GAME_ID_MAX_LENGTH, GameIdSchema } from "../src/tool-fields.js";
 import {
+  AnalysisLineSchema,
   CandidateSchema,
   HumanMoveDistributionOutputSchema,
   LichessMoveSchema,
   Maia3MoveSchema,
+  MoveEvaluateOutputSchema,
   OpeningExplorerOutputSchema,
   OpeningStatsSchema,
   TOOL_OUTPUT_SCHEMAS,
@@ -298,6 +300,39 @@ test("human distribution bounds moves, UCIs, and probability mass", () => {
   );
 });
 
+test("analysis outputs require matching UCI and SAN PV lengths", () => {
+  const line = {
+    multipv: 1,
+    scoreCp: 10,
+    scoreMate: null,
+    wdl: null,
+    pv: ["e2e4"],
+    pvSan: [],
+  };
+  assert.equal(AnalysisLineSchema.safeParse(line).success, false);
+  assert.equal(
+    MoveEvaluateOutputSchema.safeParse({
+      game_id: "game",
+      revision: 0,
+      results: [
+        {
+          move: "e4",
+          uci: "e2e4",
+          result: "ongoing",
+          scoreCp: 10,
+          scoreMate: null,
+          bestCp: 10,
+          cpLoss: 0,
+          classification: "best",
+          pv: line.pv,
+          pvSan: line.pvSan,
+        },
+      ],
+    }).success,
+    false,
+  );
+});
+
 test("wire schemas expose UCI and cross-field constraints", () => {
   const candidateSchema = z.toJSONSchema(CandidateSchema) as JsonSchema;
   const explorerSchema = z.toJSONSchema(OpeningExplorerOutputSchema) as JsonSchema;
@@ -325,9 +360,14 @@ test("wire schemas expose UCI and cross-field constraints", () => {
 test("every game-id output exposes the shared length bounds", () => {
   assert.equal(GameIdSchema.safeParse("g").success, true);
   assert.equal(GameIdSchema.safeParse("g".repeat(GAME_ID_MAX_LENGTH)).success, true);
+  assert.equal(GameIdSchema.safeParse("😀".repeat(GAME_ID_MAX_LENGTH)).success, true);
   assert.equal(GameIdSchema.safeParse("").success, false);
   assert.equal(
     GameIdSchema.safeParse("g".repeat(GAME_ID_MAX_LENGTH + 1)).success,
+    false,
+  );
+  assert.equal(
+    GameIdSchema.safeParse("😀".repeat(GAME_ID_MAX_LENGTH + 1)).success,
     false,
   );
 

@@ -9,6 +9,7 @@ import {
   snapshotChess,
 } from "./chess.js";
 import { ChessError } from "./errors.js";
+import { unicodeLength } from "./string-length.js";
 import type { GameRecord } from "./domain.js";
 
 export const MAX_GAMES = 1_000;
@@ -100,10 +101,11 @@ export class GameStore {
 
     this.availableIdGeneration();
     const rawId = this.createId();
+    const rawIdLength = typeof rawId === "string" ? unicodeLength(rawId) : 0;
     if (
       typeof rawId !== "string" ||
-      rawId.length === 0 ||
-      rawId.length > MAX_GAME_ID_SOURCE_LENGTH
+      rawIdLength === 0 ||
+      rawIdLength > MAX_GAME_ID_SOURCE_LENGTH
     ) {
       throw new ChessError(
         "GAME_ID_GENERATION_FAILED",
@@ -112,7 +114,7 @@ export class GameStore {
     }
     const generation = this.availableIdGeneration();
     const id = `${generation.toString(36)}:${rawId}`;
-    if (id.length > MAX_GAME_ID_LENGTH) {
+    if (unicodeLength(id) > MAX_GAME_ID_LENGTH) {
       throw new ChessError(
         "GAME_ID_GENERATION_FAILED",
         `game ID must be at most ${MAX_GAME_ID_LENGTH} characters`,
