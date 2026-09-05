@@ -177,7 +177,6 @@ async function verifyPackageApi(install) {
       import: "./dist/index.js",
       default: "./dist/index.js",
     },
-    "./dist/*": "./dist/*",
     "./package.json": "./package.json",
   });
 
@@ -200,7 +199,7 @@ async function verifyPackageApi(install) {
     [
       "--input-type=module",
       "--eval",
-      'import assert from "node:assert/strict"; const { toolResult } = await import("llm-chess-mcp/dist/tool-result.js"); const modern = toolResult({ value: 1 }, "modern"); const legacy = toolResult({}, { value: 2 }, "legacy"); assert.deepEqual(modern, { content: [{ type: "text", text: "modern" }], structuredContent: { value: 1 } }); assert.deepEqual(legacy, { content: [{ type: "text", text: "legacy" }], structuredContent: { value: 2 } });',
+      'import assert from "node:assert/strict"; for (const path of ["llm-chess-mcp/dist/tool-result.js", "llm-chess-mcp/dist/server.js"]) await assert.rejects(() => import(path), { code: "ERR_PACKAGE_PATH_NOT_EXPORTED" }); const api = await import("llm-chess-mcp"); assert.equal(typeof api.buildServer, "function");',
       missingEntry,
     ],
     install,

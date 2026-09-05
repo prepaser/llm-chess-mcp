@@ -16,6 +16,11 @@ Stdout is reserved for protocol traffic; diagnostics belong on stderr. stdin
 closure and process signals use idempotent shutdown that closes the active
 transport and terminates Stockfish.
 
+The package export map exposes the typed root entry and `./package.json`. Files
+under `dist/` are implementation details and are not supported deep-import
+paths; integrations must import named APIs from `llm-chess-mcp`. Tool input and
+output contracts are rooted in Zod object schemas at the handler boundary.
+
 The HTTP listener is a backend, not a public edge. For non-local deployment it
 must bind to localhost or a private network reachable only by a reverse proxy.
 That proxy owns TLS, client authentication, external request/connection limits,

@@ -265,57 +265,28 @@ test("safeHandler accepts handlers that return success or tool errors", async ()
   );
 });
 
-test("safeHandler accepts object-valued union and intersection output schemas", async () => {
-  const input = z.strictObject({});
-  const union = z.discriminatedUnion("kind", [
+test("safeHandler supports nested unions but requires object tool roots", async () => {
+  const choice = z.discriminatedUnion("kind", [
     z.strictObject({ kind: z.literal("text"), value: z.string() }),
     z.strictObject({ kind: z.literal("count"), value: z.number() }),
   ]);
-  const intersection = z.intersection(
-    z.strictObject({ value: z.string() }),
-    z.strictObject({ count: z.number() }),
+  const handler = safeHandler(z.strictObject({}), z.strictObject({ choice }), async () =>
+    toolResult({ choice: { kind: "text" as const, value: "ok" } }, "ok"),
   );
-  const unionHandler = safeHandler(input, union, async () =>
-    toolResult({ kind: "text" as const, value: "ok" }, "ok"),
-  );
-  const intersectionHandler = safeHandler(input, intersection, async () =>
-    toolResult({ value: "ok", count: 1 }, "ok"),
-  );
-  const taggedUnion = z.discriminatedUnion("kind", [
-    z
-      .strictObject({ kind: z.literal("tagged_text"), value: z.string() })
-      .meta({ id: "tagged/text~value" }),
-    z
-      .strictObject({ kind: z.literal("tagged_count"), value: z.number() })
-      .meta({ id: "tagged/count~value" }),
-  ]);
-  const taggedUnionHandler = safeHandler(input, taggedUnion, async () =>
-    toolResult({ kind: "tagged_text" as const, value: "ok" }, "ok"),
-  );
-  const objectOrNever = z.union([
-    z.strictObject({ value: z.string() }),
-    z.never(),
-  ]);
-  const objectOrNeverHandler = safeHandler(input, objectOrNever, async () =>
-    toolResult({ value: "ok" }, "ok"),
-  );
+  assert.deepEqual(await handler({}), toolResult({ choice: { kind: "text", value: "ok" } }, "ok"));
+  assert.throws(() => safeHandler(
+    z.strictObject({}),
+    // @ts-expect-error Tool roots must be Zod objects; unions belong in fields.
+    choice,
+    async () => toolResult({}, "unreachable"),
+  ), /MCP output schema/);
+});
 
-  assert.deepEqual(
-    await unionHandler({}),
-    toolResult({ kind: "text", value: "ok" }, "ok"),
-  );
-  assert.deepEqual(
-    await intersectionHandler({}),
-    toolResult({ value: "ok", count: 1 }, "ok"),
-  );
-  assert.deepEqual(
-    await taggedUnionHandler({}),
-    toolResult({ kind: "tagged_text", value: "ok" }, "ok"),
-  );
-  assert.deepEqual(
-    await objectOrNeverHandler({}),
-    toolResult({ value: "ok" }, "ok"),
-  );
+test("safeHandler rejects sparse error content arrays", async () => {
+  const result = toolError("EXPECTED", "failure");
+  result.content = new Array(1);
+  const handler = safeHandler(z.strictObject({}), z.strictObject({}), async () => result);
+  assert.deepEqual(await handler({}), toolError("INTERNAL", "internal tool error"));
 });
 
 test("safeHandler rejects non-object input and output schemas before registration", () => {

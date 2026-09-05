@@ -24,15 +24,6 @@ export function assertPgnSize(pgn: string): void {
   }
 }
 
-export function assertPgnBytes(bytes: number): void {
-  if (bytes > MAX_PGN_BYTES) {
-    throw new ChessError(
-      "PGN_TOO_LARGE",
-      `PGN exceeds the ${MAX_PGN_BYTES}-byte limit`,
-    );
-  }
-}
-
 export function encodePgnHeaderValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }

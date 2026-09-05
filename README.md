@@ -72,8 +72,11 @@ await server.close();
 The root API also exports `buildServer`, `GameStore`, `ChessError`,
 `ExplorerError`, the service/domain types needed to provide custom
 `AppServices`, and safe chess helpers including `parseImportedPgn`, `pgnOf`,
-and `snapshotChess`. New integrations should use the package root. Legacy
-`dist/` subpath imports remain available for compatibility.
+and `snapshotChess`. The package root is the supported public API. Deep imports
+under `dist/` are intentionally not exported and will fail with
+`ERR_PACKAGE_PATH_NOT_EXPORTED`; use named root exports instead.
+This removes the previous `dist/*` compatibility exports and is a breaking
+change for integrations that imported internal modules.
 
 `bodyTimeoutMs` limits HTTP body upload time; it is not a whole-tool deadline.
 The deprecated `requestTimeoutMs` alias remains supported when `bodyTimeoutMs`

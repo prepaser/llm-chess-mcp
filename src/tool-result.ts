@@ -74,167 +74,21 @@ function explorerErrorCode(kind: ExplorerErrorKind): string {
   return `LICHESS_${kind.toUpperCase()}`;
 }
 
-function isToolErrorResult(result: ToolHandlerResult<Record<string, unknown>>): result is ToolErrorResult {
-  if (
-    result.isError !== true ||
-    !Array.isArray(result.content) ||
-    result.content.length === 0 ||
-    !result.content.every(
-      (content) =>
-        typeof content === "object" &&
-        content !== null &&
-        content.type === "text" &&
-        typeof content.text === "string",
-    ) ||
-    !isJsonSchema(result.structuredContent) ||
-    Object.keys(result.structuredContent).length !== 1 ||
-    !isJsonSchema(result.structuredContent.error) ||
-    Object.keys(result.structuredContent.error).length !== 2 ||
-    typeof result.structuredContent.error.code !== "string" ||
-    typeof result.structuredContent.error.message !== "string"
-  ) {
-    return false;
-  }
-  return true;
-}
+const ToolErrorSchema = z.strictObject({
+  content: z.array(z.strictObject({ type: z.literal("text"), text: z.string() })).min(1),
+  structuredContent: z.strictObject({
+    error: z.strictObject({ code: z.string(), message: z.string() }),
+  }),
+  isError: z.literal(true),
+});
 
-type JsonSchema = Record<string, unknown>;
-
-function isJsonSchema(value: unknown): value is JsonSchema {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function schemaBranches(schema: JsonSchema, key: string): unknown[] {
-  const value = schema[key];
-  return Array.isArray(value) ? value : [];
-}
-
-function schemaRef(
-  schema: JsonSchema,
-  definitions: Record<string, unknown>,
-): [string, unknown] | undefined {
-  if (typeof schema.$ref !== "string") return undefined;
-  const prefix = "#/$defs/";
-  if (!schema.$ref.startsWith(prefix)) return undefined;
-  const name = schema.$ref.slice(prefix.length);
-  if (Object.hasOwn(definitions, name)) return [schema.$ref, definitions[name]];
-  const decoded = name.replaceAll("~1", "/").replaceAll("~0", "~");
-  return Object.hasOwn(definitions, decoded)
-    ? [schema.$ref, definitions[decoded]]
-    : undefined;
-}
-
-type SchemaPossibilities = {
-  object: boolean;
-  nonObject: boolean;
-};
-
-const IMPOSSIBLE_SCHEMA: SchemaPossibilities = {
-  object: false,
-  nonObject: false,
-};
-const UNKNOWN_SCHEMA: SchemaPossibilities = {
-  object: true,
-  nonObject: true,
-};
-
-function allOfPossibilities(
-  values: readonly SchemaPossibilities[],
-): SchemaPossibilities {
-  return {
-    object: values.every((value) => value.object),
-    nonObject: values.every((value) => value.nonObject),
-  };
-}
-
-function unionPossibilities(
-  values: readonly SchemaPossibilities[],
-): SchemaPossibilities {
-  return {
-    object: values.some((value) => value.object),
-    nonObject: values.some((value) => value.nonObject),
-  };
-}
-
-function isFalseSchema(schema: JsonSchema): boolean {
-  return (
-    Object.keys(schema).length === 1 &&
-    isJsonSchema(schema.not) &&
-    Object.keys(schema.not).length === 0
-  );
-}
-
-function schemaPossibilities(
-  schema: unknown,
-  definitions: Record<string, unknown>,
-  seen = new Set<string>(),
-): SchemaPossibilities {
-  if (schema === false) return IMPOSSIBLE_SCHEMA;
-  if (schema === true || !isJsonSchema(schema)) return UNKNOWN_SCHEMA;
-  if (isFalseSchema(schema)) return IMPOSSIBLE_SCHEMA;
-
-  const type = schema.type;
-  const base =
-    type === "object"
-      ? { object: true, nonObject: false }
-      : typeof type === "string"
-        ? { object: false, nonObject: true }
-        : Array.isArray(type)
-          ? {
-              object: type.includes("object"),
-              nonObject: type.some((value) => value !== "object"),
-            }
-          : UNKNOWN_SCHEMA;
-
-  const constraints = [base];
-  const allOf = schemaBranches(schema, "allOf");
-  if (allOf.length > 0) {
-    constraints.push(
-      allOfPossibilities(
-        allOf.map((branch) => schemaPossibilities(branch, definitions, seen)),
-      ),
-    );
-  }
-
-  const alternatives = ["anyOf", "oneOf"].flatMap((key) =>
-    schemaBranches(schema, key),
-  );
-  if (alternatives.length > 0) {
-    constraints.push(
-      unionPossibilities(
-        alternatives.map((branch) =>
-          schemaPossibilities(branch, definitions, seen),
-        ),
-      ),
-    );
-  }
-
-  const ref = schemaRef(schema, definitions);
-  if (ref) {
-    const [key, definition] = ref;
-    if (seen.has(key)) return UNKNOWN_SCHEMA;
-    seen.add(key);
-    const result = schemaPossibilities(definition, definitions, seen);
-    seen.delete(key);
-    constraints.push(result);
-  }
-
-  return allOfPossibilities(constraints);
-}
-
-function assertWireSchema(
-  schema: z.ZodType,
-  kind: "input" | "output",
-): void {
+function assertWireSchema(schema: z.ZodType, kind: "input" | "output"): void {
   try {
-    const wireSchema = z.toJSONSchema(schema);
-    const definitions: Record<string, unknown> = isJsonSchema(wireSchema.$defs)
-      ? wireSchema.$defs
-      : {};
-    const possible = schemaPossibilities(wireSchema, definitions);
-    if (!possible.object || possible.nonObject) {
-      throw new TypeError(`MCP tool ${kind} schema must have an object root`);
+    if (!(schema instanceof z.ZodObject)) {
+      throw new TypeError("tool schemas must be Zod objects");
     }
+    const wire = z.toJSONSchema(schema);
+    if (wire.type !== "object") throw new TypeError("tool schemas must have an object root");
   } catch (cause) {
     throw new TypeError(
       `MCP ${kind} schema must be representable as JSON Schema`,
@@ -244,8 +98,8 @@ function assertWireSchema(
 }
 
 export function safeHandler<
-  InputSchema extends z.ZodType<Record<string, unknown>>,
-  OutputSchema extends z.ZodType<Record<string, unknown>>,
+  InputSchema extends z.ZodObject,
+  OutputSchema extends z.ZodObject,
 >(
   inputSchema: InputSchema,
   outputSchema: OutputSchema,
@@ -258,8 +112,8 @@ export function safeHandler<
   context?: ServerContext,
 ) => Promise<ToolResult>;
 export function safeHandler<
-  InputSchema extends z.ZodType<Record<string, unknown>>,
-  OutputSchema extends z.ZodType<Record<string, unknown>>,
+  InputSchema extends z.ZodObject,
+  OutputSchema extends z.ZodObject,
 >(
   inputSchema: InputSchema,
   outputSchema: OutputSchema,
@@ -272,8 +126,8 @@ export function safeHandler<
   context?: ServerContext,
 ) => Promise<ToolResult>;
 export function safeHandler<
-  InputSchema extends z.ZodType<Record<string, unknown>>,
-  OutputSchema extends z.ZodType<Record<string, unknown>>,
+  InputSchema extends z.ZodObject,
+  OutputSchema extends z.ZodObject,
 >(
   inputSchema: InputSchema,
   outputSchema: OutputSchema,
@@ -286,8 +140,8 @@ export function safeHandler<
   context?: ServerContext,
 ) => Promise<ToolResult>;
 export function safeHandler<
-  InputSchema extends z.ZodType<Record<string, unknown>>,
-  OutputSchema extends z.ZodType<Record<string, unknown>>,
+  InputSchema extends z.ZodObject,
+  OutputSchema extends z.ZodObject,
 >(
   inputSchema: InputSchema,
   outputSchema: OutputSchema,
@@ -316,7 +170,7 @@ export function safeHandler<
         throw new TypeError("tool result isError must be a boolean");
       }
       if (result.isError === true) {
-        if (!isToolErrorResult(result)) {
+        if (!ToolErrorSchema.safeParse(result).success) {
           throw new TypeError("invalid tool error result");
         }
         return result;
