@@ -21,17 +21,6 @@ test("toolResult keeps canonical data out of text content", () => {
   assert.equal(result.isError, undefined);
 });
 
-test("toolResult preserves the legacy schema signature", () => {
-  const schema = z.strictObject({ value: z.number() });
-  assert.deepEqual(
-    toolResult(schema, { value: 1 }, "legacy"),
-    toolResult({ value: 1 }, "legacy"),
-  );
-
-  // @ts-expect-error Legacy structured content must match its schema.
-  toolResult(schema, { value: "wrong" }, "invalid");
-});
-
 test("safeHandler contextually checks toolResult payloads", () => {
   const inputSchema = z.strictObject({});
   const outputSchema = z.strictObject({ value: z.number() });

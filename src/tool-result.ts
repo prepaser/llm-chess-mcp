@@ -36,23 +36,7 @@ type SchemaOutput<Schema extends z.ZodType> = z.output<Schema> extends Record<
 export function toolResult<StructuredContent extends Record<string, unknown>>(
   structuredContent: StructuredContent,
   summary: string,
-): ToolSuccessResult<StructuredContent>;
-/** @deprecated Pass structuredContent and summary without a schema. */
-export function toolResult<Schema extends z.ZodType>(
-  schema: Schema,
-  structuredContent: SchemaOutput<Schema>,
-  summary: string,
-): ToolSuccessResult<SchemaOutput<Schema>>;
-export function toolResult(
-  schemaOrContent: z.ZodType | Record<string, unknown>,
-  contentOrSummary: Record<string, unknown> | string,
-  legacySummary?: string,
-): ToolSuccessResult<Record<string, unknown>> {
-  const legacy = arguments.length === 3;
-  const structuredContent = legacy
-    ? contentOrSummary as Record<string, unknown>
-    : schemaOrContent as Record<string, unknown>;
-  const summary = legacy ? legacySummary : contentOrSummary;
+): ToolSuccessResult<StructuredContent> {
   if (typeof summary !== "string") {
     throw new TypeError("tool result summary must be a string");
   }

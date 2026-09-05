@@ -282,7 +282,7 @@ function pgnText(chess: Chess, context: PgnExportContext): string {
   const { headers, result } = assertPgnExportHeaders(chess, context);
   validateResultForPosition(chess, result);
   return serializePgn(
-    chess.pgn(),
+    () => chess.pgn(),
     headers,
     chess.getComments().map(({ comment }) => comment),
   );

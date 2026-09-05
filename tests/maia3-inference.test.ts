@@ -189,35 +189,41 @@ test("active cancellation retires its worker and later inference recovers", asyn
   assert.equal((await humanMoveDistribution(new Chess(), 1500, 1500, 1)).length, 1);
 });
 
-test("child pool times out, rejects failures and malformed responses, and restarts", async () => {
-  const pool = new MaiaWorkerPool(
-    1,
-    500,
-    testChildUrl,
-  );
+test("child pool times out stalled work", async () => {
+  const pool = new MaiaWorkerPool(1, 500, testChildUrl);
+  try {
+    await assert.rejects(pool.run(poolRequest("hang")), /inference timed out/);
+  } finally {
+    await pool.close(new Error("closed"));
+  }
+});
 
-  await assert.rejects(pool.run(poolRequest("hang")), /inference timed out/);
-  assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
-  await assert.rejects(
-    pool.run(poolRequest("null")),
-    /invalid Maia3 inference child response/,
-  );
-  assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
-  await assert.rejects(
-    pool.run(poolRequest("bad-error")),
-    /invalid Maia3 inference child response/,
-  );
-  await assert.rejects(pool.run(poolRequest("crash")), /disconnected|exited/);
-  assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
+test("child pool rejects failures and malformed responses, and restarts", async () => {
+  const pool = new MaiaWorkerPool(1, 5_000, testChildUrl);
+  try {
+    assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
+    await assert.rejects(
+      pool.run(poolRequest("null")),
+      /invalid Maia3 inference child response/,
+    );
+    assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
+    await assert.rejects(
+      pool.run(poolRequest("bad-error")),
+      /invalid Maia3 inference child response/,
+    );
+    await assert.rejects(pool.run(poolRequest("crash")), /disconnected|exited/);
+    assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
 
-  const active = pool.run(poolRequest("hang"));
-  const cause = new Error("pool closed");
-  const closing = pool.close(cause);
-  assert.equal(pool.close(new Error("duplicate")), closing);
-  await assert.rejects(active, (error: unknown) => error === cause);
-  await closing;
-  assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
-  await pool.close(new Error("closed"));
+    const active = pool.run(poolRequest("hang"));
+    const cause = new Error("pool closed");
+    const closing = pool.close(cause);
+    assert.equal(pool.close(new Error("duplicate")), closing);
+    await assert.rejects(active, (error: unknown) => error === cause);
+    await closing;
+    assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
+  } finally {
+    await pool.close(new Error("closed"));
+  }
 });
 
 test("child pool rejects every run failure asynchronously", async () => {

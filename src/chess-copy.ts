@@ -134,7 +134,7 @@ function assertSnapshotStorageLimits(chess: Chess): void {
   try {
     const headers = Object.entries(chess.getHeaders());
     serializePgn(
-      Chess.prototype.pgn.call(chess),
+      () => Chess.prototype.pgn.call(chess),
       headers,
       Chess.prototype.getComments.call(chess).map(({ comment }) => comment),
     );

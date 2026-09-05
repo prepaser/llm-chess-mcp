@@ -3,7 +3,14 @@ import test from "node:test";
 import { ChessError } from "../src/errors.js";
 import { commentSpan, quotedSpan, wordSpan } from "../src/pgn-lex.js";
 import { parseImportedPgn, pgnOf } from "../src/pgn.js";
-import { pgnHeaderIndex, pgnSetupHeaders } from "../src/pgn-shared.js";
+import { serializePgn } from "../src/pgn-serialize.js";
+import {
+  MAX_PGN_BYTES,
+  MAX_PGN_HEADERS,
+  MAX_PGN_TOKEN_BYTES,
+  pgnHeaderIndex,
+  pgnSetupHeaders,
+} from "../src/pgn-shared.js";
 
 test("PGN lexical spans preserve exact source boundaries", () => {
   const quoted = '"a\\"b" tail';
@@ -98,4 +105,44 @@ test("PGN result pre-pass preserves variation-boundary marker semantics", () => 
       ),
     (error) => error instanceof ChessError && error.code === "PGN_TOO_COMPLEX",
   );
+});
+
+test("PGN serialization rejects aggregate size before materializing raw text", () => {
+  const headers: [string, string][] = Array.from(
+    { length: MAX_PGN_HEADERS / 4 - 1 },
+    (_, index) => [`X${index}`, "a".repeat(MAX_PGN_TOKEN_BYTES)] as [string, string],
+  );
+  const comments = ["c".repeat(MAX_PGN_TOKEN_BYTES)];
+  const headerBytes = Buffer.byteLength(
+    headers
+      .map(([name, value]) => `[${name} "${value}"]`)
+      .join("\n"),
+    "utf8",
+  );
+  assert.ok(headerBytes < MAX_PGN_BYTES);
+  assert.ok(headerBytes + Buffer.byteLength(comments[0]!, "utf8") > MAX_PGN_BYTES);
+  let materialized = false;
+
+  assert.throws(
+    () =>
+      serializePgn(
+        () => {
+          materialized = true;
+          return "";
+        },
+        headers,
+        comments,
+      ),
+    (error) => error instanceof ChessError && error.code === "PGN_TOO_LARGE",
+  );
+  assert.equal(materialized, false);
+});
+
+test("PGN preflight accounts for unsafe comment newline normalization", () => {
+  const comment = "a}" + "\r\n".repeat(7_000);
+  const comments = Array<string>(80).fill(comment);
+  const raw = comments.map((value) => `{${value}}`).join(" ");
+  assert.ok(Buffer.byteLength(raw, "utf8") > MAX_PGN_BYTES);
+  const pgn = serializePgn(() => raw, [], comments);
+  assert.equal(pgn, comments.map(() => ";a} \n").join(" "));
 });
