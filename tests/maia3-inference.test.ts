@@ -189,10 +189,11 @@ test("active cancellation retires its worker and later inference recovers", asyn
   assert.equal((await humanMoveDistribution(new Chess(), 1500, 1500, 1)).length, 1);
 });
 
-test("child pool times out stalled work", async () => {
-  const pool = new MaiaWorkerPool(1, 500, testChildUrl);
+test("child pool recovers on the same instance after a timeout", async () => {
+  const pool = new MaiaWorkerPool(1, 5_000, testChildUrl);
   try {
     await assert.rejects(pool.run(poolRequest("hang")), /inference timed out/);
+    assert.deepEqual(await pool.run(poolRequest("ok")), new Float32Array([7]));
   } finally {
     await pool.close(new Error("closed"));
   }

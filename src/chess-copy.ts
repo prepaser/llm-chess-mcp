@@ -127,13 +127,13 @@ function replayHistory(
   }
 }
 
-function assertSnapshotStorageLimits(chess: Chess): void {
+function snapshotPgn(chess: Chess): string {
   const result = terminalPgnResult(chess);
   const originalResult = chess.getHeaders().Result;
   if (result !== undefined) chess.setHeader("Result", result);
   try {
     const headers = Object.entries(chess.getHeaders());
-    serializePgn(
+    return serializePgn(
       () => Chess.prototype.pgn.call(chess),
       headers,
       Chess.prototype.getComments.call(chess).map(({ comment }) => comment),
@@ -173,7 +173,7 @@ function restoreUnsafeComments(
   return restored;
 }
 
-export function snapshotChess(chess: Chess): Chess {
+export function snapshotChessWithPgn(chess: Chess): { chess: Chess; pgn: string } {
   assertLegalPosition(chess);
   const { history, initialFen, shadow, sourceHeaders } = validatedHistory(chess);
   assertPgnPlyLimit(history.length);
@@ -202,8 +202,7 @@ export function snapshotChess(chess: Chess): Chess {
   assertSafeFenCounters(snapshot.fen());
   if (!unsafeComments) {
     replacePgnHeaders(snapshot, sourceHeaders, { removeMissing: true });
-    assertSnapshotStorageLimits(snapshot);
-    return snapshot;
+    return { chess: snapshot, pgn: snapshotPgn(snapshot) };
   }
   const restored = restoreUnsafeComments(
     snapshot,
@@ -212,6 +211,9 @@ export function snapshotChess(chess: Chess): Chess {
     markerComments,
     sourceHeaders,
   );
-  assertSnapshotStorageLimits(restored);
-  return restored;
+  return { chess: restored, pgn: snapshotPgn(restored) };
+}
+
+export function snapshotChess(chess: Chess): Chess {
+  return snapshotChessWithPgn(chess).chess;
 }

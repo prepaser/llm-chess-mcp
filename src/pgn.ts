@@ -2,11 +2,10 @@ import { Chess } from "chess.js";
 import {
   assertLegalPosition,
   assertSafeFenCounters,
-  snapshotChess,
+  snapshotChessWithPgn,
 } from "./chess-copy.js";
 import { ChessError } from "./errors.js";
 import { commentSpan, quotedSpan, wordSpan } from "./pgn-lex.js";
-import { serializePgn } from "./pgn-serialize.js";
 import {
   assertPgnSize,
   assertPgnTokenSize,
@@ -276,16 +275,6 @@ function assertPgnExportHeaders(
     );
   }
   return { headers, result };
-}
-
-function pgnText(chess: Chess, context: PgnExportContext): string {
-  const { headers, result } = assertPgnExportHeaders(chess, context);
-  validateResultForPosition(chess, result);
-  return serializePgn(
-    () => chess.pgn(),
-    headers,
-    chess.getComments().map(({ comment }) => comment),
-  );
 }
 
 function isPgnResult(value: string): value is PgnResult {
@@ -755,14 +744,15 @@ function validateResultForPosition(chess: Chess, result: PgnResult | undefined):
 }
 
 export function pgnOf(chess: Chess): string {
-  const snapshot = snapshotChess(chess);
+  const { chess: snapshot, pgn } = snapshotChessWithPgn(chess);
   const context = pgnExportContext(snapshot);
   const result = terminalPgnResult(snapshot);
-  if (result === undefined) return pgnText(snapshot, context);
-
-  assertPgnExportHeaders(snapshot, context);
-  snapshot.setHeader("Result", result);
-  return pgnText(snapshot, context);
+  const { result: declaredResult } = assertPgnExportHeaders(snapshot, context);
+  validateResultForPosition(
+    snapshot,
+    result === undefined ? declaredResult : result,
+  );
+  return pgn;
 }
 
 export function parseImportedPgn(pgn: string): Chess {

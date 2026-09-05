@@ -34,6 +34,46 @@ test("snapshotChess preserves history without sharing mutations", () => {
   assert.notEqual(snapshot.fen(), chess.fen());
 });
 
+test("pgnOf serializes a fresh snapshot once per export", () => {
+  const originalPgn = Chess.prototype.pgn;
+  let calls = 0;
+  Chess.prototype.pgn = function (
+    this: Chess,
+    ...args: Parameters<typeof originalPgn>
+  ): ReturnType<typeof originalPgn> {
+    calls += 1;
+    return originalPgn.apply(this, args);
+  };
+
+  try {
+    const chess = new Chess();
+    chess.move("e4");
+    assert.match(pgnOf(chess), /e4/);
+    assert.equal(calls, 1);
+
+    calls = 0;
+    chess.move("e5");
+    assert.match(pgnOf(chess), /e4 e5/);
+    assert.equal(calls, 1);
+
+    calls = 0;
+    chess.setComment("fresh");
+    assert.match(pgnOf(chess), /\{fresh\}/);
+    assert.equal(calls, 1);
+
+    calls = 0;
+    const terminal = new Chess(
+      "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1",
+    );
+    terminal.setHeader("Result", "*");
+    assert.match(pgnOf(terminal), /\[Result "1-0"\]/);
+    assert.equal(terminal.getHeaders().Result, "*");
+    assert.equal(calls, 1);
+  } finally {
+    Chess.prototype.pgn = originalPgn;
+  }
+});
+
 test("snapshotChess replays promotion moves", () => {
   const chess = new Chess("8/P7/8/8/8/6k1/8/6K1 w - - 0 1");
   chess.move("a8=Q");
