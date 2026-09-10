@@ -4,3 +4,7 @@ allowBuilds:
   stockfish: true
 overrides:
   adm-zip: 0.6.0
+auditConfig:
+  ignoreGhsas:
+    # Temporary exception; remove when a patched adm-zip release is available.
+    - GHSA-vwc7-r8mq-g2x9
