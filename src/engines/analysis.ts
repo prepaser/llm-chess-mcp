@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Chess } from "chess.js";
 import { snapshotChess } from "../chess.js";
 import { MAX_ANALYSIS_DEPTH, MAX_MULTIPV } from "../domain.js";
-import { validateAnalysisLines } from "../analysis-boundary.js";
+import { validatePositionAnalysisLines } from "../analysis-boundary.js";
 import { readStockfishConfig } from "./stockfish-config.js";
 import { stockfish } from "./stockfish.js";
 import { lc0 } from "./lc0.js";
@@ -133,29 +133,6 @@ function validateRequest(request: EngineRequest): void {
   }
 }
 
-function validateLines(lines: readonly EngineLine[], fen: string, multipv: number, gameOver: boolean): void {
-  validateAnalysisLines(lines, multipv);
-  if (lines.length === 0) {
-    if (!gameOver) throw new Error("engine returned no analysis lines");
-    return;
-  }
-  const roots = new Set<string>();
-  for (const line of lines) {
-    if (line.pv.length === 0) {
-      if (!gameOver) throw new Error("engine returned an empty principal variation");
-      continue;
-    }
-    const rootMove = line.pv[0]!;
-    if (roots.has(rootMove)) throw new Error("engine returned duplicate principal variations");
-    roots.add(rootMove);
-    const replay = new Chess(fen);
-    for (const move of line.pv) {
-      if (/[\r\n]/.test(move) || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move)) throw new Error("engine returned an invalid principal variation");
-      try { replay.move(move); } catch { throw new Error("engine returned an illegal principal variation"); }
-    }
-  }
-}
-
 export function createEngineAnalyzer(adapters?: Partial<Record<EngineId, EngineAdapter>>): {
   analyzeEngines(chess: Chess, request: EngineRequest, signal?: AbortSignal): Promise<EngineAnalysis>;
   quitEngines(): Promise<void>;
@@ -165,6 +142,7 @@ export function createEngineAnalyzer(adapters?: Partial<Record<EngineId, EngineA
     lc0: adapters?.lc0 ?? lc0Adapter(),
   };
   const analyzeEngines = async (chess: Chess, request: EngineRequest, signal?: AbortSignal): Promise<EngineAnalysis> => {
+    request = { ...request };
     validateRequest(request);
     const aborted = isAbort(signal);
     if (aborted) throw aborted;
@@ -180,7 +158,7 @@ export function createEngineAnalyzer(adapters?: Partial<Record<EngineId, EngineA
       try {
         const result = await registered[id].analyze({ fen: position.fen(), initialFen, moves: [...moves] }, { ...request, ...(request.mode !== undefined ? { mode: request.mode } : {}) }, signal);
         const copied = result.map((line) => ({ ...line, pv: [...line.pv], wdl: line.wdl ? [...line.wdl] as [number, number, number] : null }));
-        validateLines(copied, position.fen(), request.multipv, position.isGameOver());
+        validatePositionAnalysisLines(copied, request.multipv, position);
         const meta = await registered[id].metadata();
         return { status: "ok", meta, result: copied, elapsedMs: Math.max(0, Math.round(performance.now() - started)), limits: requestLimits(request, id) };
       } catch (error) {

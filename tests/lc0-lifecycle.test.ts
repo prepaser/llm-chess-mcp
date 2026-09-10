@@ -23,7 +23,8 @@ function deferred<T = void>(): Deferred<T> {
 
 type FakeOptions = {
   handshake?: "normal" | "hang";
-  analysis?: "normal" | "hang" | "scoreless" | "stop-hang";
+  analysis?: "normal" | "hang" | "scoreless" | "empty" | "delayed" | "stop-hang";
+  analysisDelayMs?: number;
   epipe?: boolean;
   oversizedOutput?: boolean;
   exitOnKill?: "any" | "sigkill" | "never";
@@ -63,6 +64,10 @@ class FakeLc0Process extends EventEmitter implements Lc0Process {
         queueMicrotask(() => this.stdout.emit("data", `info multipv 1 score cp 31 wdl ${WDL} pv e2e4 e7e5\nbestmove e2e4\n`));
       } else if (this.options.analysis === "scoreless") {
         queueMicrotask(() => this.stdout.emit("data", `info multipv 1 score cp 42 wdl 600 300 100 pv e2e4 e7e5\ninfo multipv 1 pv e2e4 c7c5\nbestmove e2e4\n`));
+      } else if (this.options.analysis === "empty") {
+        queueMicrotask(() => this.stdout.emit("data", "bestmove e2e4\n"));
+      } else if (this.options.analysis === "delayed") {
+        setTimeout(() => this.stdout.emit("data", `info multipv 1 score cp 31 wdl ${WDL} pv e2e4 e7e5\nbestmove e2e4\n`), this.options.analysisDelayMs ?? 10);
       }
     } else if (value === "stop") {
       this.stopSent.resolve();
@@ -234,6 +239,77 @@ test("oversized stdout and EPIPE reject without uncaught process errors", { time
   const epipeEngine = new Lc0({ manifest: epipe.manifest, manifestPath: join(epipe.root, "manifest.json"), spawn: () => epipeChild, timeouts: { handshake: 50, stopGrace: 5 } });
   await assert.rejects(epipeEngine.analyze(FEN, REQUEST), /EPIPE/);
   await epipeEngine.quit();
+});
+
+test("terminal positions return no lines without starting Lc0", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  let spawns = 0;
+  const engine = new Lc0({
+    manifest,
+    manifestPath: join(root, "manifest.json"),
+    spawn: () => { spawns += 1; return new FakeLc0Process(); },
+  });
+  const request = { ...REQUEST, movetimeMs: 1 };
+  const checkmate = "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1";
+  const stalemate = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1";
+  const repetition = ["g1f3", "g8f6", "f3g1", "f6g8", "g1f3", "g8f6", "f3g1", "f6g8"];
+  assert.deepEqual(await engine.analyze(checkmate, request), []);
+  assert.deepEqual(await engine.analyze(stalemate, request), []);
+  assert.deepEqual(await engine.analyze(FEN.replace(" b KQkq - 0 1", " w KQkq - 0 1"), request, repetition), []);
+  assert.equal(spawns, 0);
+  await engine.quit();
+});
+
+test("analysis watchdog allows the complete requested movetime plus stop grace", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  const engine = new Lc0({
+    manifest,
+    manifestPath: join(root, "manifest.json"),
+    spawn: () => new FakeLc0Process({ analysis: "delayed", analysisDelayMs: 10, exitOnKill: "any" }),
+    timeouts: { analyze: 30, handshake: 50, stopGrace: 5 },
+  });
+  const lines = await engine.analyze(FEN, { ...REQUEST, movetimeMs: 20 });
+  assert.equal(lines[0]?.scoreCp, 31);
+  await engine.quit();
+});
+
+test("analysis watchdog respects search limits and adds bounded stop grace", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  for (const [movetimeMs, analyze, stopGrace, expected] of [
+    [30_000, 30_000, 5, 30_005],
+    [100, 30_000, 5, 105],
+    [100, 50, 5, 55],
+    [30_000, 30_000, 2_147_483_647, 2_147_483_647],
+  ] as const) {
+    const delays: number[] = [];
+    const child = new FakeLc0Process({ exitOnKill: "any" });
+    const engine = new Lc0({
+      manifest,
+      manifestPath: join(root, "manifest.json"),
+      spawn: () => child,
+      timeouts: { handshake: 50, analyze, stopGrace },
+      timers: {
+        setTimeout: (callback, delay) => {
+          delays.push(delay);
+          return setTimeout(callback, delay);
+        },
+      },
+    });
+    try {
+      await engine.analyze(FEN, { ...REQUEST, movetimeMs });
+    } finally {
+      child.emitExit(0, null);
+      await engine.quit();
+    }
+    assert.ok(delays.includes(expected), `missing watchdog delay ${expected}`);
+  }
+});
+
+test("an ongoing position with no analysis lines is rejected", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  const engine = new Lc0({ manifest, manifestPath: join(root, "manifest.json"), spawn: () => new FakeLc0Process({ analysis: "empty", exitOnKill: "any" }), timeouts: { handshake: 50, stopGrace: 5 } });
+  await assert.rejects(engine.analyze(FEN, REQUEST), /returned no analysis lines/);
+  await engine.quit();
 });
 
 test("invalid FEN, history, and request are rejected before spawning", { timeout: 500 }, async (t) => {

@@ -1,6 +1,7 @@
 import type { Chess } from "chess.js";
 import { snapshotChess } from "./chess.js";
 import { validateHumanMoves } from "./human-boundary.js";
+import { validatePositionAnalysisLines } from "./analysis-boundary.js";
 import { validateEngineAnalysis } from "./engine-services.js";
 import type { Candidate, Maia3Move, MoveSensitivity, SfLine } from "./domain.js";
 import { candidateSetFromData, computeMoveSensitivity, explorerCandidateData, type CandidateSet, type LichessCandidateData, type LichessOpts } from "./intents.js";
@@ -60,6 +61,7 @@ export function candidateSetFromEngineAnalysis(chess: Chess, elo: number, analys
   for (const engine of ENGINE_NAMES) {
     const outcome = analysisOutcome(analysis, engine);
     if (!outcome) continue;
+    validatePositionAnalysisLines(outcome.result, multipv, chess);
     sets[engine] = candidateSetFromData(chess, elo, outcome.result, maiaMoves, opening, multipv);
     sensitivity[engine] = computeMoveSensitivity(outcome.result);
   }
@@ -109,7 +111,7 @@ export function createEngineCandidateComputation(dependencies: EngineCandidateCo
     const [analysis, human, opening] = await Promise.all([
       fatal(async () => {
         const result = structuredClone(await dependencies.analyzeEngines(snapshotChess(position), { ...request }, workSignal));
-        validateEngineAnalysis(result, request);
+        validateEngineAnalysis(result, request, position);
         return result;
       }),
       fatal(async () => {

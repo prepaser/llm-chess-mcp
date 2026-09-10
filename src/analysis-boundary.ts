@@ -1,8 +1,37 @@
 import { MAX_MULTIPV, WDL_TOTAL } from "./domain.js";
 import type { SfLine } from "./domain.js";
+import { Chess } from "chess.js";
 
 function validScore(value: unknown): value is number | null {
   return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+export function validatePositionAnalysisLines(
+  lines: readonly SfLine[],
+  requestedMultipv: number,
+  chess: Chess,
+): void {
+  validateAnalysisLines(lines, requestedMultipv);
+  const gameOver = chess.isGameOver();
+  if (!gameOver && lines.length === 0) throw new RangeError("engine returned no analysis lines");
+  const roots = new Set<string>();
+  for (const line of lines) {
+    if (line.pv.length === 0) {
+      if (!gameOver) throw new RangeError("engine returned an empty principal variation");
+      continue;
+    }
+    const root = line.pv[0]!;
+    if (roots.has(root)) throw new RangeError("engine returned duplicate principal variations");
+    roots.add(root);
+    const replay = new Chess(chess.fen());
+    for (const move of line.pv) {
+      if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move) || /[\r\n]/.test(move)) {
+        throw new RangeError("engine returned an invalid principal variation");
+      }
+      try { replay.move(move); }
+      catch { throw new RangeError("engine returned an illegal principal variation"); }
+    }
+  }
 }
 
 function validWdl(value: unknown): boolean {

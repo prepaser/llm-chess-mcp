@@ -63,5 +63,5 @@ test("Lc0 performs a UCI handshake and returns MultiPV lines", async () => {
 
 test("Lc0 rejects a missing platform bundle", async () => {
   const engine = new Lc0({ manifest: { schemaVersion: 1, engineVersion: "0.32.1", weights: { path: "weights.pb", sha256: "a".repeat(64) }, platforms: {} } });
-  await assert.rejects(engine.analyze("8/8/8/8/8/8/8/K6k w - - 0 1", { mode: "lc0", depth: 1, multipv: 1, movetimeMs: 1 }), /platform is not bundled/);
+  await assert.rejects(engine.analyze("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", { mode: "lc0", depth: 1, multipv: 1, movetimeMs: 1 }), /platform is not bundled/);
 });

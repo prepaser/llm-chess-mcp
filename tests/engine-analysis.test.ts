@@ -64,3 +64,31 @@ test("single-engine mode does not invoke the other adapter", async () => {
   assert.deepEqual(result.engines.lc0, { status: "not_requested" });
   await analyzer.quitEngines();
 });
+
+test("engine analysis snapshots limits before awaiting adapters", async () => {
+  const request = { mode: "both" as const, depth: 10, multipv: 1, movetimeMs: 100 };
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const delayed = (id: EngineId): EngineAdapter => ({
+    ...adapter(id, []),
+    analyze: async (_position, received) => {
+      assert.deepEqual(received, { mode: "both", depth: 10, multipv: 1, movetimeMs: 100 });
+      await pending;
+      return [line(10)];
+    },
+  });
+  const analyzer = createEngineAnalyzer({ stockfish: delayed("stockfish"), lc0: delayed("lc0") });
+  const resultPromise = analyzer.analyzeEngines(position(), request);
+  Object.assign(request, { depth: 99, multipv: 0, movetimeMs: 999 });
+  release();
+  const result = await resultPromise;
+  for (const id of ["stockfish", "lc0"] as const) {
+    const outcome = result.engines[id];
+    assert.equal(outcome.status, "ok");
+    if (outcome.status === "ok") assert.deepEqual(outcome.limits, {
+      depth: id === "stockfish" ? 10 : null,
+      movetimeMs: id === "lc0" ? 100 : null,
+      multipv: 1,
+    });
+  }
+});

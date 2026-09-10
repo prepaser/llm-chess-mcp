@@ -1301,7 +1301,7 @@ test("Streamable HTTP cancels work and reclaims capacity after a raw disconnect"
         if (calls === 1) {
           return analysis.analyze(...args);
         }
-        return [];
+        return [{ multipv: 1, scoreCp: 0, scoreMate: null, wdl: null, pv: ["e2e4"] }];
       },
     }),
   );

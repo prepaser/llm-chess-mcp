@@ -1,6 +1,6 @@
 import type { Chess } from "chess.js";
 import { snapshotChess } from "./chess.js";
-import { validateAnalysisLines } from "./analysis-boundary.js";
+import { validatePositionAnalysisLines } from "./analysis-boundary.js";
 import { ChessError } from "./errors.js";
 import { resolveEngineMode } from "./engines/analysis.js";
 import type { EngineAnalysis, EngineId, EngineRequest } from "./engines/types.js";
@@ -10,7 +10,7 @@ import type { LichessOpts } from "./intents.js";
 
 const IDS = ["stockfish", "lc0"] as const;
 
-export function validateEngineAnalysis(value: EngineAnalysis, request: EngineRequest): void {
+export function validateEngineAnalysis(value: EngineAnalysis, request: EngineRequest, chess: Chess): void {
   const mode = resolveEngineMode(request.mode);
   if (!value || value.mode !== mode || !value.engines || !Array.isArray(value.enginesUsed)) {
     throw new RangeError("invalid engine analysis envelope");
@@ -34,7 +34,7 @@ export function validateEngineAnalysis(value: EngineAnalysis, request: EngineReq
           outcome.limits.movetimeMs !== (id === "lc0" ? request.movetimeMs : null)) {
         throw new RangeError("invalid engine analysis metadata");
       }
-      validateAnalysisLines(outcome.result, request.multipv);
+      validatePositionAnalysisLines(outcome.result, request.multipv, chess);
       successful.push(id);
     } else if (outcome.status === "error") {
       if (!outcome.error || typeof outcome.error.code !== "string" || !outcome.error.code ||
@@ -65,7 +65,7 @@ export async function analyzeWithEngines(
   const resolved = { ...request, mode };
   let analysis: EngineAnalysis;
   if (services.analyzeEngines) {
-    analysis = structuredClone(await services.analyzeEngines(position, { ...resolved }, signal));
+    analysis = structuredClone(await services.analyzeEngines(snapshotChess(position), { ...resolved }, signal));
   } else {
     if (mode === "lc0") throw new ChessError("ENGINE_UNAVAILABLE", "injected services do not provide Lc0 analysis");
     const started = performance.now();
@@ -88,7 +88,7 @@ export async function analyzeWithEngines(
     };
   }
   signal?.throwIfAborted();
-  validateEngineAnalysis(analysis, resolved);
+  validateEngineAnalysis(analysis, resolved, position);
   return analysis;
 }
 
@@ -106,9 +106,9 @@ export async function computeWithEngines(
   const position = snapshotChess(chess);
   const mode = resolveEngineMode(request.mode);
   if (services.computeEngineCandidates) {
-    const computed = structuredClone(await services.computeEngineCandidates(position, elo, { ...request, mode }, maiaTopN, lichess, signal));
+    const computed = structuredClone(await services.computeEngineCandidates(snapshotChess(position), elo, { ...request, mode }, maiaTopN, lichess, signal));
     signal?.throwIfAborted();
-    validateEngineAnalysis(computed, { ...request, mode });
+    validateEngineAnalysis(computed, { ...request, mode }, position);
     return computed;
   }
   if (mode === "lc0") throw new ChessError("ENGINE_UNAVAILABLE", "injected services do not provide Lc0 candidates");

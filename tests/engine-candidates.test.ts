@@ -107,10 +107,10 @@ test("natural intent remains Maia ordering and does not require an engine", () =
 
 test("balanced fusion does not count an unassessed human move as engine support", () => {
   const result = candidateSetFromEngineAnalysis(new Chess(), 1500,
-    analysis([line("e2e4", 10, 1)], []),
+    analysis([line("e2e4", 10, 1)], [line("g1f3", 10, 1)]),
     [{ uci: "e2e4", san: "e4", prob: 0.4 }, { uci: "d2d4", san: "d4", prob: 0.6 }], openingData, 2);
   const ranked = rankEngineCandidates(result.candidates, "balanced", result.enginesUsed);
-  assert.deepEqual(ranked.map((candidate) => candidate.uci), ["e2e4"]);
+  assert.deepEqual(ranked.map((candidate) => candidate.uci), ["e2e4", "g1f3"]);
   assert.equal(ranked[0]?.support, 1);
   assert.equal(ranked[0]?.consensusScore, 1 / 61 / 2);
   assert.equal(rankEngineCandidates(result.candidates, "natural", result.enginesUsed)[0]?.uci, "d2d4");

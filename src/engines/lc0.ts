@@ -25,6 +25,8 @@ type Lc0Timeouts = {
   analyze: number;
   stopGrace: number;
 };
+type Lc0SetTimeout = (callback: () => void, delay: number) => NodeJS.Timeout;
+type Lc0ClearTimeout = (timer: NodeJS.Timeout) => void;
 
 export type Lc0Process = {
   stdin: { write(data: string): boolean; end?(): void; once?(event: "error", listener: (error: Error) => void): unknown };
@@ -50,6 +52,7 @@ export type Lc0Options = {
   timeouts?: Partial<Lc0Timeouts>;
   threads?: number;
   minibatchSize?: number;
+  timers?: { setTimeout?: Lc0SetTimeout; clearTimeout?: Lc0ClearTimeout };
 };
 
 const DEFAULT_TIMEOUTS: Lc0Timeouts = {
@@ -203,7 +206,7 @@ function parseInfo(line: string, maxMultipv = 10): EngineLine | null {
 }
 
 export class Lc0 {
-  private readonly options: { spawn: Lc0Spawn; maxQueue: number; manifestPath?: string; timeouts: Lc0Timeouts; threads: number; minibatchSize: number };
+  private readonly options: { spawn: Lc0Spawn; maxQueue: number; manifestPath?: string; timeouts: Lc0Timeouts; threads: number; minibatchSize: number; setTimeout: Lc0SetTimeout; clearTimeout: Lc0ClearTimeout };
   private readonly manifest: Lc0Manifest | undefined;
   private session: Session | null = null;
   private initializing: Promise<Session> | null = null;
@@ -224,6 +227,8 @@ export class Lc0 {
       timeouts: validTimeouts(options.timeouts),
       threads: options.threads ?? 2,
       minibatchSize: options.minibatchSize ?? 16,
+      setTimeout: options.timers?.setTimeout ?? ((callback, delay) => setTimeout(callback, delay)),
+      clearTimeout: options.timers?.clearTimeout ?? ((timer) => clearTimeout(timer)),
     };
     if (!Number.isSafeInteger(this.options.maxQueue) || this.options.maxQueue < 1) throw new Error("lc0 maxQueue must be a positive safe integer");
     if (!Number.isSafeInteger(this.options.threads) || this.options.threads < 1 || this.options.threads > 128) throw new Error("lc0 threads must be a positive safe integer no greater than 128");
@@ -351,7 +356,7 @@ export class Lc0 {
       let scoreTypeCentipawn = false;
       let settled = false;
       let handshakeResult: { version: string; supportsWdl: boolean; supportsScoreType: boolean } | undefined;
-      const finish = (error?: Error) => { if (settled) return; settled = true; clearTimeout(timer); listeners.delete(listener); if (error) reject(error); else if (handshakeResult) resolvePromise(handshakeResult); else reject(new Error("Lc0 handshake incomplete")); };
+      const finish = (error?: Error) => { if (settled) return; settled = true; this.options.clearTimeout(timer); listeners.delete(listener); if (error) reject(error); else if (handshakeResult) resolvePromise(handshakeResult); else reject(new Error("Lc0 handshake incomplete")); };
       const listener = (line: string) => {
         if (failure()) { finish(failure()!); return; }
         if (line === "__lc0_process_exit__") { finish(failure() ?? new Error("Lc0 process exited")); return; }
@@ -371,7 +376,7 @@ export class Lc0 {
           else { handshakeResult = { version, supportsWdl: [...options].some((option) => option === "uci_showwdl"), supportsScoreType: [...options].some((option) => option === "scoretype") }; finish(); }
         }
       };
-      const timer = setTimeout(() => finish(new Error("lc0 handshake timeout")), timeoutMs);
+      const timer = this.options.setTimeout(() => finish(new Error("lc0 handshake timeout")), timeoutMs);
       listeners.add(listener);
       try { command("uci"); } catch (error) { finish(errorOf(error)); }
     });
@@ -384,8 +389,9 @@ export class Lc0 {
     if (request.mode !== undefined && request.mode !== "lc0" && request.mode !== "both") return Promise.reject(new Error("Lc0 cannot serve the requested engine mode"));
     if (!Number.isSafeInteger(request.depth) || request.depth < 1 || request.depth > 30 || !Number.isSafeInteger(request.multipv) || request.multipv < 1 || request.multipv > 10 || !Number.isSafeInteger(request.movetimeMs) || request.movetimeMs < 1 || request.movetimeMs > 30_000) return Promise.reject(new Error("invalid Lc0 analysis request"));
     const moves = [...history];
+    let replay: Chess;
     try {
-      const replay = new Chess(fen);
+      replay = new Chess(fen);
       for (const move of moves) {
         if (typeof move !== "string" || !/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move)) throw new Error("invalid UCI history move");
         replay.move(move);
@@ -393,6 +399,7 @@ export class Lc0 {
     } catch (error) { return Promise.reject(errorOf(error)); }
     if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error("operation aborted"));
     if (this.quitting) return Promise.reject(new Error("lc0 shutting down"));
+    if (replay.isGameOver()) return Promise.resolve([]);
     if (this.queue.length + (this.running ? 1 : 0) >= this.options.maxQueue) return Promise.reject(new Error("lc0 queue full"));
     let entry!: Queued;
     const requestCopy = { ...request };
@@ -428,8 +435,8 @@ export class Lc0 {
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
-        if (stopTimer) clearTimeout(stopTimer);
+        this.options.clearTimeout(timer);
+        if (stopTimer) this.options.clearTimeout(stopTimer);
         session.listeners.delete(listener);
         signal?.removeEventListener("abort", onAbort);
         const failure = error ?? (bufferLines.size === 0 ? new Error("Lc0 returned no analysis lines") : null);
@@ -448,9 +455,10 @@ export class Lc0 {
         }
         else if (line.startsWith("bestmove")) finish(stopReason ?? undefined);
       };
-      const stop = (error: Error) => { if (stopSent) return; stopSent = true; stopReason = error; try { session.process.stdin.write("stop\n"); } catch {} stopTimer = setTimeout(() => finish(error), this.options.timeouts.stopGrace); };
+      const stop = (error: Error) => { if (stopSent) return; stopSent = true; stopReason = error; try { session.process.stdin.write("stop\n"); } catch {} stopTimer = this.options.setTimeout(() => finish(error), this.options.timeouts.stopGrace); };
       const onAbort = () => stop(signal?.reason instanceof Error ? signal.reason : new Error("operation aborted"));
-      const timer = setTimeout(() => stop(new Error("lc0 analyze timeout")), Math.min(this.options.timeouts.analyze, request.movetimeMs + this.options.timeouts.stopGrace));
+      const watchdogMs = Math.min(MAX_TIMER, Math.min(this.options.timeouts.analyze, request.movetimeMs) + this.options.timeouts.stopGrace);
+      const timer = this.options.setTimeout(() => stop(new Error("lc0 analyze timeout")), watchdogMs);
       session.listeners.add(listener);
       signal?.addEventListener("abort", onAbort, { once: true });
       try {
@@ -485,8 +493,8 @@ export class Lc0 {
     const existing = this.terminations.get(process);
     if (existing) return existing;
     const wait = () => new Promise<boolean>((resolvePromise) => {
-      const timer = setTimeout(() => resolvePromise(false), this.options.timeouts.stopGrace);
-      void exit.then(() => { clearTimeout(timer); resolvePromise(true); });
+      const timer = this.options.setTimeout(() => resolvePromise(false), this.options.timeouts.stopGrace);
+      void exit.then(() => { this.options.clearTimeout(timer); resolvePromise(true); });
     });
     const termination = Promise.resolve().then(async () => {
       try { process.stdin.write("quit\n"); } catch {}
