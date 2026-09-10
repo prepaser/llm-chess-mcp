@@ -75,6 +75,44 @@ test("resolveStockfishFlavor accepts package keywords and rejects paths", () => 
   );
 });
 
+test("Stockfish metadata follows initialized flavor across environment changes and restarts", async () => {
+  const previous = process.env.STOCKFISH_FLAVOR;
+  const stockfish = new Stockfish({ init: initializer([respondingEngine(true), respondingEngine(true)]) });
+  const fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+  try {
+    assert.throws(() => stockfish.metadata(), /not been initialized/);
+    process.env.STOCKFISH_FLAVOR = "asm";
+    await stockfish.analyze(fen, 1, 1);
+    assert.equal(stockfish.metadata().backend, "asm");
+    process.env.STOCKFISH_FLAVOR = "lite-single";
+    const metadata = stockfish.metadata();
+    metadata.backend = "changed";
+    await stockfish.analyze(fen, 1, 1);
+    assert.equal(stockfish.metadata().backend, "asm");
+    await stockfish.quit();
+    await stockfish.analyze(fen, 1, 1);
+    assert.equal(stockfish.metadata().backend, "wasm");
+  } finally {
+    await stockfish.quit();
+    if (previous === undefined) delete process.env.STOCKFISH_FLAVOR;
+    else process.env.STOCKFISH_FLAVOR = previous;
+  }
+});
+
+test("Stockfish explicit flavor takes precedence in execution metadata", async () => {
+  const previous = process.env.STOCKFISH_FLAVOR;
+  const stockfish = new Stockfish({ flavor: "asm", init: initializer([respondingEngine(true)]) });
+  try {
+    process.env.STOCKFISH_FLAVOR = "lite-single";
+    await stockfish.analyze("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 1, 1);
+    assert.deepEqual(stockfish.metadata(), { id: "stockfish", version: "injected", backend: "asm", weightsSha256: null });
+  } finally {
+    await stockfish.quit();
+    if (previous === undefined) delete process.env.STOCKFISH_FLAVOR;
+    else process.env.STOCKFISH_FLAVOR = previous;
+  }
+});
+
 test("Stockfish timeouts fit the Node timer range", async () => {
   const names = ["init", "handshake", "analyze", "stopGrace"] as const;
   const invalid = [0, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648];

@@ -5,7 +5,6 @@ import { Chess } from "chess.js";
 import { snapshotChess } from "../chess.js";
 import { MAX_ANALYSIS_DEPTH, MAX_MULTIPV } from "../domain.js";
 import { validatePositionAnalysisLines } from "../analysis-boundary.js";
-import { readStockfishConfig } from "./stockfish-config.js";
 import { stockfish } from "./stockfish.js";
 import { lc0 } from "./lc0.js";
 import type {
@@ -98,10 +97,7 @@ function stockfishAdapter(): EngineAdapter {
         moves: position.moves,
       },
     ),
-    metadata: () => {
-      const config = readStockfishConfig();
-      return { id: "stockfish", version: config.version, weightsSha256: null, backend: "wasm" };
-    },
+    metadata: () => stockfish.metadata(),
     quit: () => stockfish.quit(),
   };
 }

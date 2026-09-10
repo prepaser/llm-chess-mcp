@@ -4,6 +4,7 @@ import { dirname, sep } from "node:path";
 import { readFileSync } from "node:fs";
 import { Chess } from "chess.js";
 import type { SfLine } from "../domain.js";
+import type { EngineMeta } from "./types.js";
 import { ChessError } from "../errors.js";
 import { mergeAnalysisInfo, parseAnalysisInfo } from "./stockfish-info.js";
 import {
@@ -100,6 +101,7 @@ export type StockfishOptions = {
 };
 
 type Session = {
+  metadata: EngineMeta | null;
   engine: StockfishEngine | null;
   ready: Promise<void>;
   readySettled: boolean;
@@ -655,6 +657,7 @@ function mergeTimeouts(value: Partial<Timeouts> | undefined): Timeouts {
 
 export class Stockfish {
   private session: Session | null = null;
+  private initializedMetadata: EngineMeta | null = null;
   private queue: QueuedAnalysis[] = [];
   private runInProgress = false;
   private queueScheduled = false;
@@ -692,6 +695,11 @@ export class Stockfish {
         );
       }
     }
+  }
+
+  metadata(): EngineMeta {
+    if (!this.initializedMetadata) throw new Error("stockfish has not been initialized");
+    return { ...this.initializedMetadata };
   }
 
   private disposeInitEngine(engine: StockfishEngine): void {
@@ -766,6 +774,7 @@ export class Stockfish {
     this.handshake(session).then(
       () => {
         if (this.session !== session || session.readySettled) return;
+        this.initializedMetadata = session.metadata;
         session.readySettled = true;
         session.resolve();
       },
@@ -784,6 +793,7 @@ export class Stockfish {
       reject = rej;
     });
     const session: Session = {
+      metadata: null,
       engine: null,
       ready,
       readySettled: false,
@@ -822,6 +832,12 @@ export class Stockfish {
         process.env.STOCKFISH_FLAVOR,
         metadata,
       );
+      session.metadata = {
+        id: "stockfish",
+        version: metadata?.version ?? "injected",
+        weightsSha256: null,
+        backend: selectedFlavor === "asm" ? "asm" : "wasm",
+      };
       const engine = (this.initEngine ?? loadStockfish(this.timeouts.init))(
         selectedFlavor,
         (error, initializedEngine) =>
