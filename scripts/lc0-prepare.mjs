@@ -235,9 +235,13 @@ export async function prepareLc0({ root = ROOT, config, outputDir = join(root, "
   outputDir = resolve(outputDir);
   const outputRelative = relative(root, outputDir);
   if (!outputRelative || outputRelative === ".." || outputRelative.startsWith(`..${sep}`)) fail("Lc0 output must be inside the project directory");
+  const configPath = join(root, "model.config.json");
+  const configContents = config === undefined ? await readFile(configPath, "utf8") : undefined;
+  if (configContents !== undefined) config = validateBuildConfig(JSON.parse(configContents)).lc0;
   config = validateLc0Config(config);
   const selected = [...(platforms ?? config.platforms)];
   if (!selected.length || new Set(selected).size !== selected.length || !selected.every((key) => config.platforms.includes(key))) fail("requested Lc0 platform is not enabled by config");
+  if (selected.length !== config.platforms.length) fail("all configured Lc0 platforms must be prepared together");
   const work = join(root, `.lc0-prepare-${randomUUID()}`);
   const staging = join(work, "bundle", "lc0");
   await mkdir(staging, { recursive: true });
@@ -299,8 +303,11 @@ export async function prepareLc0({ root = ROOT, config, outputDir = join(root, "
     }
     const manifest = await manifestFor(staging, config, weightPath, platformManifest);
     await writeFile(join(staging, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-    await checkLc0Bundle({ config: { ...config, platforms: selected }, lc0Dir: staging });
+    await checkLc0Bundle({ config, lc0Dir: staging });
     await mkdir(dirname(outputDir), { recursive: true });
+    if (configContents !== undefined && await readFile(configPath, "utf8") !== configContents) {
+      fail("model configuration changed during preparation; retry");
+    }
     await installBundle(staging, outputDir);
     return manifest;
   } catch (error) {
@@ -312,15 +319,9 @@ export async function prepareLc0({ root = ROOT, config, outputDir = join(root, "
   }
 }
 
-async function readConfig(root) {
-  const value = JSON.parse(await readFile(join(root, "model.config.json"), "utf8"));
-  return validateBuildConfig(value).lc0;
-}
-
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    const config = await readConfig(ROOT);
-    const manifest = await prepareLc0({ root: ROOT, config });
+    const manifest = await prepareLc0({ root: ROOT });
     console.log(`Lc0 ${manifest.engineVersion} ready for ${Object.keys(manifest.platforms).join(", ")}`);
   } catch (error) {
     console.error(error);

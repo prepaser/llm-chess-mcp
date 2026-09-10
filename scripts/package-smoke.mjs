@@ -234,6 +234,25 @@ function assertToolCatalog(listed) {
   assert.deepEqual(sort(tools), sort(contract.tools), "packed server tools differ from spec/tools.json");
 }
 
+const ENGINE_MODES = ["both", "stockfish", "lc0"];
+
+function selectedEngines(mode) {
+  return mode === "both" ? ["stockfish", "lc0"] : [mode];
+}
+
+function assertAnalysisMode(result, mode) {
+  assert.equal(result.mode, mode);
+  assert.equal(result.partial, false);
+  assert.deepEqual(result.enginesUsed, selectedEngines(mode));
+  for (const id of ["stockfish", "lc0"]) {
+    assert.equal(
+      result.engines[id].status,
+      selectedEngines(mode).includes(id) ? "ok" : "not_requested",
+      `${id} mode status does not match ${mode}`,
+    );
+  }
+}
+
 function serverEnv() {
   const env = { ...process.env };
   const pathKey =
@@ -252,7 +271,7 @@ function serverEnv() {
   return env;
 }
 
-async function smoke(bin, packageRoot, cwd) {
+async function smoke(bin, packageRoot, cwd, expectedDefaultMode, { explicitModes = false } = {}) {
   const invocation = serverInvocation(bin, packageRoot);
   const transport = new StdioClientTransport({
     command: invocation.command,
@@ -278,21 +297,22 @@ async function smoke(bin, packageRoot, cwd) {
       multipv: 1,
       movetime_ms: 100,
     });
-    assert.equal(analysis.mode, "both");
-    assert.equal(analysis.partial, false);
-    assert.deepEqual(analysis.enginesUsed, ["stockfish", "lc0"]);
-    const [line] = analysis.engines.stockfish.result;
+    assertAnalysisMode(analysis, expectedDefaultMode);
+    const [line] = analysis.engines.stockfish.result ?? [];
     assert.equal(analysis.revision, 0);
-    assert.ok(line && Array.isArray(line.pv) && line.pv.length > 0, "Stockfish returned no PV");
-    assert.ok(line.scoreCp !== null || line.scoreMate !== null, "Stockfish returned no score");
-    assert.ok(analysis.engines.lc0.result[0]?.pv.length, "Lc0 returned no PV");
-    for (const mode of ["stockfish", "lc0"]) {
+    if (expectedDefaultMode !== "lc0") {
+      assert.ok(line && Array.isArray(line.pv) && line.pv.length > 0, "Stockfish returned no PV");
+      assert.ok(line.scoreCp !== null || line.scoreMate !== null, "Stockfish returned no score");
+    }
+    if (expectedDefaultMode !== "stockfish") {
+      assert.ok(analysis.engines.lc0.result[0]?.pv.length, "Lc0 returned no PV");
+    }
+    for (const mode of explicitModes ? ENGINE_MODES : []) {
       const single = await call(client, "position_analyze", {
         game_id: gameId, analysis_level: "fast", depth: 1, multipv: 1,
         movetime_ms: 100, engine_mode: mode,
       });
-      assert.deepEqual(single.enginesUsed, [mode]);
-      assert.equal(single.engines[mode === "stockfish" ? "lc0" : "stockfish"].status, "not_requested");
+      assertAnalysisMode(single, mode);
     }
 
     const human = await call(client, "human_move_distribution", {
@@ -323,10 +343,13 @@ async function smoke(bin, packageRoot, cwd) {
       candidates.candidates.some((candidate) => candidate.human.maia3Prob !== null),
       "move_candidates did not include Maia3 data",
     );
-    assert.ok(
-      candidates.candidates.some((candidate) => candidate.objective.byEngine.stockfish?.rank !== null && candidate.objective.byEngine.stockfish?.rank !== undefined),
-      "move_candidates did not include Stockfish data",
-    );
+    assertAnalysisMode(candidates, expectedDefaultMode);
+    for (const engine of selectedEngines(expectedDefaultMode)) {
+      assert.ok(
+        candidates.candidates.some((candidate) => candidate.objective.byEngine[engine]?.rank != null),
+        `move_candidates did not include ${engine} data`,
+      );
+    }
     assert.ok(
       candidates.candidates.every((candidate) => candidate.opening.status === "disabled"),
       "move_candidates unexpectedly enabled Lichess",
@@ -463,7 +486,21 @@ try {
     process.platform === "win32" ? "llm-chess-mcp.cmd" : "llm-chess-mcp",
   );
   await verifyInstalledBin(bin, packageRoot);
-  await smoke(bin, packageRoot, workspace);
+  const packageJsonPath = join(packageRoot, "package.json");
+  const installedPackageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+  const configuredMode = installedPackageJson.analysis?.mode;
+  assert.ok(ENGINE_MODES.includes(configuredMode), "installed package has no valid analysis.mode");
+  assert.equal(configuredMode, config.analysis.mode, "installed package analysis.mode differs from model config");
+
+  await smoke(bin, packageRoot, workspace, configuredMode, { explicitModes: true });
+  for (const mode of ENGINE_MODES.filter((mode) => mode !== configuredMode)) {
+    await writeFile(
+      packageJsonPath,
+      JSON.stringify({ ...installedPackageJson, analysis: { ...installedPackageJson.analysis, mode } }),
+    );
+    await smoke(bin, packageRoot, workspace, mode);
+  }
+  await writeFile(packageJsonPath, JSON.stringify(installedPackageJson));
   await smokeHttp(bin, packageRoot, workspace);
   await assert.rejects(access(join(workspace, ":memory:.ses")), {
     code: "ENOENT",

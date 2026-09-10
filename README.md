@@ -526,6 +526,9 @@ provides its matrix operations. If Docker requires sudo, explicitly set
 retained with the prepared artifacts. A prebuilt Linux artifact directory may instead be
 supplied through `LC0_LINUX_BUNDLE`.
 The staged bundle is checked before it replaces a previous working bundle.
+Preparation includes every platform selected in the config; partial-platform
+replacement is rejected. If the root config changes during preparation, the
+existing bundle is preserved and preparation must be rerun.
 `bundle/lc0/manifest.json` records platform executables, required libraries,
 backend, network identity, and SHA-256 digests. The package contains artifacts
 for both supported platforms and a shared pinned weight file; it does not

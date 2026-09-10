@@ -371,8 +371,9 @@ function string(value: unknown): string {
   return value;
 }
 
-async function waitFor(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+async function waitFor(check: () => boolean, timeoutMs = 200): Promise<void> {
+  const attempts = Math.ceil(timeoutMs / 10);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (check()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -1142,22 +1143,23 @@ test("Streamable HTTP prefers bodyTimeoutMs over its legacy alias", async (t) =>
 });
 
 test("Streamable HTTP reserves and reclaims bounded MCP sessions", async (t) => {
-  const http = await serveHttp(
-    { port: 0, maxSessions: 1, sessionIdleTtlMs: 20, sessionSweepIntervalMs: 5 },
-    fakeServices(new GameStore()),
+  const services = fakeServices(new GameStore());
+  const capacityHttp = await serveHttp(
+    { port: 0, maxSessions: 1 },
+    services,
   );
-  t.after(() => http.close());
+  t.after(() => capacityHttp.close());
 
-  const initialized = await httpRequest(http.url, {
+  const initialized = await httpRequest(capacityHttp.url, {
     method: "POST",
     headers: INIT_HEADERS,
     body: initializeBody(),
   });
   assert.equal(initialized.status, 200);
   assert.ok(initialized.sessionId);
-  assert.equal(http.sessionCount(), 1);
+  assert.equal(capacityHttp.sessionCount(), 1);
 
-  const capped = await httpRequest(http.url, {
+  const capped = await httpRequest(capacityHttp.url, {
     method: "POST",
     headers: INIT_HEADERS,
     body: initializeBody(2),
@@ -1166,9 +1168,25 @@ test("Streamable HTTP reserves and reclaims bounded MCP sessions", async (t) => 
   assert.equal(capped.retryAfter, "1");
   assert.match(capped.body, /MCP session limit reached/);
 
-  await waitFor(() => http.sessionCount() === 0);
+  await capacityHttp.close();
+
+  const http = await serveHttp(
+    { port: 0, maxSessions: 1, sessionIdleTtlMs: 100, sessionSweepIntervalMs: 10 },
+    services,
+  );
+  t.after(() => http.close());
+
+  const expiring = await httpRequest(http.url, {
+    method: "POST",
+    headers: INIT_HEADERS,
+    body: initializeBody(),
+  });
+  assert.equal(expiring.status, 200);
+  assert.ok(expiring.sessionId);
+
+  await waitFor(() => http.sessionCount() === 0, 2_000);
   const expired = await httpRequest(http.url, {
-    headers: { "mcp-session-id": initialized.sessionId },
+    headers: { "mcp-session-id": expiring.sessionId },
   });
   assert.equal(expired.status, 404);
 
