@@ -213,7 +213,7 @@ codex mcp add llm-chess-mcp --command npx --args -y llm-chess-mcp --env LICHESS_
 | `game_legal_moves` | All legal moves with metadata |
 | `game_pgn` | Export the game as PGN |
 | `game_import_pgn` | Import a PGN into a new game |
-| `position_analyze` | Stockfish multipv lines (cp/mate/WDL + UCI/SAN PV), `analysis_level` preset |
+| `position_analyze` | Per-engine MultiPV lines (cp/mate/WDL + UCI/SAN PV), consensus ranking, and `analysis_level` preset |
 | `human_move_distribution` | Maia3 human-move probabilities at a target Elo |
 | `move_evaluate` | Score one or more moves + cpLoss + classification |
 | `move_candidates` | **Primary tool**: unified candidates (objective + human + opening) |
@@ -230,10 +230,10 @@ human-readable summary and must not be parsed as data.
 
 ## Score conventions
 
-- Stockfish scores are **side-to-move perspective**: positive cp = side to move is
+- Engine analysis scores are **side-to-move perspective**: positive cp = side to move is
   better; `mate N` = side to move mates in N. `wdl` is `[win, draw, loss]` in
   permille for the side to move.
-- `move_candidates` gives `moverCp` (the mover's perspective — higher is better
+- `move_candidates` gives per-engine `objective.byEngine` values with `moverCp` (the mover's perspective — higher is better
   for the player choosing the move) and `whiteCp` (fixed white perspective) so
   the sign never flips on you.
 - `move_evaluate` reports the score **from the mover's perspective**, plus `cpLoss`
@@ -254,43 +254,64 @@ human-readable summary and must not be parsed as data.
 {
   "uci": "g1f3",
   "san": "Nf3",
-  "objective": { "rank": 1, "moverCp": 55, "whiteCp": 55, "cpLoss": 0, "moverMate": null, "wdl": [153, 844, 3] },
+  "objective": {
+    "byEngine": {
+      "stockfish": { "rank": 1, "moverCp": 55, "whiteCp": 55, "cpLoss": 0, "moverMate": null, "whiteMate": null, "wdl": [153, 844, 3] },
+      "lc0": { "rank": 1, "moverCp": 45, "whiteCp": 45, "cpLoss": 0, "moverMate": null, "whiteMate": null, "wdl": [200, 750, 50] }
+    }
+  },
+  "consensusRank": 1,
+  "consensusScore": 0.01639344262295082,
+  "support": 2,
   "human": { "maia3Prob": 0.62, "selfElo": 1500, "opponentElo": 1500 },
-  "opening": { "status": "available", "games": 18421, "frequency": 0.31 }
+  "opening": { "status": "available", "games": 18421, "frequency": 0.31, "white": 9000, "draws": 3000, "black": 6421, "averageRating": 1800 }
 }
 ```
 
-- `objective` — Stockfish: engine strength, never conflated with human-likeness.
+- `objective.byEngine` — independent Stockfish and Lc0 evaluations; an engine's
+  entry is `null` when it did not evaluate that candidate.
   `moverCp` is from the mover's perspective (higher = better for the chooser).
 - `human` — Maia3 conditional probability at a target Elo.
 - `opening` — Lichess empirical frequency (a different signal from Maia3).
 
 `opening.status` is `available`, `no_data` (API ok but no games in this
 position), `unavailable` (timeout/429/401), or `disabled` (no token).
-Stockfish + Maia3 results are always returned regardless.
+Explorer failure does not discard successful engine or Maia3 results. The
+selected engine mode controls which engines run. In `both` mode, one engine
+failure yields `partial: true`; both failing produces a tool error. Top-level
+`engines` records each outcome and `enginesUsed` lists successful engines.
 
 `move_candidates` also returns `moveSensitivity`, describing how sharply the
 evaluation changes across the top engine lines:
 
 ```json
-{ "moveSensitivity": { "level": "high", "topMoveSpreadCp": 245 } }
+{
+  "moveSensitivity": {
+    "stockfish": { "level": "high", "topMoveSpreadCp": 245 },
+    "lc0": { "level": "medium", "topMoveSpreadCp": 120 }
+  }
+}
 ```
 
 `level` is `low` (<80cp spread), `medium` (80–200cp), or `high` (≥200cp). High
 sensitivity means choosing among plausible alternatives can materially change
 the evaluation — useful for deciding whether to ease off or play precisely.
+An unavailable or unrequested engine has `null` sensitivity. The two engines'
+centipawn scales are independent and should not be compared directly.
 
 ## Analysis levels
 
-Stockfish tools accept an `analysis_level` preset instead of raw UCI knobs:
+Position and candidate tools accept an `analysis_level` preset:
 
-| Level | Depth | MultiPV |
-|---|---|---|
-| `fast` | 8 | 5 |
-| `normal` | 15 | 8 |
-| `deep` | 22 | 10 |
+| Level | Stockfish depth | MultiPV | Lc0 time (ms) |
+|---|---|---|---|
+| `fast` | 8 | 5 | 1000 |
+| `normal` | 15 | 8 | 3000 |
+| `deep` | 22 | 10 | 10000 |
 
-Explicit `depth`/`multipv` overrides are still available for advanced use.
+Position analysis accepts `depth`/`multipv` overrides; candidate tools use
+`sf_depth`/`sf_multipv`. `movetime_ms` overrides the Lc0 budget in either tool.
+`move_evaluate` defaults to depth 15 and 3000 ms and accepts explicit overrides.
 
 ## Stale-position guard
 
@@ -314,7 +335,7 @@ rejected:
   escaped header values are supported.
 - Custom FENs reject inconsistent castling/en-passant metadata and impossible
   pawn or promotion material.
-- Stockfish accepts up to 32 active or queued analyses. Maia runs at most two
+- Stockfish and Lc0 each accept up to 32 active or queued analyses. Maia runs at most two
   inferences concurrently and queues up to 32 more.
 - Lichess Explorer requests run one at a time and share 429 cooldowns.
 - HTTP retains at most 64 MCP sessions; sessions with no active request expire
@@ -338,9 +359,11 @@ still enforce request, connection, and authentication limits at the reverse
 proxy.
 
 MCP cancellation notifications, session deletion, and server shutdown propagate
-to body uploads and Stockfish, Maia, and Lichess work. Stockfish stops safely at
+to body uploads and Stockfish, Lc0, Maia, and Lichess work. Stockfish stops safely at
 its UCI queue boundary, drains queued work during shutdown, and rejects new
-analysis until teardown completes. Lichess fetch and retry waits abort
+analysis until teardown completes. Lc0 rejects active and queued work on shutdown
+and waits for its process to exit, escalating termination when necessary.
+Lichess fetch and retry waits abort
 immediately. Maia runs native inference in dedicated child processes; cancelling
 active work terminates its child, while queued cancellation is immediate. A raw
 response disconnect for an existing-session POST closes that session and aborts
@@ -558,6 +581,20 @@ pack the project, install the tarball in a clean temporary directory, and run
 the installed `llm-chess-mcp` binary against the real Stockfish, Lc0, and Maia
 runtimes. `pnpm release:check` runs both checks plus the production dependency
 audit and package manifest dry run.
+
+Package verification uses the OS temporary directory by default. If it exceeds
+its disk quota or free space, select a larger writable location:
+
+```bash
+PACKAGE_SMOKE_TMPDIR=/path/on/larger/disk pnpm test:package
+```
+
+The same environment variable applies to `pnpm release:check` and publishing.
+Temporary installs are removed after success or failure. On failure, a bounded
+diagnostic report (including available npm log excerpts) is saved separately in
+`.package-smoke-failures/`; `PACKAGE_SMOKE_LOGDIR` overrides that location.
+Keep diagnostic logs private and review them before sharing. They are not
+included in the npm package.
 
 ## License & attribution
 

@@ -20,7 +20,6 @@ type MoveEvaluation = z.output<typeof TOOL_OUTPUT_SCHEMAS.move_evaluate>["result
 type AnalysisServices = Pick<AppServices, "games" | "analyze" | "analyzeEngines" | "humanMoveDistribution">;
 
 const ENGINE_IDS = ["stockfish", "lc0"] as const satisfies readonly EngineId[];
-const MOVETIME_BY_LEVEL = { fast: 1_000, normal: 3_000, deep: 10_000 } as const;
 
 function completePvSan(chess: Parameters<typeof pvToSan>[0], pv: readonly string[]): string[] {
   const san = pvToSan(chess, pv);
@@ -40,7 +39,7 @@ function selectedRequest(
     ...(engineMode === undefined ? {} : { mode: engineMode }),
     depth: depth ?? preset.depth,
     multipv: multipv ?? preset.multipv,
-    movetimeMs: movetimeMs ?? MOVETIME_BY_LEVEL[analysisLevel],
+    movetimeMs: movetimeMs ?? preset.movetimeMs,
   };
 }
 

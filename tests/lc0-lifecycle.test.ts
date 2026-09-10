@@ -29,6 +29,8 @@ type FakeOptions = {
   analysisDelayMs?: number;
   epipe?: boolean;
   oversizedOutput?: boolean;
+  stderr?: string;
+  bestmoveOnQuit?: boolean;
   exitOnKill?: "any" | "sigkill" | "never";
 };
 
@@ -60,6 +62,7 @@ class FakeLc0Process extends EventEmitter implements Lc0Process {
       } else if (this.options.handshake !== "hang") {
         queueMicrotask(() => this.stdout.emit("data", "id name Lc0 v0.32.1\noption name MultiPV type spin\noption name UCI_ShowWDL type check\noption name ScoreType type combo var centipawn\nuciok\n"));
       }
+      if (this.options.stderr) queueMicrotask(() => this.stderr.emit("data", this.options.stderr));
     } else if (value === "isready" && this.options.handshake !== "hang") {
       queueMicrotask(() => this.stdout.emit("data", "readyok\n"));
     } else if (value.startsWith("go movetime")) {
@@ -78,6 +81,7 @@ class FakeLc0Process extends EventEmitter implements Lc0Process {
       if (this.options.analysis !== "stop-hang") queueMicrotask(() => this.stdout.emit("data", "bestmove e2e4\n"));
     } else if (value === "quit") {
       this.quitSent.resolve();
+      if (this.options.bestmoveOnQuit) queueMicrotask(() => this.stdout.emit("data", "bestmove e2e4\n"));
     }
   }
 
@@ -212,6 +216,26 @@ test("quit during analysis waits for exit and rejects queued work", { timeout: 5
   await quitting;
 });
 
+test("quit cancels active analysis before an engine bestmove on quit", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  let child!: FakeLc0Process;
+  const spawned = deferred<FakeLc0Process>();
+  const engine = new Lc0({
+    manifest,
+    manifestPath: join(root, "manifest.json"),
+    spawn: () => { child = new FakeLc0Process({ analysis: "stop-hang", bestmoveOnQuit: true, exitOnKill: "any" }); spawned.resolve(child); return child; },
+    timeouts: { handshake: 50, stopGrace: 5 },
+  });
+  const active = engine.analyze(FEN, REQUEST);
+  await spawned.promise;
+  await child.goStarted.promise;
+  const quitting = engine.quit();
+  await assert.rejects(active, /lc0 quit/);
+  await quitting;
+  assert.ok(child.commands.includes("stop"));
+  assert.ok(child.commands.includes("quit"));
+});
+
 test("unexpected exit causes the next request to respawn Lc0", { timeout: 500 }, async (t) => {
   const { root, manifest } = await fixture(t);
   const children: FakeLc0Process[] = [];
@@ -243,6 +267,63 @@ test("oversized stdout and EPIPE reject without uncaught process errors", { time
   const epipeEngine = new Lc0({ manifest: epipe.manifest, manifestPath: join(epipe.root, "manifest.json"), spawn: () => epipeChild, timeouts: { handshake: 50, stopGrace: 5 } });
   await assert.rejects(epipeEngine.analyze(FEN, REQUEST), /EPIPE/);
   await epipeEngine.quit();
+});
+
+test("quit rejects a bestmove already queued for delivery", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  const child = new FakeLc0Process({ analysis: "hang", exitOnKill: "any" });
+  const engine = new Lc0({ manifest, manifestPath: join(root, "manifest.json"),
+    spawn: () => child, timeouts: { handshake: 100, stopGrace: 5 } });
+  t.after(() => engine.quit());
+  const pending = engine.analyze(FEN, REQUEST);
+  await child.goStarted.promise;
+  queueMicrotask(() => child.stdout.emit("data", "info multipv 1 score cp 20 pv e7e5\nbestmove e7e5\n"));
+  const quitting = engine.quit();
+  await assert.rejects(pending, /lc0 quit/);
+  await quitting;
+});
+
+test("stderr diagnostics are sanitized and retained as a bounded tail", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  const diagnostic = `prefix-${"x".repeat(10_000)}\u001b[31msecret\u001b[0m\u0007-tail`;
+  const engine = new Lc0({
+    manifest,
+    manifestPath: join(root, "manifest.json"),
+    spawn: () => new FakeLc0Process({ handshake: "hang", stderr: diagnostic, exitOnKill: "any" }),
+    timeouts: { handshake: 50, stopGrace: 5 },
+  });
+  await assert.rejects(engine.analyze(FEN, REQUEST), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /stderr:/);
+    assert.match(error.message, /-tail\)$/);
+    assert.doesNotMatch(error.message, /\u001b|\u0007/);
+    assert.ok(error.message.length < 8_400);
+    return true;
+  });
+  await engine.quit();
+});
+
+test("analysis process failures include the captured stderr diagnostic", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  let child!: FakeLc0Process;
+  const spawned = deferred<FakeLc0Process>();
+  const engine = new Lc0({
+    manifest,
+    manifestPath: join(root, "manifest.json"),
+    spawn: () => { child = new FakeLc0Process({ analysis: "hang", stderr: "fatal [31mbackend[0m", exitOnKill: "any" }); spawned.resolve(child); return child; },
+    timeouts: { handshake: 50, stopGrace: 5 },
+  });
+  const analysis = engine.analyze(FEN, REQUEST);
+  await spawned.promise;
+  await child.goStarted.promise;
+  child.emitExit(1, null);
+  await assert.rejects(analysis, (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /Lc0 exited before completion|Lc0 process exited/);
+    assert.match(error.message, /stderr: fatal backend/);
+    return true;
+  });
+  await engine.quit();
 });
 
 test("terminal positions return no lines without starting Lc0", { timeout: 500 }, async (t) => {

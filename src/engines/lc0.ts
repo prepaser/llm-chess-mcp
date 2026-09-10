@@ -63,12 +63,28 @@ const DEFAULT_TIMEOUTS: Lc0Timeouts = {
 };
 const MAX_TIMER = 2_147_483_647;
 const DEFAULT_MAX_QUEUE = 32;
+const MAX_STDERR_BYTES = 8_192;
+const MAX_ERROR_STDERR_BYTES = 768;
 const here = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_MANIFEST = resolve(here, "../../bundle/lc0/manifest.json");
 const SHA256 = /^[a-f0-9]{64}$/i;
 
 function errorOf(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
+}
+
+function sanitizeDiagnostic(value: string): string {
+  return value
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "?")
+    .trim();
+}
+
+function appendDiagnostic(current: string, data: Buffer | string): string {
+  const value = sanitizeDiagnostic(String(data));
+  if (!value) return current;
+  const bytes = Buffer.from(`${current}${current ? "\n" : ""}${value}`);
+  return bytes.length <= MAX_STDERR_BYTES ? bytes.toString() : bytes.subarray(-MAX_STDERR_BYTES).toString();
 }
 
 function manifestPath(value: unknown, name: string): string {
@@ -179,6 +195,7 @@ type Session = {
   listeners: Set<(line: string) => void>;
   exit: Promise<void>;
   resetOutput(): void;
+  error(): Error | null;
   supportsWdl: boolean;
   supportsScoreType: boolean;
   meta: { version: string; weightsSha256: string; backend: string };
@@ -214,6 +231,7 @@ export class Lc0 {
   private queue: Queued[] = [];
   private running = false;
   private runningTask: Promise<void> | null = null;
+  private activeCancel: (() => void) | null = null;
   private readonly processes = new Map<Lc0Process, Promise<void>>();
   private readonly exited = new WeakSet<Lc0Process>();
   private readonly terminations = new WeakMap<Lc0Process, Promise<void>>();
@@ -281,9 +299,23 @@ export class Lc0 {
     const listeners = new Set<(line: string) => void>();
     let processError: Error | null = null;
     let outputBytes = 0;
+    let stderrTail = "";
+    const decoratedErrors = new WeakSet<Error>();
+    const withStderr = (error: Error): Error => {
+      const diagnostic = stderrTail.trim();
+      if (!diagnostic || decoratedErrors.has(error)) return error;
+      const diagnosticBytes = Buffer.from(diagnostic);
+      const visibleDiagnostic = diagnosticBytes.length <= MAX_ERROR_STDERR_BYTES
+        ? diagnosticBytes.toString()
+        : diagnosticBytes.subarray(-MAX_ERROR_STDERR_BYTES).toString();
+      const decorated = new Error(`${error.message} (stderr: ${visibleDiagnostic})`, { cause: error });
+      decoratedErrors.add(error);
+      decoratedErrors.add(decorated);
+      return decorated;
+    };
     const failProcess = (error: Error) => {
       if (processError) return;
-      processError = error;
+      processError = withStderr(error);
       if (this.session?.process === child) this.session = null;
       for (const listener of [...listeners]) listener("__lc0_process_exit__");
       void this.terminateProcess(child, exit).catch(() => {});
@@ -302,9 +334,8 @@ export class Lc0 {
         for (const listener of [...listeners]) listener(line);
       }
     });
-    let stderrBytes = 0;
     child.stderr?.on("data", (data) => {
-      stderrBytes = Math.min(65_536, stderrBytes + Buffer.byteLength(String(data)));
+      stderrTail = appendDiagnostic(stderrTail, data);
     });
     child.once("error", failProcess);
     const onExit = (code: number | null, signal: string | null) => {
@@ -312,7 +343,7 @@ export class Lc0 {
       this.exited.add(child);
       this.processes.delete(child);
       resolveExit();
-      if (!processError) processError = new Error(`Lc0 exited before completion (${code ?? signal ?? "unknown"})`);
+      if (!processError) processError = withStderr(new Error(`Lc0 exited before completion (${code ?? signal ?? "unknown"})`));
       if (this.session?.process === child) this.session = null;
       for (const listener of [...listeners]) listener("__lc0_process_exit__");
     };
@@ -335,14 +366,14 @@ export class Lc0 {
       const handshake = await this.waitForHandshake(command, listeners, manifest.engineVersion, Math.min(this.options.timeouts.init, this.options.timeouts.handshake), () => processError);
       signal?.throwIfAborted();
       if (this.quitting) throw new Error("lc0 shutting down");
-      const session: Session = { process: child, listeners, exit, resetOutput: () => { outputBytes = 0; }, meta: { version: handshake.version, weightsSha256: manifest.weights.sha256, backend: platform.backend }, supportsWdl: handshake.supportsWdl, supportsScoreType: handshake.supportsScoreType };
+      const session: Session = { process: child, listeners, exit, resetOutput: () => { outputBytes = 0; }, error: () => processError, meta: { version: handshake.version, weightsSha256: manifest.weights.sha256, backend: platform.backend }, supportsWdl: handshake.supportsWdl, supportsScoreType: handshake.supportsScoreType };
       this.pendingProcess = null;
       this.session = session;
       return session;
     } catch (error) {
       this.pendingProcess = null;
       await this.terminateProcess(child, exit);
-      throw error;
+      throw withStderr(errorOf(error));
     } finally {
       signal?.removeEventListener("abort", abortInit);
     }
@@ -432,19 +463,22 @@ export class Lc0 {
       let stopSent = false;
       let stopReason: Error | null = null;
       let stopTimer: NodeJS.Timeout | null = null;
+      let cancelActive: (() => void) | null = null;
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
+        if (this.activeCancel === cancelActive) this.activeCancel = null;
         this.options.clearTimeout(timer);
         if (stopTimer) this.options.clearTimeout(stopTimer);
         session.listeners.delete(listener);
         signal?.removeEventListener("abort", onAbort);
-        const failure = error ?? (bufferLines.size === 0 ? new Error("Lc0 returned no analysis lines") : null);
+        const failure = error ?? (this.quitting ? new Error("lc0 quit") :
+          bufferLines.size === 0 ? new Error("Lc0 returned no analysis lines") : null);
         if (failure) void this.invalidate(session).then(() => reject(failure), reject);
         else resolvePromise([...bufferLines.values()].sort((a, b) => a.multipv - b.multipv));
       };
       const listener = (line: string) => {
-        if (line === "__lc0_process_exit__") { finish(new Error("Lc0 process exited")); return; }
+        if (line === "__lc0_process_exit__") { finish(session.error() ?? new Error("Lc0 process exited")); return; }
         if (line.startsWith("info")) {
           const parsed = parseInfo(line, request.multipv);
           if (parsed) {
@@ -456,10 +490,12 @@ export class Lc0 {
         else if (line.startsWith("bestmove")) finish(stopReason ?? undefined);
       };
       const stop = (error: Error) => { if (stopSent) return; stopSent = true; stopReason = error; try { session.process.stdin.write("stop\n"); } catch {} stopTimer = this.options.setTimeout(() => finish(error), this.options.timeouts.stopGrace); };
+      cancelActive = () => stop(new Error("lc0 quit"));
       const onAbort = () => stop(signal?.reason instanceof Error ? signal.reason : new Error("operation aborted"));
       const watchdogMs = Math.min(MAX_TIMER, Math.min(this.options.timeouts.analyze, request.movetimeMs) + this.options.timeouts.stopGrace);
       const timer = this.options.setTimeout(() => stop(new Error("lc0 analyze timeout")), watchdogMs);
       session.listeners.add(listener);
+      this.activeCancel = cancelActive;
       signal?.addEventListener("abort", onAbort, { once: true });
       try {
         if (signal?.aborted) { onAbort(); return; }
@@ -520,6 +556,7 @@ export class Lc0 {
     this.quitting = Promise.resolve().then(async () => {
       const error = new Error("lc0 quit");
       for (const entry of this.queue.splice(0)) { entry.cancelled = true; entry.reject(error); }
+      this.activeCancel?.();
       this.session = null;
       this.pendingProcess = null;
       await Promise.all([...this.processes].map(([process, exit]) => this.terminateProcess(process, exit)));

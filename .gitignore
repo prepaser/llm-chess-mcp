@@ -5,3 +5,4 @@ dist/
 .venv-maia3/
 scripts/__pycache__/
 *.tgz
+.package-smoke-failures/

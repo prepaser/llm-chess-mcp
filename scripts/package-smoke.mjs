@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,12 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { childLifecycle, cleanupChild } from "./child-lifecycle.mjs";
 import { checkModelBundle } from "./model-check.mjs";
+import {
+  cleanupPackageSmokeWorkspace,
+  isStorageCapacityError,
+  storageCapacityGuidance,
+  writePackageSmokeDiagnostic,
+} from "./package-smoke-utils.mjs";
 import { checkStockfishConfig } from "./stockfish-config.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -449,9 +455,11 @@ async function smokeHttp(bin, packageRoot, cwd) {
 }
 
 const workspaceRoot = resolve(process.env.PACKAGE_SMOKE_TMPDIR ?? tmpdir());
-await mkdir(workspaceRoot, { recursive: true });
-const workspace = await mkdtemp(join(workspaceRoot, "llm-chess-mcp-package-smoke-"));
+let workspace;
+let primaryError;
 try {
+  await mkdir(workspaceRoot, { recursive: true });
+  workspace = await mkdtemp(join(workspaceRoot, "llm-chess-mcp-package-smoke-"));
   const build = await npmInvocation(["run", "build"]);
   await command(build.command, build.args, REPO);
   const cache = join(workspace, "npm-cache");
@@ -506,6 +514,27 @@ try {
     code: "ENOENT",
   });
   console.log("package smoke passed");
+} catch (error) {
+  primaryError = error;
+  const diagnostic = await writePackageSmokeDiagnostic({
+    error,
+    workspace,
+    tmpRoot: workspaceRoot,
+    repoRoot: REPO,
+    logRoot: process.env.PACKAGE_SMOKE_LOGDIR,
+  });
+  if (diagnostic) {
+    console.error(`Package smoke diagnostics: ${diagnostic}`);
+  } else {
+    console.error("Package smoke diagnostics could not be written; set PACKAGE_SMOKE_LOGDIR to a writable directory and retry.");
+  }
+  if (isStorageCapacityError(error)) {
+    console.error(storageCapacityGuidance(error, workspaceRoot));
+  }
+  throw error;
 } finally {
-  await rm(workspace, { recursive: true, force: true });
+  const cleanupError = await cleanupPackageSmokeWorkspace(workspace, primaryError);
+  if (cleanupError) {
+    console.error(`Package smoke cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+  }
 }

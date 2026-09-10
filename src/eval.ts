@@ -52,9 +52,9 @@ export type { AnalysisLevel } from "./domain.js";
 
 export const ANALYSIS_PRESETS: Record<
   AnalysisLevel,
-  { depth: number; multipv: number }
+  { depth: number; multipv: number; movetimeMs: number }
 > = {
-  fast: { depth: 8, multipv: 5 },
-  normal: { depth: 15, multipv: 8 },
-  deep: { depth: 22, multipv: 10 },
+  fast: { depth: 8, multipv: 5, movetimeMs: 1_000 },
+  normal: { depth: 15, multipv: 8, movetimeMs: 3_000 },
+  deep: { depth: 22, multipv: 10, movetimeMs: 10_000 },
 };

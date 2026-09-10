@@ -95,7 +95,7 @@ async function candidatePayload(services: CandidateServices, input: CandidateToo
   const preset = ANALYSIS_PRESETS[analysis_level];
   const request: EngineRequest = {
     mode: resolveEngineMode(engine_mode), depth: sf_depth ?? preset.depth, multipv: sf_multipv ?? preset.multipv,
-    movetimeMs: movetime_ms ?? ({ fast: 1_000, normal: 3_000, deep: 10_000 } as const)[analysis_level],
+    movetimeMs: movetime_ms ?? preset.movetimeMs,
   };
   const base = { game_id, revision, fen: chess.fen(), turn: chess.turn(), elo, analysis_level };
   if (chess.isGameOver()) {

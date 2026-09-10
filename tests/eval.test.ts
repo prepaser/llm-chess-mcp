@@ -87,8 +87,8 @@ test("classifies every centipawn-loss boundary", () => {
 
 test("keeps analysis presets stable", () => {
   assert.deepEqual(ANALYSIS_PRESETS, {
-    fast: { depth: 8, multipv: 5 },
-    normal: { depth: 15, multipv: 8 },
-    deep: { depth: 22, multipv: 10 },
+    fast: { depth: 8, multipv: 5, movetimeMs: 1_000 },
+    normal: { depth: 15, multipv: 8, movetimeMs: 3_000 },
+    deep: { depth: 22, multipv: 10, movetimeMs: 10_000 },
   });
 });

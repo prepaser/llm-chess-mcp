@@ -15,6 +15,7 @@ import {
 } from "./domain.js";
 import type { ToolName } from "./tool-names.js";
 import { GameIdSchema } from "./tool-fields.js";
+import { ANALYSIS_PRESETS } from "./eval.js";
 
 const lichessSpeedsSchema = z
   .array(lichessSpeedSchema)
@@ -142,9 +143,9 @@ export const MoveEvaluateInputSchema = z.strictObject({
     z.string(),
     z.array(z.string()).min(1).max(MAX_EVALUATED_MOVES),
   ]),
-  depth: z.number().int().min(1).max(MAX_ANALYSIS_DEPTH).default(15),
+  depth: z.number().int().min(1).max(MAX_ANALYSIS_DEPTH).default(ANALYSIS_PRESETS.normal.depth),
   engine_mode: z.enum(["stockfish", "lc0", "both"]).optional(),
-  movetime_ms: z.number().int().min(1).max(30_000).default(3_000),
+  movetime_ms: z.number().int().min(1).max(30_000).default(ANALYSIS_PRESETS.normal.movetimeMs),
 });
 
 const candidateFields = {
