@@ -19,7 +19,7 @@ import type {
   SfLine,
 } from "./domain.js";
 
-export { rankByIntent } from "./intent-ranking.js";
+export { rankByIntent, rankEngineCandidates } from "./intent-ranking.js";
 
 function safeDifference(left: number, right: number): number {
   const result = left - right;

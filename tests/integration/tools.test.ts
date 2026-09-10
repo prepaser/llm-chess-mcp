@@ -325,10 +325,12 @@ test("all tools expose contracts and execute with isolated fake services", async
     object(candidateOutputProperties.candidates).items,
   );
   const candidateProperties = object(candidateItems.properties);
-  const objectiveProperties = object(
-    object(candidateProperties.objective).properties,
-  );
-  const wdlAlternatives = array(object(objectiveProperties.wdl).anyOf);
+  const objectiveProperties = object(object(candidateProperties.objective).properties);
+  const byEngineProperties = object(object(objectiveProperties.byEngine).properties);
+  const stockfishObjective = object(byEngineProperties.stockfish);
+  const stockfishAlternatives = array(stockfishObjective.anyOf);
+  const stockfishProperties = object(object(stockfishAlternatives[0]).properties);
+  const wdlAlternatives = array(object(stockfishProperties.wdl).anyOf);
   assert.equal(object(wdlAlternatives[0]).minItems, 3);
   assert.equal(object(wdlAlternatives[0]).maxItems, 3);
 
@@ -358,11 +360,14 @@ test("all tools expose contracts and execute with isolated fake services", async
     analysis_level: "fast",
     depth: 9,
     multipv: 2,
+    engine_mode: "stockfish",
   });
   assert.equal(analyzed.analysis_level, "fast");
-  assert.equal(array(analyzed.lines).length, 2);
+  const analyzedStockfish = object(object(analyzed.engines).stockfish);
+  assert.equal(analyzedStockfish.status, "ok");
+  assert.equal(array(analyzedStockfish.result).length, 2);
   assert.deepEqual(
-    array(analyzed.lines).map((line) => object(line).pvSan),
+    array(analyzedStockfish.result).map((line) => object(line).pvSan),
     [["a3"], ["a4"]],
   );
   assert.equal(context.calls.analysis[0]?.depth, 9);
@@ -386,12 +391,15 @@ test("all tools expose contracts and execute with isolated fake services", async
     game_id: gameId,
     move: "e4",
     depth: 7,
+    engine_mode: "stockfish",
   });
   const evaluation = object(array(evaluated.results)[0]);
   assert.equal(evaluation.move, "e4");
   assert.equal(evaluation.result, "ongoing");
-  assert.equal(evaluation.classification, "inaccuracy");
-  assert.deepEqual(evaluation.pvSan, ["Nc6"]);
+  const evaluationStockfish = object(object(evaluation.engines).stockfish);
+  assert.equal(evaluationStockfish.status, "ok");
+  assert.equal(evaluationStockfish.classification, "inaccuracy");
+  assert.deepEqual(evaluationStockfish.pvSan, ["Nc6"]);
   assert.equal(context.games.getSnapshot(gameId).revision, 0);
 
   const candidateArgs = {
@@ -404,6 +412,7 @@ test("all tools expose contracts and execute with isolated fake services", async
     lichess_db: "lichess",
     lichess_speeds: ["rapid"],
     lichess_ratings: [1800],
+    engine_mode: "stockfish",
   };
   const candidates = await success(
     context.client,
@@ -411,8 +420,11 @@ test("all tools expose contracts and execute with isolated fake services", async
     candidateArgs,
   );
   assert.deepEqual(candidates.moveSensitivity, {
-    level: "medium",
-    topMoveSpreadCp: 95,
+    stockfish: {
+      level: "medium",
+      topMoveSpreadCp: 95,
+    },
+    lc0: null,
   });
   assert.equal(object(array(candidates.candidates)[0]).uci, "e2e4");
   assert.deepEqual(context.calls.candidates[0]?.lichess, {
@@ -426,8 +438,8 @@ test("all tools expose contracts and execute with isolated fake services", async
     intent: "natural",
   });
   assert.equal(byIntent.intent, "natural");
-  assert.equal(object(array(byIntent.candidates)[0]).uci, "d2d4");
-  assert.deepEqual(context.calls.intents, ["natural"]);
+  assert.equal(object(array(byIntent.candidates)[0]).uci, "e2e4");
+  assert.deepEqual(context.calls.intents, []);
 
   const explorer = await success(context.client, "opening_explorer", {
     game_id: gameId,
@@ -824,8 +836,8 @@ test("candidate tools return no moves for terminal games", async (t) => {
   const candidates = await success(context.client, "move_candidates", args);
   assert.deepEqual(candidates.candidates, []);
   assert.deepEqual(candidates.moveSensitivity, {
-    level: "low",
-    topMoveSpreadCp: null,
+    stockfish: null,
+    lc0: null,
   });
 
   const byIntent = await success(context.client, "move_candidates_by_intent", {

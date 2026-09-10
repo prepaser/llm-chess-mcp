@@ -4,7 +4,7 @@ An MCP chess runtime that lets LLMs play, analyze, and adapt their strength
 without outsourcing every decision to an engine.
 
 Rather than returning a single best move, it exposes objective strength
-(Stockfish), human move likelihood (Maia3), and real-game statistics (Lichess)
+(Stockfish and Lc0), human move likelihood (Maia3), and real-game statistics (Lichess)
 so the LLM can choose how it wants to play. The LLM does the strategy and
 judgment; the MCP server handles all the computation.
 
@@ -13,14 +13,44 @@ judgment; the MCP server handles all the computation.
 | Engine | Role | Runtime |
 |---|---|---|
 | **Stockfish 18** (WASM) | Objective evaluation, best moves, multipv | In-process (npm `stockfish`) |
+| **Lc0** (native) | Independent neural-network search and candidate ranking | Bundled child process, CPU by default |
 | **Maia3 5M** (ONNX) | Human-like move probabilities conditioned on Elo | Dedicated Node child processes (`onnxruntime-node`) |
 | **Lichess explorer** | Real human game statistics | HTTP (needs token) |
 
-No external engine executable or Python runtime is required at deploy time.
-Stockfish runs in the server process, while Maia inference runs in dedicated
-Node child processes. The published package bundles the Maia3 5M model; other
+No separately installed engine executable or Python runtime is required for the
+bundled CPU engines on supported platforms. Stockfish runs in the server process;
+Lc0 and Maia inference run in dedicated child processes. Lc0 CPU bundles target
+Linux x64 (glibc >= 2.35) and Windows x64. The published package bundles the Maia3 5M model; other
 export variants are not runtime options unless their ONNX files are provided
 separately.
+
+### Analysis modes
+
+Analysis defaults to `both`. Set `ENGINE_MODE=stockfish` or `ENGINE_MODE=lc0`
+for a server-wide default, or pass `engine_mode` to analysis, move evaluation,
+and candidate tools. A request overrides the environment, which overrides the
+packaged default. Single-engine requests never initialize or check the other
+engine and never silently switch engines on failure.
+
+Results identify each engine as `ok`, `error`, or `not_requested`.
+When one engine fails in `both` mode, the successful result is returned with
+`partial: true`. Both failing is an error. Cancellation stops the whole request.
+Scores, WDL, principal variations, and move classifications remain engine-local;
+centipawn values from different engines are never averaged. Move classification
+uses the existing CP-loss heuristic within each engine, not a calibrated
+cross-engine measure of move quality.
+
+Candidate consensus uses equal-weight reciprocal rank fusion:
+`sum(1 / (60 + rank)) / successfulEngineCount`. An unranked move contributes
+zero without being labeled bad. Ties prefer more supporting engines, then UCI
+order. This is a ranking score, not a probability. `natural` remains Maia-only;
+`ease_off` and `give_chance` require every successful engine to approve the
+candidate using available WDL data.
+
+Stockfish retains depth-based limits. Lc0 uses `movetime_ms`, with default
+`fast`/`normal`/`deep` budgets of 1000/3000/10000 ms. Reported depths and node
+counts are not comparable between engines. Full game history is passed when
+available; FEN-only games have no inferred real history.
 
 ## Build from source
 
@@ -374,7 +404,8 @@ The default config selects the current pinned 5M checkpoint:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
+  "analysis": { "mode": "both" },
   "maia3": {
     "model": "5m",
     "source": {
@@ -387,6 +418,15 @@ The default config selects the current pinned 5M checkpoint:
   "stockfish": {
     "version": "18.0.8",
     "flavor": "lite-single"
+  },
+  "lc0": {
+    "version": "0.32.1",
+    "weights": {
+      "url": "https://storage.lczero.org/files/networks-contrib/t1-256x10-distilled-swa-2432500.pb.gz",
+      "sha256": "bc27a6cae8ad36f2b9a80a6ad9dabb0d6fda25b1e7f481a79bc359e14f563406"
+    },
+    "backend": "cpu",
+    "platforms": ["linux-x64", "win32-x64"]
   }
 }
 ```
@@ -472,18 +512,46 @@ exact npm dependency; the running server never installs or switches versions.
 `pnpm model:check` checks both engines without downloading or installing
 anything. Stockfish-only changes do not require Maia export: its manifest
 continues to record only normalized Maia settings. Schema version 1 build
-configs must be updated to the two-section format above. Ordinary builds do
+configs must be updated to the unified format above. Ordinary builds do
 not install engines. External NNUE replacement and flavor-specific package
 size optimization are not provided.
 
 ## Package verification
+
+Lc0 engines and weights are prepared by the publisher with `pnpm lc0:prepare`.
+Preparation runs on Linux with Docker and Wine available. The Linux CPU build
+uses Ubuntu 22.04 and DNNL; the runtime backend is named `blas` even when DNNL
+provides its matrix operations. If Docker requires sudo, explicitly set
+`LC0_DOCKER_SUDO=1`. The Linux engine source archive and third-party notices are
+retained with the prepared artifacts. A prebuilt Linux artifact directory may instead be
+supplied through `LC0_LINUX_BUNDLE`.
+The staged bundle is checked before it replaces a previous working bundle.
+`bundle/lc0/manifest.json` records platform executables, required libraries,
+backend, network identity, and SHA-256 digests. The package contains artifacts
+for both supported platforms and a shared pinned weight file; it does not
+download models or install GPU software when the server starts.
+
+On Windows 10/11 x64, install the official
+[Microsoft Visual C++ v14 x64 Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+before using Lc0. The Lc0/DNNL binaries require `MSVCP140.dll`, `VCOMP140.dll`,
+`VCRUNTIME140.dll`, and `VCRUNTIME140_1.dll`; Microsoft runtime DLLs are not
+redistributed in this package. Stockfish-only mode does not require Lc0 or
+its native runtime prerequisites.
+
+CPU is the default. CUDA is a build-time option requiring a compatible NVIDIA
+environment and a successful preparation probe. A missing GPU/backend is an
+explicit engine failure, not an implicit switch to CPU. Windows validation via
+Wine is supplementary and must not be reported as a native Windows test.
+CUDA preparation takes a matching Linux artifact directory in
+`LC0_LINUX_BUNDLE` and a Windows archive in `LC0_WINDOWS_ARCHIVE`, with its
+SHA-256 in `LC0_WINDOWS_ARCHIVE_SHA256`. It does not install GPU drivers.
 
 Package artifacts are verified locally; this project intentionally has no
 hosted CI workflow.
 
 Run `pnpm check` for the deterministic offline gate. Use `pnpm test:package` to
 pack the project, install the tarball in a clean temporary directory, and run
-the installed `llm-chess-mcp` binary against the real Stockfish and Maia
+the installed `llm-chess-mcp` binary against the real Stockfish, Lc0, and Maia
 runtimes. `pnpm release:check` runs both checks plus the production dependency
 audit and package manifest dry run.
 
@@ -497,6 +565,7 @@ It bundles and depends on third-party components:
 |---|---|---|
 | [Maia3](https://github.com/CSSLab/maia3) (Chessformer) | AGPL-3.0 | UofT CSSLab — Monroe et al., *Chessformer: A Unified Architecture for Chess Modeling* (ICLR 2026) |
 | [Stockfish](https://github.com/official-stockfish/Stockfish) (via npm `stockfish`) | GPL-3.0 | The Stockfish developers |
+| [Lc0](https://github.com/LeelaChessZero/lc0) | GPL-3.0 | The Leela Chess Zero developers; bundled library notices accompany each platform artifact |
 | [onnxruntime-node](https://github.com/microsoft/onnxruntime) | MIT | Microsoft |
 | [chess.js](https://github.com/jhlywa/chess.js) | BSD-2-Clause | Jeff Hlywa |
 

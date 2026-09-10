@@ -1,5 +1,8 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
+  "analysis": {
+    "mode": "both"
+  },
   "maia3": {
     "model": "5m",
     "source": {
@@ -12,5 +15,17 @@
   "stockfish": {
     "version": "18.0.8",
     "flavor": "lite-single"
+  },
+  "lc0": {
+    "version": "0.32.1",
+    "weights": {
+      "url": "https://storage.lczero.org/files/networks-contrib/t1-256x10-distilled-swa-2432500.pb.gz",
+      "sha256": "bc27a6cae8ad36f2b9a80a6ad9dabb0d6fda25b1e7f481a79bc359e14f563406"
+    },
+    "backend": "cpu",
+    "platforms": [
+      "linux-x64",
+      "win32-x64"
+    ]
   }
 }

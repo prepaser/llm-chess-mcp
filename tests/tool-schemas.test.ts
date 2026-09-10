@@ -439,12 +439,23 @@ test("every game-id output exposes the shared length bounds", () => {
 
 test("analysis outputs expose the shared cardinality limits", () => {
   const position = z.toJSONSchema(PositionAnalyzeOutputSchema) as {
-    properties?: { lines?: { maxItems?: number } };
+    properties?: {
+      engines?: {
+        properties?: {
+          stockfish?: { oneOf?: Array<{ properties?: { result?: { maxItems?: number } } }> };
+        };
+      };
+      consensus?: { maxItems?: number };
+    };
   };
   const evaluation = z.toJSONSchema(MoveEvaluateOutputSchema) as {
     properties?: { results?: { maxItems?: number } };
   };
-  assert.equal(position.properties?.lines?.maxItems, MAX_MULTIPV);
+  assert.equal(
+    position.properties?.engines?.properties?.stockfish?.oneOf?.[0]?.properties?.result?.maxItems,
+    MAX_MULTIPV,
+  );
+  assert.equal(position.properties?.consensus?.maxItems, MAX_MULTIPV);
   assert.equal(
     evaluation.properties?.results?.maxItems,
     MAX_EVALUATED_MOVES,

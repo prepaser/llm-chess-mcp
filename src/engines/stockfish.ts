@@ -2,6 +2,7 @@ import { AsyncLocalStorage, createHook } from "node:async_hooks";
 import { createRequire } from "node:module";
 import { dirname, sep } from "node:path";
 import { readFileSync } from "node:fs";
+import { Chess } from "chess.js";
 import type { SfLine } from "../domain.js";
 import { ChessError } from "../errors.js";
 import { mergeAnalysisInfo, parseAnalysisInfo } from "./stockfish-info.js";
@@ -969,6 +970,7 @@ export class Stockfish {
     depth: number,
     multipv: number,
     signal?: AbortSignal,
+    history?: { initialFen: string; moves: readonly string[] },
   ): Promise<SfLine[]> {
     if (signal?.aborted) {
       return Promise.reject(abortError(signal));
@@ -980,6 +982,23 @@ export class Stockfish {
       return Promise.reject(
         new ChessError("SERVER_BUSY", "stockfish queue full"),
       );
+    }
+
+    let positionCommand = "position fen " + fen;
+    if (history) {
+      try {
+        const replay = new Chess(history.initialFen);
+        const initialFen = replay.fen();
+        const moves = [...history.moves];
+        for (const move of moves) {
+          if (!/^[a-h][1-8][a-h][1-8][qrbn]?$/.test(move)) throw new Error("invalid UCI history move");
+          replay.move(move);
+        }
+        if (replay.fen() !== new Chess(fen).fen()) throw new Error("analysis history does not match position");
+        positionCommand = `position fen ${initialFen}${moves.length ? ` moves ${moves.join(" ")}` : ""}`;
+      } catch (error) {
+        return Promise.reject(asError(error));
+      }
     }
 
     const quitGeneration = this.quitGeneration;
@@ -1037,7 +1056,7 @@ export class Stockfish {
         if (!session) throw new Error("stockfish unavailable after initialization");
         const lines = await this.doAnalyze(
           session,
-          fen,
+          positionCommand,
           depth,
           multipv,
           (stop) => {
@@ -1059,7 +1078,7 @@ export class Stockfish {
 
   private doAnalyze(
     session: Session,
-    fen: string,
+    positionCommand: string,
     depth: number,
     multipv: number,
     setStop: (stop: ((error: Error) => void) | null) => void,
@@ -1142,7 +1161,7 @@ export class Stockfish {
         stop(new Error("stockfish analyze timeout"), false);
       }, this.timeouts.analyze);
       try {
-        engine.sendCommand("position fen " + fen);
+        engine.sendCommand(positionCommand);
         engine.sendCommand(`setoption name MultiPV value ${multipv}`);
         engine.sendCommand("setoption name UCI_ShowWDL value true");
         engine.sendCommand(`go depth ${depth}`);

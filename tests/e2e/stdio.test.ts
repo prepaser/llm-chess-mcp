@@ -130,10 +130,14 @@ test(
         analysis_level: "fast",
         depth: 1,
         multipv: 1,
+        engine_mode: "stockfish",
       });
       assert.equal(analyzed.revision, 1);
-      assert.equal((analyzed.lines as unknown[]).length, 1);
-      assert.ok(Array.isArray((analyzed.lines as JsonObject[])[0]?.pvSan));
+      const analyzedStockfish = object(analyzed.engines).stockfish;
+      assert.equal(object(analyzedStockfish).status, "ok");
+      assert.equal(object(analyzedStockfish).result instanceof Array, true);
+      assert.equal((object(analyzedStockfish).result as unknown[]).length, 1);
+      assert.ok(Array.isArray(object((object(analyzedStockfish).result as unknown[])[0]).pvSan));
 
       const human = await success(client, "human_move_distribution", {
         game_id: gameId,
@@ -147,11 +151,14 @@ test(
         game_id: gameId,
         move: "e5",
         depth: 1,
+        engine_mode: "stockfish",
       });
       assert.equal(evaluated.revision, 1);
       assert.equal((evaluated.results as unknown[]).length, 1);
       assert.equal((evaluated.results as JsonObject[])[0]?.move, "e5");
-      assert.ok(Array.isArray((evaluated.results as JsonObject[])[0]?.pvSan));
+      const evaluatedEngines = object((evaluated.results as JsonObject[])[0]?.engines);
+      assert.equal(object(evaluatedEngines.stockfish).status, "ok");
+      assert.ok(Array.isArray(object(evaluatedEngines.stockfish).pvSan));
 
       const candidateArgs = {
         game_id: gameId,

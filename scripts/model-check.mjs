@@ -5,6 +5,7 @@ import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { checkStockfishConfig, validateStockfishConfig } from "./stockfish-config.mjs";
+import { checkLc0Bundle, validateLc0Config } from "./lc0-check.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MODEL_KEYS = new Set(["3m", "5m", "23m", "79m"]);
@@ -74,11 +75,18 @@ function validateNormalizedMaiaConfig(config) {
 
 export function validateBuildConfig(config) {
   object(config, "model.config.json");
-  if (!isDeepStrictEqual(Object.keys(config).sort(), ["maia3", "schemaVersion", "stockfish"])) fail("config has invalid fields");
-  if (config.schemaVersion !== 2) fail("config.schemaVersion must be 2");
+  if (!isDeepStrictEqual(Object.keys(config).sort(), ["analysis", "lc0", "maia3", "schemaVersion", "stockfish"])) fail("config has invalid fields");
+  if (config.schemaVersion !== 3) fail("config.schemaVersion must be 3");
+  object(config.analysis, "config.analysis");
+  if (!isDeepStrictEqual(Object.keys(config.analysis), ["mode"]) ||
+      typeof config.analysis.mode !== "string" || !new Set(["both", "stockfish", "lc0"]).has(config.analysis.mode)) {
+    fail("config.analysis.mode must be both, stockfish, or lc0");
+  }
   return {
+    analysis: { mode: config.analysis.mode },
     maia3: normalizeMaiaConfig(config.maia3),
     stockfish: validateStockfishConfig(config.stockfish),
+    lc0: validateLc0Config(config.lc0),
   };
 }
 
@@ -130,7 +138,14 @@ async function digest(path) {
 export async function checkModelBundle({ configPath = join(ROOT, "model.config.json"), modelsDir = join(ROOT, "models") } = {}) {
   const buildConfig = validateBuildConfig(JSON.parse(await readFile(configPath, "utf8")));
   const config = buildConfig.maia3;
-  await checkStockfishConfig({ root: resolve(dirname(configPath)), config: buildConfig.stockfish });
+  const root = resolve(dirname(configPath));
+  const packageJson = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  if (!packageJson.analysis || packageJson.analysis.mode !== buildConfig.analysis.mode) {
+    fail("package analysis mode does not match config; update package metadata");
+  }
+  await checkStockfishConfig({ root, config: buildConfig.stockfish });
+  const lc0Dir = join(root, "bundle", "lc0");
+  await checkLc0Bundle({ config: buildConfig.lc0, lc0Dir });
   const manifestPath = join(modelsDir, "manifest.json");
   const manifest = validateModelManifest(JSON.parse(await readFile(manifestPath, "utf8")));
   if (manifest.model !== config.model) fail("manifest.model does not match config.model");

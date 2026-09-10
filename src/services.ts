@@ -13,12 +13,21 @@ import type { GameStore } from "./games.js";
 import { createCandidateComputation, rankByIntent } from "./intents.js";
 import type { CandidateSet, LichessOpts } from "./intents.js";
 import type { Candidate, Intent, Maia3Move, SfLine } from "./domain.js";
+import type { EngineAnalysis, EngineRequest } from "./engines/types.js";
+import { analyzeEngines as runEngines, quitEngines } from "./engines/analysis.js";
+import { createEngineCandidateComputation, rankEngineCandidates } from "./engine-consensus.js";
+import type { ComputeEngineCandidates } from "./engine-consensus.js";
 
 export interface GameServices {
   games: GameStore;
 }
 
 export interface AnalysisServices {
+  analyzeEngines?(
+    chess: Chess,
+    request: EngineRequest,
+    signal?: AbortSignal,
+  ): Promise<EngineAnalysis>;
   analyze(
     fen: string,
     depth: number,
@@ -46,6 +55,8 @@ export interface ExplorerServices {
 }
 
 export interface CandidateServices {
+  computeEngineCandidates?: ComputeEngineCandidates;
+  rankEngineCandidates?: typeof rankEngineCandidates;
   computeCandidates(
     chess: Chess,
     elo: number,
@@ -115,6 +126,10 @@ const analyze: AppServices["analyze"] = (fen, depth, multipv, signal) => {
     ? Promise.reject(error)
     : stockfish.analyze(fen, depth, multipv, signal);
 };
+const analyzeEngines = (chess: Chess, request: EngineRequest, signal?: AbortSignal) => {
+  const position = snapshotChess(chess);
+  return runInGeneration(signal, (_generation, workSignal) => runEngines(position, request, workSignal));
+};
 const loadMaia = (): Promise<typeof import("./maia3/inference.js")> =>
   (maiaModule ??= import("./maia3/inference.js"));
 const humanMoveDistribution: AppServices["humanMoveDistribution"] = async (
@@ -180,6 +195,19 @@ const computeCandidates: AppServices["computeCandidates"] = (
     ),
   );
 
+const computeEngineCandidateSet = createEngineCandidateComputation({
+  analyzeEngines,
+  humanMoveDistribution,
+  explorerEnabled,
+  openingExplorer: openExplorer,
+  explorerFailureReason: (error) => error instanceof ExplorerError ? error.reason : "upstream",
+});
+const computeEngineCandidates: ComputeEngineCandidates = (chess, elo, request, maiaTopN, lichess, signal) => {
+  const position = snapshotChess(chess);
+  return runInGeneration(signal, (_generation, workSignal) =>
+    computeEngineCandidateSet(position, elo, request, maiaTopN, lichess, workSignal));
+};
+
 function quitDefaultServices(): Promise<void> {
   if (defaultShutdown) return defaultShutdown;
   const maia = maiaModule;
@@ -191,7 +219,7 @@ function quitDefaultServices(): Promise<void> {
         () => {},
       );
       const results = await Promise.allSettled([
-        stockfish.quit(),
+        quitEngines(),
         generationDrain,
         ...(maia ? [maia.then((module) => module.quitMaia())] : []),
       ]);
@@ -217,11 +245,14 @@ function quitDefaultServices(): Promise<void> {
 export const defaultAppServices: AppServices = {
   games: defaultGameStore,
   analyze,
+  analyzeEngines,
   quit: quitDefaultServices,
   humanMoveDistribution,
   explorerEnabled,
   openingExplorer: openExplorer,
   computeCandidates,
+  computeEngineCandidates,
+  rankEngineCandidates,
   rankByIntent,
 };
 

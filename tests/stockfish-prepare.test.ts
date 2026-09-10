@@ -10,9 +10,11 @@ const { checkStockfishConfig, validateStockfishConfig } = await import(new URL("
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "stockfish-prepare-"));
   const config = {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    analysis: { mode: "both" },
     maia3: { model: "5m", source: { type: "local", path: "weights.pt" } },
     stockfish: { version: "18.0.8", flavor: "full" },
+    lc0: { version: "0.32.1", weights: { url: "https://example.invalid/weights.pb.gz", sha256: "a".repeat(64) }, backend: "cpu", platforms: ["linux-x64"] },
   };
   const pkg = { type: "module", version: "0.7.2", dependencies: { stockfish: "18.0.7" }, stockfish: { flavor: "lite-single" }, unrelated: true };
   await writeFile(join(root, "model.config.json"), JSON.stringify(config));

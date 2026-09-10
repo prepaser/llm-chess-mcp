@@ -84,7 +84,7 @@ test("move_evaluate rejects terminal games before engine analysis", async (t) =>
 
   const response = await client.callTool({
     name: "move_evaluate",
-    arguments: { game_id: gameId, move: "Kh7", depth: 5 },
+    arguments: { game_id: gameId, move: "Kh7", depth: 5, engine_mode: "stockfish" },
   });
 
   assert.equal(response.isError, true);
@@ -143,7 +143,7 @@ test("move_evaluate classifies terminal draws from the mover's prior score", asy
     scoreCp = expected.beforeCp;
     const response = await client.callTool({
       name: "move_evaluate",
-      arguments: { game_id: gameId, move: "Qb6", depth: 5 },
+      arguments: { game_id: gameId, move: "Qb6", depth: 5, engine_mode: "stockfish" },
     });
     assert.notEqual(response.isError, true);
     const parsed = MoveEvaluateOutputSchema.parse(response.structuredContent);
@@ -153,13 +153,23 @@ test("move_evaluate classifies terminal draws from the mover's prior score", asy
       move: "Qb6",
       uci: "c7b6",
       result: "stalemate",
-      scoreCp: 0,
-      scoreMate: null,
-      bestCp: expected.beforeCp,
-      cpLoss: expected.cpLoss,
-      classification: expected.classification,
-      pv: [],
-      pvSan: [],
+      partial: false,
+      enginesUsed: ["stockfish"],
+      engines: {
+        stockfish: {
+          status: "ok",
+          scoreCp: 0,
+          scoreMate: null,
+          wdl: [0, 1000, 0],
+          bestCp: expected.beforeCp,
+          cpLoss: expected.cpLoss,
+          classification: expected.classification,
+          pv: [],
+          pvSan: [],
+        },
+        lc0: { status: "not_requested" },
+      },
+      classificationBasis: "engine_cp_heuristic",
     });
   }
 
@@ -272,7 +282,7 @@ test("position_analyze rejects partially consumable injected PVs", async (t) => 
 
   const response = await client.callTool({
     name: "position_analyze",
-    arguments: { game_id: gameId },
+    arguments: { game_id: gameId, engine_mode: "stockfish" },
   });
   assert.equal(response.isError, true);
   assert.deepEqual(response.structuredContent, {
@@ -308,7 +318,7 @@ test("position_analyze rejects invalid injected MultiPV sets", async (t) => {
 
   const response = await client.callTool({
     name: "position_analyze",
-    arguments: { game_id: gameId, multipv: 1 },
+    arguments: { game_id: gameId, multipv: 1, engine_mode: "stockfish" },
   });
   assert.equal(response.isError, true);
   assert.deepEqual(response.structuredContent, {
@@ -336,12 +346,12 @@ test("analysis adapters clone injected results before use", async () => {
   const handler = handlers.get("position_analyze");
   assert.ok(handler);
   const result = await handler(
-    { game_id: gameId, analysis_level: "normal", multipv: 1 },
+    { game_id: gameId, analysis_level: "normal", multipv: 1, engine_mode: "stockfish" },
     { mcpReq: { signal: new AbortController().signal } } as ServerContext,
-  ) as { structuredContent: { lines: Array<{ pv: string[] }> } };
+  ) as { structuredContent: { engines: { stockfish: { result: Array<{ pv: string[] }> } } } };
   retained[0]!.pv.push("e7e5");
 
-  assert.deepEqual(result.structuredContent.lines[0]?.pv, ["e2e4"]);
+  assert.deepEqual(result.structuredContent.engines.stockfish.result[0]?.pv, ["e2e4"]);
 });
 
 test("analysis adapters mask uncloneable injected results", async (t) => {
@@ -373,7 +383,7 @@ test("analysis adapters mask uncloneable injected results", async (t) => {
 
   const response = await client.callTool({
     name: "position_analyze",
-    arguments: { game_id: gameId },
+    arguments: { game_id: gameId, engine_mode: "stockfish" },
   });
   assert.equal(response.isError, true);
   assert.deepEqual(response.structuredContent, {
@@ -411,7 +421,7 @@ test("move_evaluate clones both injected analysis results", async (t) => {
 
   const response = await client.callTool({
     name: "move_evaluate",
-    arguments: { game_id: gameId, move: "e4", depth: 1 },
+    arguments: { game_id: gameId, move: "e4", depth: 1, engine_mode: "stockfish" },
   });
   assert.equal(response.isError, true);
   assert.deepEqual(response.structuredContent, {
@@ -445,7 +455,7 @@ test("move_evaluate rejects partially consumable successor PVs", async (t) => {
 
   const response = await client.callTool({
     name: "move_evaluate",
-    arguments: { game_id: gameId, move: "e4", depth: 1 },
+    arguments: { game_id: gameId, move: "e4", depth: 1, engine_mode: "stockfish" },
   });
   assert.equal(response.isError, true);
   assert.deepEqual(response.structuredContent, {

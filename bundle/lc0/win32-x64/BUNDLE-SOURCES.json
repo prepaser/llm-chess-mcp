@@ -1,0 +1,7 @@
+{
+  "engineVersion": "0.32.1",
+  "engineSource": "https://github.com/LeelaChessZero/lc0/tree/v0.32.1",
+  "archiveSha256": "b9cfcfbd3dabffbfd452f6e8e087c22273721bef48eba19640b6d92006c142f5",
+  "archive": "https://github.com/LeelaChessZero/lc0/releases/download/v0.32.1/lc0-v0.32.1-windows-cpu-dnnl.zip",
+  "provider": "DNNL"
+}

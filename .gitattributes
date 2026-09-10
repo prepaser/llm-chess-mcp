@@ -1,2 +1,7 @@
 models/*.onnx binary
 models/*.data binary
+bundle/**/*.gz binary
+bundle/**/*.exe binary
+bundle/**/*.dll binary
+bundle/**/*.so* binary
+bundle/**/lc0 binary

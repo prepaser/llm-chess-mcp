@@ -20,7 +20,8 @@ async function fixture() {
   const models = join(root, "models");
   await mkdir(models);
   const config = {
-    schemaVersion: 2,
+    schemaVersion: 3,
+    analysis: { mode: "both" },
     maia3: {
       model: "5m",
       source: {
@@ -34,6 +35,12 @@ async function fixture() {
       version: "18.0.8",
       flavor: "lite-single",
     },
+    lc0: {
+      version: "0.32.1",
+      weights: { url: "https://example.invalid/weights.pb.gz", sha256: sha256("weights") },
+      backend: "cpu",
+      platforms: ["linux-x64", "win32-x64"],
+    },
   };
   const model = "onnx-model";
   const data = "external-data";
@@ -42,6 +49,7 @@ async function fixture() {
     name: "llm-chess-mcp-fixture",
     dependencies: { stockfish: "18.0.8" },
     stockfish: { flavor: "lite-single" },
+    analysis: { mode: "both" },
   }));
   await mkdir(join(root, "node_modules", "stockfish"), { recursive: true });
   await writeFile(join(root, "node_modules", "stockfish", "package.json"), JSON.stringify({
@@ -68,6 +76,22 @@ async function fixture() {
       ],
     }),
   );
+  const lc0 = join(root, "bundle", "lc0");
+  await mkdir(join(lc0, "weights"), { recursive: true });
+  await mkdir(join(lc0, "linux-x64"), { recursive: true });
+  await mkdir(join(lc0, "win32-x64"), { recursive: true });
+  await writeFile(join(lc0, "weights", "network.pb.gz"), "weights");
+  await writeFile(join(lc0, "linux-x64", "lc0"), "linux");
+  await writeFile(join(lc0, "win32-x64", "lc0.exe"), "windows");
+  await writeFile(join(lc0, "manifest.json"), JSON.stringify({
+    schemaVersion: 1,
+    engineVersion: "0.32.1",
+    weights: { path: "weights/network.pb.gz", sha256: sha256("weights") },
+    platforms: {
+      "linux-x64": { executable: "linux-x64/lc0", backend: "blas", files: [{ path: "linux-x64/lc0", sha256: sha256("linux") }] },
+      "win32-x64": { executable: "win32-x64/lc0.exe", backend: "blas", files: [{ path: "win32-x64/lc0.exe", sha256: sha256("windows") }] },
+    },
+  }));
   return { root, models };
 }
 
@@ -161,6 +185,25 @@ test("model check rejects tampered and unlisted artifacts", async () => {
     } finally {
       await rm(clean.root, { recursive: true, force: true });
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("model check validates the configured Lc0 bundle", async () => {
+  const { root, models } = await fixture();
+  try {
+    const manifestPath = join(root, "bundle", "lc0", "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    await writeFile(manifestPath, JSON.stringify({ ...manifest, engineVersion: "0.31.0" }));
+    await assert.rejects(run(root, models), /engine version does not match config/);
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await writeFile(join(root, "bundle", "lc0", "weights", "network.pb.gz"), "tampered");
+    await assert.rejects(run(root, models), /SHA-256 mismatch for lc0\/weights/);
+    await writeFile(join(root, "bundle", "lc0", "weights", "network.pb.gz"), "weights");
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    await writeFile(join(root, "bundle", "lc0", "unlisted.bin"), "unlisted");
+    await assert.rejects(run(root, models), /unlisted Lc0 artifact/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

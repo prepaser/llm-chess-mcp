@@ -356,7 +356,7 @@ function toolCallBody(id: string, gameId: string): string {
     method: "tools/call",
     params: {
       name: "position_analyze",
-      arguments: { game_id: gameId, analysis_level: "fast" },
+      arguments: { game_id: gameId, analysis_level: "fast", engine_mode: "stockfish" },
     },
   });
 }
@@ -1334,7 +1334,7 @@ test("Streamable HTTP cancels work and reclaims capacity after a raw disconnect"
 
   const admitted = await secondClient.callTool({
     name: "position_analyze",
-    arguments: { game_id: gameId, analysis_level: "fast" },
+    arguments: { game_id: gameId, analysis_level: "fast", engine_mode: "stockfish" },
   });
   assert.notEqual(admitted.isError, true);
   assert.equal(calls, 2);
@@ -1355,7 +1355,7 @@ test("Streamable HTTP propagates MCP cancellation to active tools", async (t) =>
   const call = client.callTool(
     {
       name: "position_analyze",
-      arguments: { game_id: gameId, analysis_level: "fast" },
+      arguments: { game_id: gameId, analysis_level: "fast", engine_mode: "stockfish" },
     },
     { signal: controller.signal },
   ).then(
@@ -1416,14 +1416,14 @@ test("Streamable HTTP reserves bounded capacity for cancellation", async (t) => 
   const first = client.callTool(
     {
       name: "position_analyze",
-      arguments: { game_id: gameId, analysis_level: "fast" },
+      arguments: { game_id: gameId, analysis_level: "fast", engine_mode: "stockfish" },
     },
     { signal: firstAbort.signal },
   ).catch((error: unknown) => error);
   const second = client.callTool(
     {
       name: "position_analyze",
-      arguments: { game_id: gameId, analysis_level: "fast" },
+      arguments: { game_id: gameId, analysis_level: "fast", engine_mode: "stockfish" },
     },
     { signal: secondAbort.signal },
   ).catch((error: unknown) => error);
@@ -1455,7 +1455,7 @@ test("Streamable HTTP session deletion cancels active tools", async (t) => {
   const call = client
     .callTool({
       name: "position_analyze",
-      arguments: { game_id: gameId, analysis_level: "fast" },
+      arguments: { game_id: gameId, analysis_level: "fast", engine_mode: "stockfish" },
     })
     .then(
       (result) => result,
@@ -1558,7 +1558,7 @@ test("Streamable HTTP does not reap a session during an active POST", async (t) 
   const gameId = await createGame(client);
   const call = client.callTool({
     name: "position_analyze",
-    arguments: { game_id: gameId, analysis_level: "fast" },
+    arguments: { game_id: gameId, analysis_level: "fast", engine_mode: "stockfish" },
   });
   await analysis.started;
   await new Promise((resolve) => setTimeout(resolve, 250));
@@ -1608,7 +1608,7 @@ test("Streamable HTTP shutdown cancels active tools", async (t) => {
   const call = client
     .callTool({
       name: "position_analyze",
-      arguments: { game_id: gameId, analysis_level: "fast" },
+      arguments: { game_id: gameId, analysis_level: "fast", engine_mode: "stockfish" },
     })
     .then(
       (result) => result,

@@ -906,6 +906,14 @@
             "minimum": 600,
             "type": "integer"
           },
+          "engine_mode": {
+            "enum": [
+              "stockfish",
+              "lc0",
+              "both"
+            ],
+            "type": "string"
+          },
           "game_id": {
             "maxLength": 256,
             "minLength": 1,
@@ -990,6 +998,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "movetime_ms": {
+            "maximum": 30000,
+            "minimum": 1,
+            "type": "integer"
+          },
           "sf_depth": {
             "maximum": 30,
             "minimum": 1,
@@ -1023,6 +1036,23 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "consensusRank": {
+                  "anyOf": [
+                    {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "consensusScore": {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
                 "human": {
                   "additionalProperties": false,
                   "properties": {
@@ -1055,108 +1085,249 @@
                 "objective": {
                   "additionalProperties": false,
                   "properties": {
-                    "cpLoss": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "moverCp": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "moverMate": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "rank": {
-                      "anyOf": [
-                        {
-                          "maximum": 9007199254740991,
-                          "minimum": 1,
-                          "type": "integer"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "wdl": {
-                      "anyOf": [
-                        {
-                          "description": "[wins, draws, losses]; the three counts must sum to 1000.",
-                          "maxItems": 3,
-                          "minItems": 3,
-                          "prefixItems": [
+                    "byEngine": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "lc0": {
+                          "anyOf": [
                             {
-                              "maximum": 1000,
-                              "minimum": 0,
-                              "type": "integer"
+                              "additionalProperties": false,
+                              "properties": {
+                                "cpLoss": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "moverCp": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "moverMate": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "rank": {
+                                  "anyOf": [
+                                    {
+                                      "maximum": 9007199254740991,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "wdl": {
+                                  "anyOf": [
+                                    {
+                                      "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                      "maxItems": 3,
+                                      "minItems": 3,
+                                      "prefixItems": [
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        }
+                                      ],
+                                      "type": "array"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                                },
+                                "whiteCp": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "whiteMate": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "rank",
+                                "moverCp",
+                                "whiteCp",
+                                "cpLoss",
+                                "moverMate",
+                                "whiteMate",
+                                "wdl"
+                              ],
+                              "type": "object"
                             },
                             {
-                              "maximum": 1000,
-                              "minimum": 0,
-                              "type": "integer"
-                            },
-                            {
-                              "maximum": 1000,
-                              "minimum": 0,
-                              "type": "integer"
+                              "type": "null"
                             }
-                          ],
-                          "type": "array"
+                          ]
                         },
-                        {
-                          "type": "null"
+                        "stockfish": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "cpLoss": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "moverCp": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "moverMate": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "rank": {
+                                  "anyOf": [
+                                    {
+                                      "maximum": 9007199254740991,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "wdl": {
+                                  "anyOf": [
+                                    {
+                                      "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                      "maxItems": 3,
+                                      "minItems": 3,
+                                      "prefixItems": [
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        }
+                                      ],
+                                      "type": "array"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                                },
+                                "whiteCp": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "whiteMate": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "rank",
+                                "moverCp",
+                                "whiteCp",
+                                "cpLoss",
+                                "moverMate",
+                                "whiteMate",
+                                "wdl"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
+                      },
+                      "required": [
+                        "stockfish",
+                        "lc0"
                       ],
-                      "description": "[wins, draws, losses]; the three counts must sum to 1000."
-                    },
-                    "whiteCp": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "whiteMate": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
+                      "type": "object"
                     }
                   },
                   "required": [
-                    "rank",
-                    "moverCp",
-                    "whiteCp",
-                    "cpLoss",
-                    "moverMate",
-                    "whiteMate",
-                    "wdl"
+                    "byEngine"
                   ],
                   "type": "object"
                 },
@@ -1549,6 +1720,11 @@
                   "minLength": 1,
                   "type": "string"
                 },
+                "support": {
+                  "maximum": 2,
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "uci": {
                   "maxLength": 256,
                   "minLength": 1,
@@ -1561,7 +1737,10 @@
                 "san",
                 "objective",
                 "human",
-                "opening"
+                "opening",
+                "consensusRank",
+                "consensusScore",
+                "support"
               ],
               "type": "object"
             },
@@ -1569,6 +1748,482 @@
           },
           "elo": {
             "type": "number"
+          },
+          "engines": {
+            "additionalProperties": false,
+            "properties": {
+              "lc0": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "elapsedMs": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "limits": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "depth": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "movetimeMs": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "multipv": {
+                            "maximum": 10,
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "depth",
+                          "movetimeMs",
+                          "multipv"
+                        ],
+                        "type": "object"
+                      },
+                      "meta": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "backend": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "id": {
+                            "enum": [
+                              "stockfish",
+                              "lc0"
+                            ],
+                            "type": "string"
+                          },
+                          "version": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "weightsSha256": {
+                            "anyOf": [
+                              {
+                                "pattern": "^[a-f0-9]{64}$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "version",
+                          "weightsSha256",
+                          "backend"
+                        ],
+                        "type": "object"
+                      },
+                      "result": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "multipv": {
+                              "maximum": 9007199254740991,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "pv": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "scoreCp": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "scoreMate": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "wdl": {
+                              "anyOf": [
+                                {
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                  "maxItems": 3,
+                                  "minItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  ],
+                                  "type": "array"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                            }
+                          },
+                          "required": [
+                            "multipv",
+                            "scoreCp",
+                            "scoreMate",
+                            "wdl",
+                            "pv"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 10,
+                        "type": "array"
+                      },
+                      "status": {
+                        "const": "ok",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "meta",
+                      "result",
+                      "elapsedMs",
+                      "limits"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "error": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "code": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "message": {
+                            "maxLength": 1024,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ],
+                        "type": "object"
+                      },
+                      "status": {
+                        "const": "error",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "error"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "status": {
+                        "const": "not_requested",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "stockfish": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "elapsedMs": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "limits": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "depth": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "movetimeMs": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "multipv": {
+                            "maximum": 10,
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "depth",
+                          "movetimeMs",
+                          "multipv"
+                        ],
+                        "type": "object"
+                      },
+                      "meta": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "backend": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "id": {
+                            "enum": [
+                              "stockfish",
+                              "lc0"
+                            ],
+                            "type": "string"
+                          },
+                          "version": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "weightsSha256": {
+                            "anyOf": [
+                              {
+                                "pattern": "^[a-f0-9]{64}$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "version",
+                          "weightsSha256",
+                          "backend"
+                        ],
+                        "type": "object"
+                      },
+                      "result": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "multipv": {
+                              "maximum": 9007199254740991,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "pv": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "scoreCp": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "scoreMate": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "wdl": {
+                              "anyOf": [
+                                {
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                  "maxItems": 3,
+                                  "minItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  ],
+                                  "type": "array"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                            }
+                          },
+                          "required": [
+                            "multipv",
+                            "scoreCp",
+                            "scoreMate",
+                            "wdl",
+                            "pv"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 10,
+                        "type": "array"
+                      },
+                      "status": {
+                        "const": "ok",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "meta",
+                      "result",
+                      "elapsedMs",
+                      "limits"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "error": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "code": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "message": {
+                            "maxLength": 1024,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ],
+                        "type": "object"
+                      },
+                      "status": {
+                        "const": "error",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "error"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "status": {
+                        "const": "not_requested",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "stockfish",
+              "lc0"
+            ],
+            "type": "object"
+          },
+          "enginesUsed": {
+            "items": {
+              "enum": [
+                "stockfish",
+                "lc0"
+              ],
+              "type": "string"
+            },
+            "type": "array"
           },
           "fen": {
             "type": "string"
@@ -1578,21 +2233,81 @@
             "minLength": 1,
             "type": "string"
           },
+          "mode": {
+            "enum": [
+              "stockfish",
+              "lc0",
+              "both"
+            ],
+            "type": "string"
+          },
           "moveSensitivity": {
             "additionalProperties": false,
             "properties": {
-              "level": {
-                "enum": [
-                  "low",
-                  "medium",
-                  "high"
-                ],
-                "type": "string"
-              },
-              "topMoveSpreadCp": {
+              "lc0": {
                 "anyOf": [
                   {
-                    "type": "number"
+                    "additionalProperties": false,
+                    "properties": {
+                      "level": {
+                        "enum": [
+                          "low",
+                          "medium",
+                          "high"
+                        ],
+                        "type": "string"
+                      },
+                      "topMoveSpreadCp": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "level",
+                      "topMoveSpreadCp"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stockfish": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "level": {
+                        "enum": [
+                          "low",
+                          "medium",
+                          "high"
+                        ],
+                        "type": "string"
+                      },
+                      "topMoveSpreadCp": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "level",
+                      "topMoveSpreadCp"
+                    ],
+                    "type": "object"
                   },
                   {
                     "type": "null"
@@ -1601,10 +2316,13 @@
               }
             },
             "required": [
-              "level",
-              "topMoveSpreadCp"
+              "stockfish",
+              "lc0"
             ],
             "type": "object"
+          },
+          "partial": {
+            "type": "boolean"
           },
           "revision": {
             "maximum": 9007199254740991,
@@ -1626,6 +2344,10 @@
           "turn",
           "elo",
           "analysis_level",
+          "mode",
+          "partial",
+          "enginesUsed",
+          "engines",
           "moveSensitivity",
           "candidates"
         ],
@@ -1683,6 +2405,14 @@
             "maximum": 2600,
             "minimum": 600,
             "type": "integer"
+          },
+          "engine_mode": {
+            "enum": [
+              "stockfish",
+              "lc0",
+              "both"
+            ],
+            "type": "string"
           },
           "game_id": {
             "maxLength": 256,
@@ -1779,6 +2509,11 @@
             "minimum": 1,
             "type": "integer"
           },
+          "movetime_ms": {
+            "maximum": 30000,
+            "minimum": 1,
+            "type": "integer"
+          },
           "sf_depth": {
             "maximum": 30,
             "minimum": 1,
@@ -1813,6 +2548,23 @@
             "items": {
               "additionalProperties": false,
               "properties": {
+                "consensusRank": {
+                  "anyOf": [
+                    {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "consensusScore": {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
                 "human": {
                   "additionalProperties": false,
                   "properties": {
@@ -1845,108 +2597,249 @@
                 "objective": {
                   "additionalProperties": false,
                   "properties": {
-                    "cpLoss": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "moverCp": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "moverMate": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "rank": {
-                      "anyOf": [
-                        {
-                          "maximum": 9007199254740991,
-                          "minimum": 1,
-                          "type": "integer"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "wdl": {
-                      "anyOf": [
-                        {
-                          "description": "[wins, draws, losses]; the three counts must sum to 1000.",
-                          "maxItems": 3,
-                          "minItems": 3,
-                          "prefixItems": [
+                    "byEngine": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "lc0": {
+                          "anyOf": [
                             {
-                              "maximum": 1000,
-                              "minimum": 0,
-                              "type": "integer"
+                              "additionalProperties": false,
+                              "properties": {
+                                "cpLoss": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "moverCp": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "moverMate": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "rank": {
+                                  "anyOf": [
+                                    {
+                                      "maximum": 9007199254740991,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "wdl": {
+                                  "anyOf": [
+                                    {
+                                      "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                      "maxItems": 3,
+                                      "minItems": 3,
+                                      "prefixItems": [
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        }
+                                      ],
+                                      "type": "array"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                                },
+                                "whiteCp": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "whiteMate": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "rank",
+                                "moverCp",
+                                "whiteCp",
+                                "cpLoss",
+                                "moverMate",
+                                "whiteMate",
+                                "wdl"
+                              ],
+                              "type": "object"
                             },
                             {
-                              "maximum": 1000,
-                              "minimum": 0,
-                              "type": "integer"
-                            },
-                            {
-                              "maximum": 1000,
-                              "minimum": 0,
-                              "type": "integer"
+                              "type": "null"
                             }
-                          ],
-                          "type": "array"
+                          ]
                         },
-                        {
-                          "type": "null"
+                        "stockfish": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "cpLoss": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "moverCp": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "moverMate": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "rank": {
+                                  "anyOf": [
+                                    {
+                                      "maximum": 9007199254740991,
+                                      "minimum": 1,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "wdl": {
+                                  "anyOf": [
+                                    {
+                                      "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                      "maxItems": 3,
+                                      "minItems": 3,
+                                      "prefixItems": [
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        },
+                                        {
+                                          "maximum": 1000,
+                                          "minimum": 0,
+                                          "type": "integer"
+                                        }
+                                      ],
+                                      "type": "array"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ],
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                                },
+                                "whiteCp": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "whiteMate": {
+                                  "anyOf": [
+                                    {
+                                      "type": "number"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "rank",
+                                "moverCp",
+                                "whiteCp",
+                                "cpLoss",
+                                "moverMate",
+                                "whiteMate",
+                                "wdl"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
+                      },
+                      "required": [
+                        "stockfish",
+                        "lc0"
                       ],
-                      "description": "[wins, draws, losses]; the three counts must sum to 1000."
-                    },
-                    "whiteCp": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "whiteMate": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
+                      "type": "object"
                     }
                   },
                   "required": [
-                    "rank",
-                    "moverCp",
-                    "whiteCp",
-                    "cpLoss",
-                    "moverMate",
-                    "whiteMate",
-                    "wdl"
+                    "byEngine"
                   ],
                   "type": "object"
                 },
@@ -2339,6 +3232,11 @@
                   "minLength": 1,
                   "type": "string"
                 },
+                "support": {
+                  "maximum": 2,
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "uci": {
                   "maxLength": 256,
                   "minLength": 1,
@@ -2351,7 +3249,10 @@
                 "san",
                 "objective",
                 "human",
-                "opening"
+                "opening",
+                "consensusRank",
+                "consensusScore",
+                "support"
               ],
               "type": "object"
             },
@@ -2359,6 +3260,482 @@
           },
           "elo": {
             "type": "number"
+          },
+          "engines": {
+            "additionalProperties": false,
+            "properties": {
+              "lc0": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "elapsedMs": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "limits": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "depth": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "movetimeMs": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "multipv": {
+                            "maximum": 10,
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "depth",
+                          "movetimeMs",
+                          "multipv"
+                        ],
+                        "type": "object"
+                      },
+                      "meta": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "backend": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "id": {
+                            "enum": [
+                              "stockfish",
+                              "lc0"
+                            ],
+                            "type": "string"
+                          },
+                          "version": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "weightsSha256": {
+                            "anyOf": [
+                              {
+                                "pattern": "^[a-f0-9]{64}$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "version",
+                          "weightsSha256",
+                          "backend"
+                        ],
+                        "type": "object"
+                      },
+                      "result": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "multipv": {
+                              "maximum": 9007199254740991,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "pv": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "scoreCp": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "scoreMate": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "wdl": {
+                              "anyOf": [
+                                {
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                  "maxItems": 3,
+                                  "minItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  ],
+                                  "type": "array"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                            }
+                          },
+                          "required": [
+                            "multipv",
+                            "scoreCp",
+                            "scoreMate",
+                            "wdl",
+                            "pv"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 10,
+                        "type": "array"
+                      },
+                      "status": {
+                        "const": "ok",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "meta",
+                      "result",
+                      "elapsedMs",
+                      "limits"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "error": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "code": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "message": {
+                            "maxLength": 1024,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ],
+                        "type": "object"
+                      },
+                      "status": {
+                        "const": "error",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "error"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "status": {
+                        "const": "not_requested",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "stockfish": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "elapsedMs": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "limits": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "depth": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "movetimeMs": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "multipv": {
+                            "maximum": 10,
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "depth",
+                          "movetimeMs",
+                          "multipv"
+                        ],
+                        "type": "object"
+                      },
+                      "meta": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "backend": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "id": {
+                            "enum": [
+                              "stockfish",
+                              "lc0"
+                            ],
+                            "type": "string"
+                          },
+                          "version": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "weightsSha256": {
+                            "anyOf": [
+                              {
+                                "pattern": "^[a-f0-9]{64}$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "version",
+                          "weightsSha256",
+                          "backend"
+                        ],
+                        "type": "object"
+                      },
+                      "result": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "multipv": {
+                              "maximum": 9007199254740991,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "pv": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "scoreCp": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "scoreMate": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "wdl": {
+                              "anyOf": [
+                                {
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                  "maxItems": 3,
+                                  "minItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  ],
+                                  "type": "array"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                            }
+                          },
+                          "required": [
+                            "multipv",
+                            "scoreCp",
+                            "scoreMate",
+                            "wdl",
+                            "pv"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 10,
+                        "type": "array"
+                      },
+                      "status": {
+                        "const": "ok",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "meta",
+                      "result",
+                      "elapsedMs",
+                      "limits"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "error": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "code": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "message": {
+                            "maxLength": 1024,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ],
+                        "type": "object"
+                      },
+                      "status": {
+                        "const": "error",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "error"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "status": {
+                        "const": "not_requested",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "stockfish",
+              "lc0"
+            ],
+            "type": "object"
+          },
+          "enginesUsed": {
+            "items": {
+              "enum": [
+                "stockfish",
+                "lc0"
+              ],
+              "type": "string"
+            },
+            "type": "array"
           },
           "fen": {
             "type": "string"
@@ -2379,21 +3756,81 @@
             ],
             "type": "string"
           },
+          "mode": {
+            "enum": [
+              "stockfish",
+              "lc0",
+              "both"
+            ],
+            "type": "string"
+          },
           "moveSensitivity": {
             "additionalProperties": false,
             "properties": {
-              "level": {
-                "enum": [
-                  "low",
-                  "medium",
-                  "high"
-                ],
-                "type": "string"
-              },
-              "topMoveSpreadCp": {
+              "lc0": {
                 "anyOf": [
                   {
-                    "type": "number"
+                    "additionalProperties": false,
+                    "properties": {
+                      "level": {
+                        "enum": [
+                          "low",
+                          "medium",
+                          "high"
+                        ],
+                        "type": "string"
+                      },
+                      "topMoveSpreadCp": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "level",
+                      "topMoveSpreadCp"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stockfish": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "level": {
+                        "enum": [
+                          "low",
+                          "medium",
+                          "high"
+                        ],
+                        "type": "string"
+                      },
+                      "topMoveSpreadCp": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "level",
+                      "topMoveSpreadCp"
+                    ],
+                    "type": "object"
                   },
                   {
                     "type": "null"
@@ -2402,10 +3839,13 @@
               }
             },
             "required": [
-              "level",
-              "topMoveSpreadCp"
+              "stockfish",
+              "lc0"
             ],
             "type": "object"
+          },
+          "partial": {
+            "type": "boolean"
           },
           "revision": {
             "maximum": 9007199254740991,
@@ -2427,6 +3867,10 @@
           "turn",
           "elo",
           "analysis_level",
+          "mode",
+          "partial",
+          "enginesUsed",
+          "engines",
           "moveSensitivity",
           "candidates",
           "intent"
@@ -2441,7 +3885,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Evaluate one or more moves with Stockfish without mutating the game. Pass a single move string or an array of moves to compare. Returns, for each move, the score after the move (from the mover's perspective), cpLoss vs the best move, a classification (best/excellent/good/inaccuracy/mistake/blunder), and the continuation as UCI pv and SAN pvSan.",
+      "description": "Evaluate one or more moves with Stockfish, Lc0, or both without mutating the game. Pass a single move string or an array of moves to compare. Each engine retains its own score, WDL, cpLoss, classification, and continuation. Set engine_mode and movetime_ms to control the analysis.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -2451,6 +3895,14 @@
             "maximum": 30,
             "minimum": 1,
             "type": "integer"
+          },
+          "engine_mode": {
+            "enum": [
+              "stockfish",
+              "lc0",
+              "both"
+            ],
+            "type": "string"
           },
           "game_id": {
             "maxLength": 256,
@@ -2471,6 +3923,12 @@
                 "type": "array"
               }
             ]
+          },
+          "movetime_ms": {
+            "default": 3000,
+            "maximum": 30000,
+            "minimum": 1,
+            "type": "integer"
           }
         },
         "required": [
@@ -2484,37 +3942,141 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
         "properties": {
+          "engineMetadata": {
+            "additionalProperties": false,
+            "properties": {
+              "lc0": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "backend": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "id": {
+                        "enum": [
+                          "stockfish",
+                          "lc0"
+                        ],
+                        "type": "string"
+                      },
+                      "version": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "weightsSha256": {
+                        "anyOf": [
+                          {
+                            "pattern": "^[a-f0-9]{64}$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "version",
+                      "weightsSha256",
+                      "backend"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "stockfish": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "backend": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "id": {
+                        "enum": [
+                          "stockfish",
+                          "lc0"
+                        ],
+                        "type": "string"
+                      },
+                      "version": {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "weightsSha256": {
+                        "anyOf": [
+                          {
+                            "pattern": "^[a-f0-9]{64}$",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "version",
+                      "weightsSha256",
+                      "backend"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "stockfish",
+              "lc0"
+            ],
+            "type": "object"
+          },
+          "enginesUsed": {
+            "items": {
+              "enum": [
+                "stockfish",
+                "lc0"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
           "game_id": {
             "maxLength": 256,
             "minLength": 1,
             "type": "string"
           },
+          "mode": {
+            "enum": [
+              "stockfish",
+              "lc0",
+              "both"
+            ],
+            "type": "string"
+          },
+          "partial": {
+            "type": "boolean"
+          },
           "results": {
             "items": {
               "additionalProperties": false,
-              "description": "pv and pvSan contain the same continuation and must have equal lengths.",
+              "description": "Each engine evaluation retains its own score, WDL, PV, and classification.",
               "properties": {
-                "bestCp": {
+                "classificationBasis": {
                   "anyOf": [
                     {
-                      "type": "number"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "classification": {
-                  "anyOf": [
-                    {
-                      "enum": [
-                        "best",
-                        "excellent",
-                        "good",
-                        "inaccuracy",
-                        "mistake",
-                        "blunder"
-                      ],
+                      "const": "engine_cp_heuristic",
                       "type": "string"
                     },
                     {
@@ -2522,30 +4084,375 @@
                     }
                   ]
                 },
-                "cpLoss": {
-                  "anyOf": [
-                    {
-                      "type": "number"
+                "engines": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "lc0": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "bestCp": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "classification": {
+                              "anyOf": [
+                                {
+                                  "enum": [
+                                    "best",
+                                    "excellent",
+                                    "good",
+                                    "inaccuracy",
+                                    "mistake",
+                                    "blunder"
+                                  ],
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "cpLoss": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "pv": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "pvSan": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "scoreCp": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "scoreMate": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "status": {
+                              "const": "ok",
+                              "type": "string"
+                            },
+                            "wdl": {
+                              "anyOf": [
+                                {
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                  "maxItems": 3,
+                                  "minItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  ],
+                                  "type": "array"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "scoreCp",
+                            "scoreMate",
+                            "wdl",
+                            "bestCp",
+                            "cpLoss",
+                            "classification",
+                            "pv",
+                            "pvSan"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "error": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "code": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "message": {
+                                  "maxLength": 1024,
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "code",
+                                "message"
+                              ],
+                              "type": "object"
+                            },
+                            "status": {
+                              "const": "error",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "error"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "status": {
+                              "const": "not_requested",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
                     },
-                    {
-                      "type": "null"
+                    "stockfish": {
+                      "oneOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "bestCp": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "classification": {
+                              "anyOf": [
+                                {
+                                  "enum": [
+                                    "best",
+                                    "excellent",
+                                    "good",
+                                    "inaccuracy",
+                                    "mistake",
+                                    "blunder"
+                                  ],
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "cpLoss": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "pv": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "pvSan": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "scoreCp": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "scoreMate": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "status": {
+                              "const": "ok",
+                              "type": "string"
+                            },
+                            "wdl": {
+                              "anyOf": [
+                                {
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                  "maxItems": 3,
+                                  "minItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  ],
+                                  "type": "array"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "scoreCp",
+                            "scoreMate",
+                            "wdl",
+                            "bestCp",
+                            "cpLoss",
+                            "classification",
+                            "pv",
+                            "pvSan"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "error": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "code": {
+                                  "minLength": 1,
+                                  "type": "string"
+                                },
+                                "message": {
+                                  "maxLength": 1024,
+                                  "minLength": 1,
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "code",
+                                "message"
+                              ],
+                              "type": "object"
+                            },
+                            "status": {
+                              "const": "error",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "status",
+                            "error"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "status": {
+                              "const": "not_requested",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "status"
+                          ],
+                          "type": "object"
+                        }
+                      ]
                     }
-                  ]
+                  },
+                  "required": [
+                    "stockfish",
+                    "lc0"
+                  ],
+                  "type": "object"
+                },
+                "enginesUsed": {
+                  "items": {
+                    "enum": [
+                      "stockfish",
+                      "lc0"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
                 },
                 "move": {
                   "type": "string"
                 },
-                "pv": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "pvSan": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
+                "partial": {
+                  "type": "boolean"
                 },
                 "result": {
                   "enum": [
@@ -2555,29 +4462,10 @@
                     "insufficient_material",
                     "threefold_repetition",
                     "fifty_move_rule",
-                    "draw"
+                    "draw",
+                    "evaluation_error"
                   ],
                   "type": "string"
-                },
-                "scoreCp": {
-                  "anyOf": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "scoreMate": {
-                  "anyOf": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
                 },
                 "uci": {
                   "type": "string"
@@ -2587,13 +4475,10 @@
                 "move",
                 "uci",
                 "result",
-                "scoreCp",
-                "scoreMate",
-                "bestCp",
-                "cpLoss",
-                "classification",
-                "pv",
-                "pvSan"
+                "partial",
+                "enginesUsed",
+                "engines",
+                "classificationBasis"
               ],
               "type": "object"
             },
@@ -2610,6 +4495,10 @@
         "required": [
           "game_id",
           "revision",
+          "mode",
+          "partial",
+          "enginesUsed",
+          "engineMetadata",
           "results"
         ],
         "type": "object"
@@ -2885,7 +4774,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Run Stockfish on the current position and return the top engine lines (multipv) as UCI pv and SAN pvSan. Scores are from the side-to-move perspective: positive cp = side to move is better; mate N = side to move mates in N. wdl is [win, draw, loss] in permille for the side to move. Use analysis_level (fast/normal/deep) or explicit depth/multipv. Does NOT mutate the game.",
+      "description": "Analyze the current position with Stockfish, Lc0, or both. Returns per-engine lines and a reciprocal-rank consensus; scores remain engine-specific. Set engine_mode to select an engine. Use analysis_level (fast/normal/deep), or explicit depth/multipv and movetime_ms. Does NOT mutate the game.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": false,
@@ -2904,10 +4793,23 @@
             "minimum": 1,
             "type": "integer"
           },
+          "engine_mode": {
+            "enum": [
+              "stockfish",
+              "lc0",
+              "both"
+            ],
+            "type": "string"
+          },
           "game_id": {
             "maxLength": 256,
             "minLength": 1,
             "type": "string"
+          },
+          "movetime_ms": {
+            "maximum": 30000,
+            "minimum": 1,
+            "type": "integer"
           },
           "multipv": {
             "maximum": 10,
@@ -2933,6 +4835,538 @@
             ],
             "type": "string"
           },
+          "consensus": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "rank": {
+                  "maximum": 9007199254740991,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "san": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "score": {
+                  "minimum": 0,
+                  "type": "number"
+                },
+                "support": {
+                  "maximum": 2,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "uci": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^(?!([a-h][1-8])\\1)(?:[a-h][1-8][a-h][1-8]|(?:[a-h]7[a-h]8|[a-h]2[a-h]1)[qrbn])$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "uci",
+                "san",
+                "rank",
+                "score",
+                "support"
+              ],
+              "type": "object"
+            },
+            "maxItems": 10,
+            "type": "array"
+          },
+          "engines": {
+            "additionalProperties": false,
+            "properties": {
+              "lc0": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "elapsedMs": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "limits": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "depth": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "movetimeMs": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "multipv": {
+                            "maximum": 10,
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "depth",
+                          "movetimeMs",
+                          "multipv"
+                        ],
+                        "type": "object"
+                      },
+                      "meta": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "backend": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "id": {
+                            "enum": [
+                              "stockfish",
+                              "lc0"
+                            ],
+                            "type": "string"
+                          },
+                          "version": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "weightsSha256": {
+                            "anyOf": [
+                              {
+                                "pattern": "^[a-f0-9]{64}$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "version",
+                          "weightsSha256",
+                          "backend"
+                        ],
+                        "type": "object"
+                      },
+                      "result": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "multipv": {
+                              "maximum": 9007199254740991,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "pv": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "pvSan": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "scoreCp": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "scoreMate": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "wdl": {
+                              "anyOf": [
+                                {
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                  "maxItems": 3,
+                                  "minItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  ],
+                                  "type": "array"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                            }
+                          },
+                          "required": [
+                            "multipv",
+                            "scoreCp",
+                            "scoreMate",
+                            "wdl",
+                            "pv",
+                            "pvSan"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 10,
+                        "type": "array"
+                      },
+                      "status": {
+                        "const": "ok",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "meta",
+                      "result",
+                      "elapsedMs",
+                      "limits"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "error": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "code": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "message": {
+                            "maxLength": 1024,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ],
+                        "type": "object"
+                      },
+                      "status": {
+                        "const": "error",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "error"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "status": {
+                        "const": "not_requested",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "stockfish": {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "elapsedMs": {
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      "limits": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "depth": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "movetimeMs": {
+                            "anyOf": [
+                              {
+                                "maximum": 9007199254740991,
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "multipv": {
+                            "maximum": 10,
+                            "minimum": 1,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "depth",
+                          "movetimeMs",
+                          "multipv"
+                        ],
+                        "type": "object"
+                      },
+                      "meta": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "backend": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "id": {
+                            "enum": [
+                              "stockfish",
+                              "lc0"
+                            ],
+                            "type": "string"
+                          },
+                          "version": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "weightsSha256": {
+                            "anyOf": [
+                              {
+                                "pattern": "^[a-f0-9]{64}$",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "version",
+                          "weightsSha256",
+                          "backend"
+                        ],
+                        "type": "object"
+                      },
+                      "result": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "multipv": {
+                              "maximum": 9007199254740991,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "pv": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "pvSan": {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            "scoreCp": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "scoreMate": {
+                              "anyOf": [
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "wdl": {
+                              "anyOf": [
+                                {
+                                  "description": "[wins, draws, losses]; the three counts must sum to 1000.",
+                                  "maxItems": 3,
+                                  "minItems": 3,
+                                  "prefixItems": [
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    },
+                                    {
+                                      "maximum": 1000,
+                                      "minimum": 0,
+                                      "type": "integer"
+                                    }
+                                  ],
+                                  "type": "array"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "description": "[wins, draws, losses]; the three counts must sum to 1000."
+                            }
+                          },
+                          "required": [
+                            "multipv",
+                            "scoreCp",
+                            "scoreMate",
+                            "wdl",
+                            "pv",
+                            "pvSan"
+                          ],
+                          "type": "object"
+                        },
+                        "maxItems": 10,
+                        "type": "array"
+                      },
+                      "status": {
+                        "const": "ok",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "meta",
+                      "result",
+                      "elapsedMs",
+                      "limits"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "error": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "code": {
+                            "minLength": 1,
+                            "type": "string"
+                          },
+                          "message": {
+                            "maxLength": 1024,
+                            "minLength": 1,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code",
+                          "message"
+                        ],
+                        "type": "object"
+                      },
+                      "status": {
+                        "const": "error",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "error"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "status": {
+                        "const": "not_requested",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "status"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "stockfish",
+              "lc0"
+            ],
+            "type": "object"
+          },
+          "enginesUsed": {
+            "items": {
+              "enum": [
+                "stockfish",
+                "lc0"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
           "fen": {
             "type": "string"
           },
@@ -2941,93 +5375,16 @@
             "minLength": 1,
             "type": "string"
           },
-          "lines": {
-            "description": "At most 10 analysis lines with unique multipv ranks.",
-            "items": {
-              "additionalProperties": false,
-              "description": "scoreCp and scoreMate cannot both be present; pv and pvSan contain the same continuation and must have equal lengths.",
-              "properties": {
-                "multipv": {
-                  "maximum": 9007199254740991,
-                  "minimum": 1,
-                  "type": "integer"
-                },
-                "pv": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "pvSan": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "scoreCp": {
-                  "anyOf": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "scoreMate": {
-                  "anyOf": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "wdl": {
-                  "anyOf": [
-                    {
-                      "description": "[wins, draws, losses]; the three counts must sum to 1000.",
-                      "maxItems": 3,
-                      "minItems": 3,
-                      "prefixItems": [
-                        {
-                          "maximum": 1000,
-                          "minimum": 0,
-                          "type": "integer"
-                        },
-                        {
-                          "maximum": 1000,
-                          "minimum": 0,
-                          "type": "integer"
-                        },
-                        {
-                          "maximum": 1000,
-                          "minimum": 0,
-                          "type": "integer"
-                        }
-                      ],
-                      "type": "array"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "description": "[wins, draws, losses]; the three counts must sum to 1000."
-                }
-              },
-              "required": [
-                "multipv",
-                "scoreCp",
-                "scoreMate",
-                "wdl",
-                "pv",
-                "pvSan"
-              ],
-              "type": "object"
-            },
-            "maxItems": 10,
-            "type": "array"
+          "mode": {
+            "enum": [
+              "stockfish",
+              "lc0",
+              "both"
+            ],
+            "type": "string"
+          },
+          "partial": {
+            "type": "boolean"
           },
           "revision": {
             "maximum": 9007199254740991,
@@ -3048,7 +5405,11 @@
           "turn",
           "revision",
           "analysis_level",
-          "lines"
+          "mode",
+          "partial",
+          "enginesUsed",
+          "engines",
+          "consensus"
         ],
         "type": "object"
       },

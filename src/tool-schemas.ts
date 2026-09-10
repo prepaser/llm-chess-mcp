@@ -137,23 +137,106 @@ export const AnalysisLineSchema = z
     "scoreCp and scoreMate cannot both be present; pv and pvSan contain the same continuation and must have equal lengths.",
   );
 
-const analysisLines = z
-  .array(AnalysisLineSchema)
-  .max(MAX_MULTIPV)
-  .superRefine((lines, ctx) => {
-    const ranks = new Set<number>();
-    for (const [index, line] of lines.entries()) {
-      if (ranks.has(line.multipv)) {
-        ctx.addIssue({
-          code: "custom",
-          message: "analysis multipv ranks must be unique",
-          path: [index, "multipv"],
-        });
-      }
-      ranks.add(line.multipv);
-    }
+export const EngineModeSchema = z.enum(["stockfish", "lc0", "both"]);
+export const EngineIdSchema = z.enum(["stockfish", "lc0"]);
+
+const engineLine = z
+  .strictObject({
+    ...sfLineShape,
+    pvSan: z.array(z.string()),
   })
-  .describe(`At most ${MAX_MULTIPV} analysis lines with unique multipv ranks.`);
+  .superRefine((line, ctx) => {
+    addScoreIssue(line, ctx);
+    if (line.pv.length !== line.pvSan.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "pv and pvSan must have equal lengths",
+        path: ["pvSan"],
+      });
+    }
+  });
+
+const engineError = z.strictObject({
+  code: z.string().min(1),
+  message: z.string().min(1).max(1024),
+});
+
+export const EngineMetaSchema = z.strictObject({
+  id: EngineIdSchema,
+  version: z.string().min(1),
+  weightsSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  backend: z.string().min(1),
+});
+
+const engineResults = z.array(engineLine).max(MAX_MULTIPV).superRefine((lines, ctx) => {
+  const ranks = new Set<number>();
+  for (const [index, line] of lines.entries()) {
+    if (ranks.has(line.multipv)) {
+      ctx.addIssue({ code: "custom", message: "engine multipv ranks must be unique", path: [index, "multipv"] });
+    }
+    ranks.add(line.multipv);
+  }
+});
+
+const engineOutcome = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("ok"),
+    meta: EngineMetaSchema,
+    result: engineResults,
+    elapsedMs: z.number().finite().nonnegative(),
+    limits: z.strictObject({
+      depth: z.number().int().min(1).nullable(),
+      movetimeMs: z.number().int().min(1).nullable(),
+      multipv: z.number().int().min(1).max(MAX_MULTIPV),
+    }),
+  }),
+  z.strictObject({ status: z.literal("error"), error: engineError }),
+  z.strictObject({ status: z.literal("not_requested") }),
+]);
+
+const rawEngineOutcome = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("ok"),
+    meta: EngineMetaSchema,
+    result: z.array(SfLineSchema).max(MAX_MULTIPV),
+    elapsedMs: z.number().finite().nonnegative(),
+    limits: z.strictObject({
+      depth: z.number().int().min(1).nullable(),
+      movetimeMs: z.number().int().min(1).nullable(),
+      multipv: z.number().int().min(1).max(MAX_MULTIPV),
+    }),
+  }),
+  z.strictObject({ status: z.literal("error"), error: engineError }),
+  z.strictObject({ status: z.literal("not_requested") }),
+]);
+
+export const EngineAnalysisOutputSchema = z.strictObject({
+  mode: EngineModeSchema,
+  partial: z.boolean(),
+  enginesUsed: z.array(EngineIdSchema),
+  engines: z.strictObject({
+    stockfish: engineOutcome,
+    lc0: engineOutcome,
+  }),
+});
+
+export const RawEngineAnalysisOutputSchema = z.strictObject({
+  mode: EngineModeSchema,
+  partial: z.boolean(),
+  enginesUsed: z.array(EngineIdSchema),
+  engines: z.strictObject({
+    stockfish: rawEngineOutcome,
+    lc0: rawEngineOutcome,
+  }),
+});
+
+const consensusLine = z.strictObject({
+  uci,
+  san: moveText,
+  rank: z.number().int().min(1),
+  score: z.number().finite().nonnegative(),
+  support: z.number().int().min(0).max(2),
+});
 
 const openingStatsValues = {
   games: safeCount.nullable(),
@@ -233,18 +316,20 @@ export const OpeningStatsSchema = z
     "Non-available stats must all be null. Available stats must be all null or include positive games and frequency plus white, draws, and black; games must equal white + draws + black.",
   ) as z.ZodType<OpeningStats>;
 
+const ObjectiveSchema = z.strictObject({
+  rank: safeCount.min(1).nullable(),
+  moverCp: z.number().nullable(),
+  whiteCp: z.number().nullable(),
+  cpLoss: z.number().nullable(),
+  moverMate: z.number().nullable(),
+  whiteMate: z.number().nullable(),
+  wdl: nullableWdl,
+});
+
 export const CandidateSchema = z.strictObject({
   uci,
   san: moveText,
-  objective: z.strictObject({
-    rank: safeCount.min(1).nullable(),
-    moverCp: z.number().nullable(),
-    whiteCp: z.number().nullable(),
-    cpLoss: z.number().nullable(),
-    moverMate: z.number().nullable(),
-    whiteMate: z.number().nullable(),
-    wdl: nullableWdl,
-  }),
+  objective: ObjectiveSchema,
   human: z.strictObject({
     maia3Prob: probability.nullable(),
     selfElo: z.number(),
@@ -253,19 +338,34 @@ export const CandidateSchema = z.strictObject({
   opening: OpeningStatsSchema,
 }) satisfies z.ZodType<Candidate>;
 
-const candidates = z.array(CandidateSchema).superRefine((values, ctx) => {
+export const MultiEngineCandidateSchema = z.strictObject({
+  uci,
+  san: moveText,
+  objective: z.strictObject({
+    byEngine: z.strictObject({
+      stockfish: ObjectiveSchema.nullable(),
+      lc0: ObjectiveSchema.nullable(),
+    }),
+  }),
+  human: z.strictObject({
+    maia3Prob: probability.nullable(),
+    selfElo: z.number(),
+    opponentElo: z.number(),
+  }),
+  opening: OpeningStatsSchema,
+  consensusRank: safeCount.min(1).nullable(),
+  consensusScore: z.number().finite().min(0).max(1),
+  support: z.number().int().min(0).max(2),
+});
+
+const multiCandidates = z.array(MultiEngineCandidateSchema).superRefine((values, ctx) => {
   const ranks = new Set<number>();
   for (const [index, candidate] of values.entries()) {
-    const rank = candidate.objective.rank;
-    if (rank === null) continue;
-    if (ranks.has(rank)) {
-      addCountIssue(
-        ctx,
-        [index, "objective", "rank"],
-        "evaluated candidate ranks must be unique",
-      );
+    if (candidate.consensusRank === null) continue;
+    if (ranks.has(candidate.consensusRank)) {
+      addCountIssue(ctx, [index, "consensusRank"], "consensus ranks must be unique");
     }
-    ranks.add(rank);
+    ranks.add(candidate.consensusRank);
   }
 });
 
@@ -323,7 +423,8 @@ export const PositionAnalyzeOutputSchema = z.strictObject({
   turn: color,
   revision,
   analysis_level: z.enum(ANALYSIS_LEVELS),
-  lines: analysisLines,
+  ...EngineAnalysisOutputSchema.shape,
+  consensus: z.array(consensusLine).max(MAX_MULTIPV),
 });
 
 export const Maia3MoveSchema = z.strictObject({
@@ -369,32 +470,53 @@ export const HumanMoveDistributionOutputSchema = z.strictObject({
   moves: humanMoves,
 });
 
+const moveEngineEvaluation = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("ok"),
+    scoreCp: z.number().nullable(),
+    scoreMate: z.number().nullable(),
+    wdl: nullableWdl,
+    bestCp: z.number().nullable(),
+    cpLoss: z.number().nullable(),
+    classification: z.enum(MOVE_CLASSIFICATIONS).nullable(),
+    pv: z.array(z.string()),
+    pvSan: z.array(z.string()),
+  }).superRefine(({ pv, pvSan }, ctx) => {
+    if (pv.length !== pvSan.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "pv and pvSan must have equal lengths",
+        path: ["pvSan"],
+      });
+    }
+  }),
+  z.strictObject({ status: z.literal("error"), error: engineError }),
+  z.strictObject({ status: z.literal("not_requested") }),
+]);
+
 const moveEvaluation = z.strictObject({
   move: z.string(),
   uci: z.string(),
-  result: z.enum(MOVE_EVALUATION_RESULTS),
-  scoreCp: z.number().nullable(),
-  scoreMate: z.number().nullable(),
-  bestCp: z.number().nullable(),
-  cpLoss: z.number().nullable(),
-  classification: z
-    .enum(MOVE_CLASSIFICATIONS)
-    .nullable(),
-  pv: z.array(z.string()),
-  pvSan: z.array(z.string()),
-}).superRefine(({ pv, pvSan }, ctx) => {
-  if (pv.length !== pvSan.length) {
-    ctx.addIssue({
-      code: "custom",
-      message: "pv and pvSan must have equal lengths",
-      path: ["pvSan"],
-    });
-  }
-}).describe("pv and pvSan contain the same continuation and must have equal lengths.");
+  result: z.enum([...MOVE_EVALUATION_RESULTS, "evaluation_error"] as const),
+  partial: z.boolean(),
+  enginesUsed: z.array(EngineIdSchema),
+  engines: z.strictObject({
+    stockfish: moveEngineEvaluation,
+    lc0: moveEngineEvaluation,
+  }),
+  classificationBasis: z.literal("engine_cp_heuristic").nullable(),
+}).describe("Each engine evaluation retains its own score, WDL, PV, and classification.");
 
 export const MoveEvaluateOutputSchema = z.strictObject({
   game_id: GameIdSchema,
   revision,
+  mode: EngineModeSchema,
+  partial: z.boolean(),
+  enginesUsed: z.array(EngineIdSchema),
+  engineMetadata: z.strictObject({
+    stockfish: EngineMetaSchema.nullable(),
+    lc0: EngineMetaSchema.nullable(),
+  }),
   results: z.array(moveEvaluation).min(1).max(MAX_EVALUATED_MOVES),
 });
 
@@ -410,8 +532,12 @@ const candidatesBase = {
   turn: color,
   elo: z.number(),
   analysis_level: z.enum(ANALYSIS_LEVELS),
-  moveSensitivity: MoveSensitivitySchema,
-  candidates,
+  ...RawEngineAnalysisOutputSchema.shape,
+  moveSensitivity: z.strictObject({
+    stockfish: MoveSensitivitySchema.nullable(),
+    lc0: MoveSensitivitySchema.nullable(),
+  }),
+  candidates: multiCandidates,
 };
 
 export const MoveCandidatesOutputSchema = z.strictObject(candidatesBase);

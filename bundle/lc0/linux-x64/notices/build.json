@@ -1,0 +1,54 @@
+{
+  "engine": "lc0",
+  "engineVersion": "0.32.1",
+  "sourceCommit": "fd71a2d921b689c5f479d3227c3806c8e272d9c5",
+  "build": {
+    "container": "ubuntu:22.04",
+    "glibcBaseline": "2.35",
+    "maxGlibcRequired": "2.34",
+    "compiler": "g++ 11.4.0",
+    "mesonOptions": {
+      "native_arch": false,
+      "native_cuda": false,
+      "plain_cuda": false,
+      "cudnn": false,
+      "opencl": false,
+      "openblas": false,
+      "dnnl": true
+    }
+  },
+  "provider": {
+    "backend": "blas",
+    "library": "oneDNN 2.2.4",
+    "uciBackend": "blas"
+  },
+  "network": {
+    "file": "weights/t1-256x10-distilled-swa-2432500.pb.gz",
+    "sha256": "bc27a6cae8ad36f2b9a80a6ad9dabb0d6fda25b1e7f481a79bc359e14f563406"
+  },
+  "binary": {
+    "file": "linux-x64/lc0",
+    "sha256": "e2e03e08e5fb7d9f6f9a20ab560133aa319a71fa1f1aad14ce253ca73bbd4584"
+  },
+  "artifactSha256": {
+    "linux-x64/libdnnl.so.2": "d8baa5e167e007ae3060de7b8c183f930047285c1d0abf27b5f164c1708aac2b",
+    "linux-x64/libgcc_s.so.1": "5285e3473c5452b6bc329d2c9cb1914acec16d87ff4e4c0ec286c73c33083fec",
+    "linux-x64/libgomp.so.1": "cefbc8fdda8af702cc89947098fc830bb0ea58272c0b89e06dc755d9e940f9eb",
+    "linux-x64/libOpenCL.so.1": "67c14698346abc521e3b18409e41e587ef465e545f916c0688904a21a8d21ff5",
+    "linux-x64/libstdc++.so.6": "5a31ea5c7e03d2380224ad53301ab632e46d71035700b529bd11aa652367ea4d",
+    "linux-x64/libz.so.1": "e4417c011a7391ba7251db1dbdb13b5196666e2e4d02a0f7d747e1a705cc0584",
+    "linux-x64/notices/lc0-v0.32.1-source.tar.gz": "0c1b97f357e3adec8b9e47e702da48a73b3d7350eb9378f450bddce7e6bed556"
+  },
+  "dependencies": {
+    "libdnnl2": "2.2.4+ds-2",
+    "libgomp1": "12.3.0-1ubuntu1~22.04.3",
+    "libstdc++6": "12.3.0-1ubuntu1~22.04.3",
+    "libgcc-s1": "12.3.0-1ubuntu1~22.04.3",
+    "ocl-icd-libopencl1": "2.2.14-3",
+    "zlib1g": "1.2.11.dfsg-2ubuntu9.2"
+  },
+  "license": {
+    "lc0": "GPL-3.0-or-later",
+    "oneDNN": "Apache-2.0 with BSD-3-Clause components"
+  }
+}

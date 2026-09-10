@@ -29,8 +29,11 @@ export type {
   Objective,
   OpeningStats,
   SfLine,
+  EngineLine,
   Wdl,
 } from "./domain.js";
+export type { EngineId, EngineMode, EngineMeta, EngineRequest, EngineOutcome, EngineAnalysis } from "./engines/types.js";
+export type { EngineCandidateSet, MultiEngineCandidate } from "./engine-consensus.js";
 export type {
   AnalysisServices,
   AppServices,

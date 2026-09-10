@@ -1,8 +1,11 @@
 {
   "name": "llm-chess-mcp",
   "version": "0.7.2",
-  "description": "MCP server that lets an LLM analyze, judge, and choose chess moves (Stockfish + Maia3 + Lichess)",
+  "description": "MCP server that lets an LLM analyze, judge, and choose chess moves (Stockfish + Lc0 + Maia3 + Lichess)",
   "type": "module",
+  "analysis": {
+    "mode": "both"
+  },
   "stockfish": {
     "flavor": "lite-single"
   },
@@ -27,6 +30,7 @@
   "files": [
     "dist",
     "models",
+    "bundle",
     "docs",
     "LICENSE",
     "README.md",
@@ -51,6 +55,7 @@
     "test:package": "node scripts/package-smoke.mjs",
     "model:check": "node scripts/model-check.mjs",
     "stockfish:prepare": "node scripts/stockfish-prepare.mjs",
+    "lc0:prepare": "node scripts/lc0-prepare.mjs",
     "test:stress": "tsx --test tests/stress/*.test.ts",
     "test:live": "tsx --test tests/live/*.test.ts",
     "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-lines=85 --test-coverage-branches=80 --test-coverage-functions=80 tests/*.test.ts tests/integration/*.test.ts",

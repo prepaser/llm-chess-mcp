@@ -100,16 +100,18 @@ export interface ChessState {
 
 export type Wdl = [number, number, number];
 
-type SfScore =
+type EngineScore =
   | { scoreCp: number; scoreMate: null }
   | { scoreCp: null; scoreMate: number }
   | { scoreCp: null; scoreMate: null };
 
-export type SfLine = {
+export type EngineLine = {
   multipv: number;
   wdl: Wdl | null;
   pv: string[];
-} & SfScore;
+} & EngineScore;
+
+export type SfLine = EngineLine;
 
 export interface Maia3Move {
   uci: string;

@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "engineVersion": "0.32.1",
+  "weights": {
+    "path": "weights/network.pb.gz",
+    "sha256": "bc27a6cae8ad36f2b9a80a6ad9dabb0d6fda25b1e7f481a79bc359e14f563406"
+  },
+  "platforms": {
+    "linux-x64": {
+      "executable": "linux-x64/lc0",
+      "backend": "blas",
+      "files": [
+        {
+          "path": "linux-x64/lc0",
+          "sha256": "e2e03e08e5fb7d9f6f9a20ab560133aa319a71fa1f1aad14ce253ca73bbd4584"
+        },
+        {
+          "path": "linux-x64/libOpenCL.so.1",
+          "sha256": "67c14698346abc521e3b18409e41e587ef465e545f916c0688904a21a8d21ff5"
+        },
+        {
+          "path": "linux-x64/libdnnl.so.2",
+          "sha256": "d8baa5e167e007ae3060de7b8c183f930047285c1d0abf27b5f164c1708aac2b"
+        },
+        {
+          "path": "linux-x64/libgcc_s.so.1",
+          "sha256": "5285e3473c5452b6bc329d2c9cb1914acec16d87ff4e4c0ec286c73c33083fec"
+        },
+        {
+          "path": "linux-x64/libgomp.so.1",
+          "sha256": "cefbc8fdda8af702cc89947098fc830bb0ea58272c0b89e06dc755d9e940f9eb"
+        },
+        {
+          "path": "linux-x64/libstdc++.so.6",
+          "sha256": "5a31ea5c7e03d2380224ad53301ab632e46d71035700b529bd11aa652367ea4d"
+        },
+        {
+          "path": "linux-x64/libz.so.1",
+          "sha256": "e4417c011a7391ba7251db1dbdb13b5196666e2e4d02a0f7d747e1a705cc0584"
+        },
+        {
+          "path": "linux-x64/notices/build.json",
+          "sha256": "0b1773abb433740b65fe6c8a1fb22025345cb617165b36e9620151df85e76ece"
+        },
+        {
+          "path": "linux-x64/notices/lc0-COPYING",
+          "sha256": "8b1ba204bb69a0ade2bfcf65ef294a920f6bb361b317dba43c7ef29d96332b9b"
+        },
+        {
+          "path": "linux-x64/notices/lc0-v0.32.1-source.tar.gz",
+          "sha256": "0c1b97f357e3adec8b9e47e702da48a73b3d7350eb9378f450bddce7e6bed556"
+        },
+        {
+          "path": "linux-x64/notices/libdnnl2-copyright",
+          "sha256": "bfc4a66311bfb414e19c211801ef967fce6c8dd37c7a5d4d8c235077f8ae1813"
+        },
+        {
+          "path": "linux-x64/notices/libgcc-s1-copyright",
+          "sha256": "da8191658b3452ce9caf31638ba61dab31a38c619fa39df119812e050f592fd3"
+        },
+        {
+          "path": "linux-x64/notices/libgomp1-copyright",
+          "sha256": "da8191658b3452ce9caf31638ba61dab31a38c619fa39df119812e050f592fd3"
+        },
+        {
+          "path": "linux-x64/notices/libstdc++6-copyright",
+          "sha256": "da8191658b3452ce9caf31638ba61dab31a38c619fa39df119812e050f592fd3"
+        },
+        {
+          "path": "linux-x64/notices/ocl-icd-libopencl1-copyright",
+          "sha256": "c647ce25ffd0f07df73d5a683ea76d7c842988fa29d22e17de022e179d414585"
+        },
+        {
+          "path": "linux-x64/notices/zlib1g-copyright",
+          "sha256": "d77204eee882807240f6351c4f5ae2a4bcdb5b773ff77d10647b9b66b826b2fb"
+        }
+      ]
+    },
+    "win32-x64": {
+      "executable": "win32-x64/lc0.exe",
+      "backend": "blas",
+      "files": [
+        {
+          "path": "win32-x64/lc0.exe",
+          "sha256": "2130a6b980c8d9543888d3d4b2e45642b550ba73b36e05ae892e9c9130afd5ed"
+        },
+        {
+          "path": "win32-x64/dnnl.dll",
+          "sha256": "4c642ebe5e4300fb74417d43cc57d5ef33656f7b5fc536a9655ca02f8120c930"
+        },
+        {
+          "path": "win32-x64/mimalloc-override.dll",
+          "sha256": "e082b62637c82319eb0936e73822a7667c77e263e3d00fb61917e0e3beb677b3"
+        },
+        {
+          "path": "win32-x64/mimalloc-redirect.dll",
+          "sha256": "63dc4f158fd76940ec018b42f83d92d8ceec70043b1ac2a8455fb0d67e1feebf"
+        },
+        {
+          "path": "win32-x64/COPYING",
+          "sha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809"
+        },
+        {
+          "path": "win32-x64/DNNL-LICENSE",
+          "sha256": "3e4086117a15fb5ca2f9e2e72009f2c4c3d7a12142a08ddaff8c85676c18b701"
+        },
+        {
+          "path": "win32-x64/mimalloc-LICENSE",
+          "sha256": "5ce3e462f520c1588bcfd0385f0aebb1acc55c7af4ca33c049d9f23cdfa59813"
+        },
+        {
+          "path": "win32-x64/mimalloc-readme.md",
+          "sha256": "7e34c53f84757b8a792557e76021bb26d2b0430aa049e608eade3d6ed8bb33c7"
+        },
+        {
+          "path": "win32-x64/BUNDLE-SOURCES.json",
+          "sha256": "b6d0e923d4c927dc7ea46c907fe8e6f0693d862d8f5ae2318f19e47228a9d142"
+        }
+      ]
+    }
+  }
+}

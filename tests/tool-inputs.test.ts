@@ -79,7 +79,7 @@ test("every game-id input enforces the shared length bounds", () => {
 });
 
 test("analysis and move inputs expose the shared limits", () => {
-  type Property = { maximum?: number };
+  type Property = { maximum?: number; enum?: string[] };
   const properties = (schema: z.ZodType) =>
     (z.toJSONSchema(schema) as { properties?: Record<string, Property> })
       .properties ?? {};
@@ -87,11 +87,15 @@ test("analysis and move inputs expose the shared limits", () => {
   const position = properties(TOOL_INPUT_SCHEMAS.position_analyze);
   assert.equal(position.depth?.maximum, MAX_ANALYSIS_DEPTH);
   assert.equal(position.multipv?.maximum, MAX_MULTIPV);
+  assert.deepEqual(position.engine_mode?.enum, ["stockfish", "lc0", "both"]);
+  assert.equal(position.movetime_ms?.maximum, 30_000);
 
   const evaluation = z.toJSONSchema(TOOL_INPUT_SCHEMAS.move_evaluate) as {
     properties?: Record<string, Property & { anyOf?: Array<{ maxItems?: number }> }>;
   };
   assert.equal(evaluation.properties?.depth?.maximum, MAX_ANALYSIS_DEPTH);
+  assert.deepEqual(evaluation.properties?.engine_mode?.enum, ["stockfish", "lc0", "both"]);
+  assert.equal(evaluation.properties?.movetime_ms?.maximum, 30_000);
   assert.equal(
     evaluation.properties?.move?.anyOf?.[1]?.maxItems,
     MAX_EVALUATED_MOVES,

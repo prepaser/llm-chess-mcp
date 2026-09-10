@@ -16,9 +16,11 @@ class ModelConfigTests(unittest.TestCase):
             checkpoint.write_bytes(b"checkpoint")
             path = root / "model.json"
             root_config = {
-                "schemaVersion": 2,
+                "schemaVersion": 3,
+                "analysis": {"mode": "both"},
                 "maia3": {"model": "3m", "source": {"type": "local", "path": "weights.pt"}},
                 "stockfish": {"version": "18.0.8", "flavor": "lite-single"},
+                "lc0": {"version": "0.32.1", "weights": {"url": "https://example.invalid/weights.pb.gz", "sha256": "a" * 64}, "backend": "cpu", "platforms": ["linux-x64"]},
             }
             path.write_text(json.dumps(root_config))
             actual, config_path = read_config(path)
@@ -31,7 +33,8 @@ class ModelConfigTests(unittest.TestCase):
 
     def test_invalid_config(self):
         valid = {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
+            "analysis": {"mode": "both"},
             "maia3": {
                 "model": "5m",
                 "source": {
@@ -41,6 +44,7 @@ class ModelConfigTests(unittest.TestCase):
                 },
             },
             "stockfish": {"version": "18.0.8", "flavor": "lite-single"},
+            "lc0": {"version": "0.32.1", "weights": {"url": "https://example.invalid/weights.pb.gz", "sha256": "a" * 64}, "backend": "cpu", "platforms": ["linux-x64"]},
         }
         cases = [[], {**valid, "maia3": {**valid["maia3"], "model": "unknown"}},
                  {**valid, "schemaVersion": True}, {**valid, "extra": 1},
@@ -48,7 +52,10 @@ class ModelConfigTests(unittest.TestCase):
                  {**valid, "maia3": {**valid["maia3"], "source": {"type": "other", "path": "x"}}},
                  {**valid, "stockfish": {**valid["stockfish"], "version": "01.2.3"}},
                  {**valid, "stockfish": {**valid["stockfish"], "version": "18.0"}},
-                 {**valid, "stockfish": {**valid["stockfish"], "flavor": "unknown"}}]
+                 {**valid, "stockfish": {**valid["stockfish"], "flavor": "unknown"}},
+                 {**valid, "analysis": {"mode": "unknown"}},
+                 {**valid, "lc0": {**valid["lc0"], "backend": "unknown"}},
+                 {**valid, "lc0": {**valid["lc0"], "weights": {**valid["lc0"]["weights"], "sha256": "bad"}}}]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             for config in cases:
@@ -61,9 +68,11 @@ class ModelConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             config = {
-                "schemaVersion": 2,
+                "schemaVersion": 3,
+                "analysis": {"mode": "both"},
                 "maia3": {"model": "5m", "source": {"type": "local", "path": "weights.pt"}},
                 "stockfish": {"version": "18.0.8", "flavor": "lite-single"},
+                "lc0": {"version": "0.32.1", "weights": {"url": "https://example.invalid/weights.pb.gz", "sha256": "a" * 64}, "backend": "cpu", "platforms": ["linux-x64"]},
             }
             (Path(directory) / "weights.pt").write_bytes(b"weights")
             path.write_text(json.dumps(config))

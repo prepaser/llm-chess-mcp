@@ -40,9 +40,11 @@ class ModelExportTests(unittest.TestCase):
             manifest.write_text("existing bundle")
             torch.save({"unexpected": torch.zeros(1)}, root / "checkpoint.pt")
             config = {
-                "schemaVersion": 2,
+                "schemaVersion": 3,
+                "analysis": {"mode": "both"},
                 "maia3": {"model": "5m", "source": {"type": "local", "path": "checkpoint.pt"}},
                 "stockfish": {"version": "18.0.8", "flavor": "lite-single"},
+                "lc0": {"version": "0.32.1", "weights": {"url": "https://example.invalid/weights.pb.gz", "sha256": "a" * 64}, "backend": "cpu", "platforms": ["linux-x64"]},
             }
             path = root / "model.config.json"
             path.write_text(json.dumps(config))
@@ -58,9 +60,11 @@ class ModelExportTests(unittest.TestCase):
             manifest = root / "models" / "manifest.json"
             manifest.write_text("existing bundle")
             config = {
-                "schemaVersion": 2,
+                "schemaVersion": 3,
+                "analysis": {"mode": "both"},
                 "maia3": {"model": "3m", "source": {"type": "local", "path": "checkpoint.pt"}},
                 "stockfish": {"version": "18.0.8", "flavor": "lite-single"},
+                "lc0": {"version": "0.32.1", "weights": {"url": "https://example.invalid/weights.pb.gz", "sha256": "a" * 64}, "backend": "cpu", "platforms": ["linux-x64"]},
             }
             path = root / "model.config.json"
             path.write_text(json.dumps(config))

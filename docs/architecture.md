@@ -1,7 +1,7 @@
 # Architecture
 
 `llm-chess-mcp` is a stateful MCP server over stdio or Streamable HTTP. It owns
-chess-game state and exposes deterministic tool contracts; Stockfish, Maia3,
+chess-game state and exposes deterministic tool contracts; Stockfish, Lc0, Maia3,
 and Lichess add independent signals without changing a game unless
 `game_play_move` succeeds.
 
@@ -14,7 +14,7 @@ the default; HTTP mode binds an explicit endpoint and creates one MCP server per
 Streamable HTTP session. All sessions share application services and game state.
 Stdout is reserved for protocol traffic; diagnostics belong on stderr. stdin
 closure and process signals use idempotent shutdown that closes the active
-transport and terminates Stockfish.
+transport and terminates all active engines.
 
 The package export map exposes the typed root entry and `./package.json`. Files
 under `dist/` are implementation details and are not supported deep-import
@@ -37,13 +37,13 @@ separate from engine startup, network I/O, time, and storage.
 candidate, explorer, and lifecycle capabilities; tool modules accept only the
 capabilities they use.
 Default `buildServer()` and `serveHttp()` handles share a reference-counted
-service lease; closing the last handle terminates Stockfish. Injected services
+service lease; closing the last handle terminates active engine workers. Injected services
 remain caller-owned.
 
 ```text
 stdio --------> entrypoint -> buildServer(AppServices) -> tool modules
 Streamable HTTP --^                                   |-> GameStore
-                                                      |-> Stockfish service
+                                                      |-> Analysis orchestrator -> Stockfish / Lc0
                                                       |-> Maia service
                                                       `-> Lichess explorer
 ```
@@ -53,7 +53,7 @@ The tool modules have narrow ownership:
 | Module | Owns |
 |---|---|
 | `game` | game creation/deletion, state, legal moves, PGN, and the only game mutation |
-| `analysis` | Stockfish analysis, Maia distributions, and per-move evaluation |
+| `analysis` | engine-scoped analysis, consensus, Maia distributions, and per-move evaluation |
 | `candidates` | joins objective, human, and opening facets; intent ranking |
 | `explorer` | Lichess input validation, requests, retry policy, and response validation |
 
@@ -69,7 +69,7 @@ ranking are likewise separate policies.
 
 ## App services and game lifecycle
 
-`AppServices` carries the application dependencies: a `GameStore`, Stockfish,
+`AppServices` carries the application dependencies: a `GameStore`, analysis engines,
 Maia inference, candidate computation, and the Lichess explorer. Dependencies
 are interfaces at this boundary so tests can inject controlled services without
 patching process globals. Clock and ID generation are injected into `GameStore`;
@@ -175,6 +175,33 @@ this process. If browser access is introduced later, define the CORS policy at
 the proxy explicitly; do not treat an `Origin` header as authentication.
 
 ## Compute and network services
+
+The analysis orchestrator defaults to `both`; a per-request mode overrides
+`ENGINE_MODE`, then packaged configuration. It snapshots positions and sends
+initial FEN plus move history to each selected engine. Stockfish and Lc0 keep
+separate queues, limits, metadata, and failure states. Single-engine selection
+does not inspect or initialize the other engine. One successful engine produces
+an explicit partial result; no successful engine is an error. Caller
+cancellation and service-generation shutdown cancel the entire operation.
+
+Lc0 is a native child process selected from the platform manifest under
+`bundle/lc0`. Its bounded queue serializes searches. Initialization validates
+the exact engine version and UCI capabilities, while each request uses an
+explicit millisecond budget rather than Stockfish depth semantics. Backend,
+weights, CPU thread limits, and configuration-file behavior are explicit.
+Shutdown drains active work and waits for process exit, escalating after a
+bounded grace period. The running server never downloads an engine or model.
+
+Candidate generation joins both engines with one Maia and explorer result.
+Objectives and move sensitivity remain engine-scoped. Intent rankings are
+fused using equal-weight RRF-60, with deterministic support/UCI tie breaks.
+This aggregate is an ordinal ranking, not a cross-engine centipawn value or
+win probability. The natural intent remains Maia-based, while easing off
+requires agreement from every successful engine with suitable WDL data.
+
+Legacy injected services that implement only the single-engine methods are
+adapted explicitly as Stockfish-only providers. They cannot satisfy an Lc0-only
+request; in both mode their absent Lc0 capability is reported as an error.
 
 Stockfish is a single worker-backed engine, so its service serializes analysis
 requests through a bounded queue (32 active or waiting requests). It lazily

@@ -125,8 +125,10 @@ export const GamePlayMoveInputSchema = z.strictObject({
 export const PositionAnalyzeInputSchema = z.strictObject({
   game_id: GameIdSchema,
   analysis_level: z.enum(ANALYSIS_LEVELS).default("normal"),
+  engine_mode: z.enum(["stockfish", "lc0", "both"]).optional(),
   depth: z.number().int().min(1).max(MAX_ANALYSIS_DEPTH).optional(),
   multipv: z.number().int().min(1).max(MAX_MULTIPV).optional(),
+  movetime_ms: z.number().int().min(1).max(30_000).optional(),
 });
 export const HumanMoveDistributionInputSchema = z.strictObject({
   game_id: GameIdSchema,
@@ -141,14 +143,18 @@ export const MoveEvaluateInputSchema = z.strictObject({
     z.array(z.string()).min(1).max(MAX_EVALUATED_MOVES),
   ]),
   depth: z.number().int().min(1).max(MAX_ANALYSIS_DEPTH).default(15),
+  engine_mode: z.enum(["stockfish", "lc0", "both"]).optional(),
+  movetime_ms: z.number().int().min(1).max(30_000).default(3_000),
 });
 
 const candidateFields = {
   game_id: GameIdSchema,
   elo: z.number().int().min(600).max(2600).default(1500),
   analysis_level: z.enum(ANALYSIS_LEVELS).default("normal"),
+  engine_mode: z.enum(["stockfish", "lc0", "both"]).optional(),
   sf_depth: z.number().int().min(1).max(MAX_ANALYSIS_DEPTH).optional(),
   sf_multipv: z.number().int().min(1).max(MAX_MULTIPV).optional(),
+  movetime_ms: z.number().int().min(1).max(30_000).optional(),
   lichess_db: explorerFilterFields.db.default("lichess"),
   lichess_speeds: explorerFilterFields.speeds,
   lichess_ratings: explorerFilterFields.ratings,

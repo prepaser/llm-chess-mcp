@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const ALLOWED_KEYS = new Set(["LICHESS_TOKEN", "MAIA3_MODEL", "STOCKFISH_FLAVOR"]);
+const ALLOWED_KEYS = new Set(["LICHESS_TOKEN", "MAIA3_MODEL", "STOCKFISH_FLAVOR", "ENGINE_MODE"]);
 
 export function loadEnv(path = ".env"): void {
   let text: string;

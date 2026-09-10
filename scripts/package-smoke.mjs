@@ -126,6 +126,11 @@ async function pack(workspace, cache) {
     "models/manifest.json",
     ...bundle.files.map((path) => `models/${path}`),
   ];
+  const lc0 = JSON.parse(await readFile(join(REPO, "bundle/lc0/manifest.json"), "utf8"));
+  expectedModelFiles.push("bundle/lc0/manifest.json", `bundle/lc0/${lc0.weights.path}`);
+  for (const platform of Object.values(lc0.platforms)) {
+    expectedModelFiles.push(...platform.files.map((file) => `bundle/lc0/${file.path}`));
+  }
   for (const expected of [
     "dist/index.js",
     "dist/index.d.ts",
@@ -236,6 +241,9 @@ function serverEnv() {
   env[pathKey] = [dirname(process.execPath), env[pathKey]].filter(Boolean).join(delimiter);
   env.LICHESS_TOKEN = "";
   for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === "engine_mode") delete env[key];
+  }
+  for (const key of Object.keys(env)) {
     if (key.toLowerCase() === "maia3_model") delete env[key];
   }
   for (const key of Object.keys(env)) {
@@ -268,11 +276,24 @@ async function smoke(bin, packageRoot, cwd) {
       analysis_level: "fast",
       depth: 1,
       multipv: 1,
+      movetime_ms: 100,
     });
-    const [line] = analysis.lines;
+    assert.equal(analysis.mode, "both");
+    assert.equal(analysis.partial, false);
+    assert.deepEqual(analysis.enginesUsed, ["stockfish", "lc0"]);
+    const [line] = analysis.engines.stockfish.result;
     assert.equal(analysis.revision, 0);
     assert.ok(line && Array.isArray(line.pv) && line.pv.length > 0, "Stockfish returned no PV");
     assert.ok(line.scoreCp !== null || line.scoreMate !== null, "Stockfish returned no score");
+    assert.ok(analysis.engines.lc0.result[0]?.pv.length, "Lc0 returned no PV");
+    for (const mode of ["stockfish", "lc0"]) {
+      const single = await call(client, "position_analyze", {
+        game_id: gameId, analysis_level: "fast", depth: 1, multipv: 1,
+        movetime_ms: 100, engine_mode: mode,
+      });
+      assert.deepEqual(single.enginesUsed, [mode]);
+      assert.equal(single.engines[mode === "stockfish" ? "lc0" : "stockfish"].status, "not_requested");
+    }
 
     const human = await call(client, "human_move_distribution", {
       game_id: gameId,
@@ -294,6 +315,7 @@ async function smoke(bin, packageRoot, cwd) {
       sf_depth: 1,
       sf_multipv: 1,
       maia_top_n: 1,
+      movetime_ms: 100,
     });
     assert.equal(candidates.revision, 0);
     assert.ok(candidates.candidates.length > 0, "move_candidates returned no candidates");
@@ -302,7 +324,7 @@ async function smoke(bin, packageRoot, cwd) {
       "move_candidates did not include Maia3 data",
     );
     assert.ok(
-      candidates.candidates.some((candidate) => candidate.objective.rank !== null),
+      candidates.candidates.some((candidate) => candidate.objective.byEngine.stockfish?.rank !== null && candidate.objective.byEngine.stockfish?.rank !== undefined),
       "move_candidates did not include Stockfish data",
     );
     assert.ok(
