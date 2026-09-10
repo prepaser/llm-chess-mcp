@@ -16,6 +16,9 @@ export function validatePositionAnalysisLines(
   if (!gameOver && lines.length === 0) throw new RangeError("engine returned no analysis lines");
   const roots = new Set<string>();
   for (const line of lines) {
+    if (!gameOver && line.scoreCp === null && line.scoreMate === null) {
+      throw new RangeError("engine returned a principal variation without an evaluation");
+    }
     if (line.pv.length === 0) {
       if (!gameOver) throw new RangeError("engine returned an empty principal variation");
       continue;

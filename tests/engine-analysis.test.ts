@@ -52,6 +52,20 @@ test("single engine failure is returned as a partial result", async () => {
   await analyzer.quitEngines();
 });
 
+test("scoreless PVs fail their engine instead of counting as successful analysis", async () => {
+  const scoreless = { ...line(10), scoreCp: null };
+  const analyzer = createEngineAnalyzer({
+    stockfish: adapter("stockfish", [line(10)]),
+    lc0: adapter("lc0", [scoreless]),
+  });
+  const request = { mode: "both" as const, depth: 10, multipv: 1, movetimeMs: 100 };
+  const result = await analyzer.analyzeEngines(position(), request);
+  assert.equal(result.partial, true);
+  assert.deepEqual(result.enginesUsed, ["stockfish"]);
+  assert.equal(result.engines.lc0.status, "error");
+  await assert.rejects(analyzer.analyzeEngines(position(), { ...request, mode: "lc0" }), /without an evaluation/);
+});
+
 test("single-engine mode does not invoke the other adapter", async () => {
   let lc0Called = false;
   const lc0Adapter = adapter("lc0", [line(20)]);

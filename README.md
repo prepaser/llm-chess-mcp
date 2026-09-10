@@ -42,7 +42,8 @@ cross-engine measure of move quality.
 
 Candidate consensus uses equal-weight reciprocal rank fusion:
 `sum(1 / (60 + rank)) / successfulEngineCount`. An unranked move contributes
-zero without being labeled bad. Ties prefer more supporting engines, then UCI
+zero without being labeled bad. Within each engine, tied intent scores retain
+the engine's original ranking. Consensus ties prefer more supporting engines, then UCI
 order. This is a ranking score, not a probability. `natural` remains Maia-only;
 `ease_off` and `give_chance` require every successful engine to approve the
 candidate using available WDL data.

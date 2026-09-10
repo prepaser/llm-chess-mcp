@@ -95,6 +95,28 @@ test("uses reciprocal-rank fusion and deterministic support tie breaks", () => {
   assert.equal(ranked[0]?.consensusScore, ranked[1]?.consensusScore);
 });
 
+test("fusion preserves each engine's rank when intent scores tie", () => {
+  const result = candidateSetFromEngineAnalysis(new Chess(), 1500,
+    analysis([line("e2e4", 20, 1), line("d2d4", 20, 2)],
+      [line("d2d4", 20, 1), line("e2e4", 20, 2)]),
+    [{ uci: "e2e4", san: "e4", prob: 0.5 }, { uci: "d2d4", san: "d4", prob: 0.5 }],
+    openingData, 2);
+  const original = structuredClone(result.candidates);
+  for (const candidates of [result.candidates, [...result.candidates].reverse()]) {
+    for (const intent of ["best", "strong", "balanced"] as const) {
+      const ranked = rankEngineCandidates(candidates, intent, result.enginesUsed);
+      assert.deepEqual(ranked.map(({ uci }) => uci), ["d2d4", "e2e4"]);
+      for (const candidate of ranked) {
+        assert.equal(candidate.support, 2);
+        assert.equal(candidate.consensusScore, (1 / 61 + 1 / 62) / 2);
+      }
+    }
+    assert.equal(rankEngineCandidates(candidates, "best", ["lc0"])[0]?.uci, "d2d4");
+    assert.equal(rankEngineCandidates(candidates, "best", ["stockfish"])[0]?.uci, "e2e4");
+  }
+  assert.deepEqual(result.candidates, original);
+});
+
 test("natural intent remains Maia ordering and does not require an engine", () => {
   const make = (uci: string, prob: number): MultiEngineCandidate => ({
     uci, san: uci,

@@ -4,6 +4,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { Chess } from "chess.js";
+import { createEngineAnalyzer } from "../src/engines/analysis.js";
 import { Lc0, type Lc0Manifest, type Lc0Process } from "../src/engines/lc0.js";
 
 const FEN = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1";
@@ -36,6 +38,7 @@ class FakeLc0Process extends EventEmitter implements Lc0Process {
   readonly stdin = new FakeStdin(this);
   readonly commands: string[] = [];
   readonly goStarted = deferred();
+  readonly handshakeStarted = deferred();
   readonly stopSent = deferred();
   readonly quitSent = deferred();
   readonly exitEvent = deferred<void>();
@@ -51,6 +54,7 @@ class FakeLc0Process extends EventEmitter implements Lc0Process {
   command(value: string): void {
     this.commands.push(value);
     if (value === "uci") {
+      this.handshakeStarted.resolve();
       if (this.options.oversizedOutput) {
         queueMicrotask(() => this.stdout.emit("data", "x".repeat(1_048_577)));
       } else if (this.options.handshake !== "hang") {
@@ -260,6 +264,24 @@ test("terminal positions return no lines without starting Lc0", { timeout: 500 }
   await engine.quit();
 });
 
+test("metadata reads the manifest without starting Lc0", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  let spawns = 0;
+  const engine = new Lc0({
+    manifest,
+    manifestPath: join(root, "manifest.json"),
+    spawn: () => { spawns += 1; return new FakeLc0Process(); },
+  });
+  assert.deepEqual(await engine.metadata(), {
+    id: "lc0",
+    version: "0.32.1",
+    weightsSha256: "a".repeat(64),
+    backend: "dnnl",
+  });
+  assert.equal(spawns, 0);
+  await engine.quit();
+});
+
 test("analysis watchdog allows the complete requested movetime plus stop grace", { timeout: 500 }, async (t) => {
   const { root, manifest } = await fixture(t);
   const engine = new Lc0({
@@ -339,4 +361,51 @@ test("analysis arguments and history are snapshotted at admission", { timeout: 5
   assert.ok(child.commands.includes("go movetime 11"));
   assert.ok(child.commands.includes(`position fen ${FEN} moves e7e5`));
   await engine.quit();
+});
+
+test("terminal metadata does not share an aborting handshake", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  let spawns = 0;
+  const child = new FakeLc0Process({ handshake: "hang", exitOnKill: "any" });
+  const engine = new Lc0({
+    manifest,
+    manifestPath: join(root, "manifest.json"),
+    spawn: () => {
+      spawns += 1;
+      return child;
+    },
+    timeouts: { handshake: 200, stopGrace: 5 },
+  });
+  const analyzer = createEngineAnalyzer({
+    lc0: {
+      id: "lc0",
+      analyze: (position, request, signal) => engine.analyze(position.initialFen, request, position.moves, signal),
+      metadata: () => engine.metadata(),
+      quit: () => engine.quit(),
+    },
+  });
+  const controller = new AbortController();
+  const ongoing = new Chess();
+  ongoing.move("e4");
+  const ongoingAnalysis = analyzer.analyzeEngines(ongoing, REQUEST, controller.signal);
+  const cancelled = assert.rejects(ongoingAnalysis, /cancel A/);
+  t.after(() => engine.quit());
+  await child.handshakeStarted.promise;
+  const terminal = new Chess("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
+  const pendingTerminal = analyzer.analyzeEngines(terminal, REQUEST);
+  await Promise.resolve();
+  controller.abort(new Error("cancel A"));
+  const terminalAnalysis = await pendingTerminal;
+  assert.deepEqual(terminalAnalysis.enginesUsed, ["lc0"]);
+  assert.equal(terminalAnalysis.engines.lc0.status, "ok");
+  if (terminalAnalysis.engines.lc0.status === "ok") assert.deepEqual(terminalAnalysis.engines.lc0.meta, {
+    id: "lc0",
+    version: "0.32.1",
+    weightsSha256: "a".repeat(64),
+    backend: "dnnl",
+  });
+  await cancelled;
+  assert.equal(spawns, 1);
+  await analyzer.quitEngines();
+  assert.ok(child.kills.length > 0);
 });

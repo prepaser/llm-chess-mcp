@@ -134,7 +134,8 @@ export function rankEngineCandidates(
   for (const engine of successful) {
     const source = candidates
       .filter((candidate) => candidate.objective.byEngine[engine]?.rank != null)
-      .map((candidate) => singleEngineCandidate(candidate, engine));
+      .map((candidate) => singleEngineCandidate(candidate, engine))
+      .sort((left, right) => left.objective.rank! - right.objective.rank! || left.uci.localeCompare(right.uci));
     const ranked = perEngineRanker(
       structuredClone(source),
       intent,

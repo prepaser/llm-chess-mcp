@@ -474,12 +474,21 @@ export class Lc0 {
   }
 
   async metadata(): Promise<EngineMeta> {
-    const session = await this.init();
+    const session = this.session;
+    if (session) {
+      return {
+        id: "lc0",
+        version: session.meta.version,
+        weightsSha256: session.meta.weightsSha256,
+        backend: session.meta.backend,
+      };
+    }
+    const { manifest, platform } = this.bundle();
     return {
       id: "lc0",
-      version: session.meta.version,
-      weightsSha256: session.meta.weightsSha256,
-      backend: session.meta.backend,
+      version: manifest.engineVersion,
+      weightsSha256: manifest.weights.sha256,
+      backend: platform.backend,
     };
   }
 

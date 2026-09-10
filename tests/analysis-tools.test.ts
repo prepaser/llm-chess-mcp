@@ -145,6 +145,10 @@ test("move_evaluate classifies terminal draws from the mover's prior score", asy
       name: "move_evaluate",
       arguments: { game_id: gameId, move: "Qb6", depth: 5, engine_mode: "stockfish" },
     });
+    if (expected.beforeCp === null) {
+      assert.equal(response.isError, true);
+      continue;
+    }
     assert.notEqual(response.isError, true);
     const parsed = MoveEvaluateOutputSchema.parse(response.structuredContent);
     const result = parsed.results[0];

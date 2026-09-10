@@ -47,6 +47,8 @@ test("injected analysis and candidates reject unusable ongoing PVs", async () =>
   const valid = await analyzeWithEngines({ analyze: async () => [line] }, new Chess(), multi);
   for (const lines of [
     [],
+    [{ ...line, scoreCp: null }],
+    [{ ...line, scoreCp: null, wdl: [500, 300, 200] as [number, number, number] }],
     [{ ...line, pv: [] }],
     [{ ...line, pv: ["a1a2"] }],
     [{ ...line, pv: ["e2e4", "e2e3"] }],
