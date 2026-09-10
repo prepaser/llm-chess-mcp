@@ -1,10 +1,16 @@
 {
-  "schemaVersion": 1,
-  "model": "5m",
-  "source": {
-    "type": "huggingface",
-    "repoId": "UofTCSSLab/Maia3-5M",
-    "filename": "maia3-5m.pt",
-    "revision": "b6559de2398d7140b985f28fd2c19fb5e47ddabe"
+  "schemaVersion": 2,
+  "maia3": {
+    "model": "5m",
+    "source": {
+      "type": "huggingface",
+      "repoId": "UofTCSSLab/Maia3-5M",
+      "filename": "maia3-5m.pt",
+      "revision": "b6559de2398d7140b985f28fd2c19fb5e47ddabe"
+    }
+  },
+  "stockfish": {
+    "version": "18.0.8",
+    "flavor": "lite-single"
   }
 }

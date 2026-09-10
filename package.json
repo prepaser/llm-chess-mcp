@@ -3,6 +3,9 @@
   "version": "0.7.2",
   "description": "MCP server that lets an LLM analyze, judge, and choose chess moves (Stockfish + Maia3 + Lichess)",
   "type": "module",
+  "stockfish": {
+    "flavor": "lite-single"
+  },
   "license": "AGPL-3.0",
   "packageManager": "pnpm@11.3.0",
   "engines": {
@@ -47,6 +50,7 @@
     "test:e2e:built": "tsx --test tests/e2e/*.test.ts",
     "test:package": "node scripts/package-smoke.mjs",
     "model:check": "node scripts/model-check.mjs",
+    "stockfish:prepare": "node scripts/stockfish-prepare.mjs",
     "test:stress": "tsx --test tests/stress/*.test.ts",
     "test:live": "tsx --test tests/live/*.test.ts",
     "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-lines=85 --test-coverage-branches=80 --test-coverage-functions=80 tests/*.test.ts tests/integration/*.test.ts",
@@ -61,7 +65,7 @@
     "@modelcontextprotocol/server": "^2.0.0",
     "chess.js": "^1.4.0",
     "onnxruntime-node": "1.27.0",
-    "stockfish": "^18.0.8",
+    "stockfish": "18.0.8",
     "zod": "4.4.3"
   },
   "devDependencies": {

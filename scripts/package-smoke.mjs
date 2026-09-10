@@ -10,6 +10,7 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { childLifecycle, cleanupChild } from "./child-lifecycle.mjs";
 import { checkModelBundle } from "./model-check.mjs";
+import { checkStockfishConfig } from "./stockfish-config.mjs";
 
 const execFile = promisify(execFileCallback);
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -237,7 +238,9 @@ function serverEnv() {
   for (const key of Object.keys(env)) {
     if (key.toLowerCase() === "maia3_model") delete env[key];
   }
-  env.STOCKFISH_FLAVOR = "lite-single";
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === "stockfish_flavor") delete env[key];
+  }
   return env;
 }
 
@@ -429,6 +432,8 @@ try {
   await verifyPackageApi(install);
 
   const packageRoot = join(install, "node_modules", "llm-chess-mcp");
+  const config = JSON.parse(await readFile(join(REPO, "model.config.json"), "utf8"));
+  await checkStockfishConfig({ root: packageRoot, config: config.stockfish });
   const bin = join(
     install,
     "node_modules",

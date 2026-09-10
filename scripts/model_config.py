@@ -5,18 +5,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODEL_KEYS = {"3m", "5m", "23m", "79m"}
+STOCKFISH_FLAVORS = {
+    "full", "lite", "single", "lite-single", "single-lite", "asm",
+}
+STOCKFISH_VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
 
 
 def read_config(path=None):
     path = Path(path or ROOT / "model.config.json").resolve()
-    config = json.loads(path.read_text())
-    if not isinstance(config, dict) or set(config) != {"schemaVersion", "model", "source"}:
+    root = json.loads(path.read_text())
+    if not isinstance(root, dict) or set(root) != {"schemaVersion", "maia3", "stockfish"}:
         raise ValueError("invalid model configuration fields")
-    if type(config["schemaVersion"]) is not int or config["schemaVersion"] != 1:
+    if type(root["schemaVersion"]) is not int or root["schemaVersion"] != 2:
         raise ValueError("unsupported model configuration version")
-    if not isinstance(config["model"], str) or config["model"] not in MODEL_KEYS:
+
+    maia = root["maia3"]
+    if not isinstance(maia, dict) or set(maia) != {"model", "source"}:
+        raise ValueError("invalid Maia3 configuration fields")
+    if not isinstance(maia["model"], str) or maia["model"] not in MODEL_KEYS:
         raise ValueError("unsupported Maia3 model")
-    source = config["source"]
+    source = maia["source"]
     if not isinstance(source, dict):
         raise ValueError("invalid model source")
     fields = {"type", "repoId", "filename", "revision"} if source.get("type") == "huggingface" else {"type", "path"}
@@ -27,6 +35,22 @@ def read_config(path=None):
             raise ValueError("model revision must be a full lowercase commit SHA")
     elif source["type"] != "local":
         raise ValueError("unsupported model source")
+
+    stockfish = root["stockfish"]
+    if not isinstance(stockfish, dict) or set(stockfish) != {"version", "flavor"}:
+        raise ValueError("invalid Stockfish configuration fields")
+    version = stockfish["version"]
+    if not isinstance(version, str) or not STOCKFISH_VERSION.fullmatch(version):
+        raise ValueError("Stockfish version must be an exact stable x.y.z version")
+    flavor = stockfish["flavor"]
+    if not isinstance(flavor, str) or flavor not in STOCKFISH_FLAVORS:
+        raise ValueError("unsupported Stockfish flavor")
+
+    config = {
+        "schemaVersion": 1,
+        "model": maia["model"],
+        "source": source,
+    }
     return config, path
 
 

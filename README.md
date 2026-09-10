@@ -374,20 +374,26 @@ The default config selects the current pinned 5M checkpoint:
 
 ```json
 {
-  "schemaVersion": 1,
-  "model": "5m",
-  "source": {
-    "type": "huggingface",
-    "repoId": "UofTCSSLab/Maia3-5M",
-    "filename": "maia3-5m.pt",
-    "revision": "b6559de2398d7140b985f28fd2c19fb5e47ddabe"
+  "schemaVersion": 2,
+  "maia3": {
+    "model": "5m",
+    "source": {
+      "type": "huggingface",
+      "repoId": "UofTCSSLab/Maia3-5M",
+      "filename": "maia3-5m.pt",
+      "revision": "b6559de2398d7140b985f28fd2c19fb5e47ddabe"
+    }
+  },
+  "stockfish": {
+    "version": "18.0.8",
+    "flavor": "lite-single"
   }
 }
 ```
 
 Supported architectures are `3m`, `5m`, `23m`, and `79m`; the source checkpoint
 must match the selected architecture. Hugging Face revisions must be full
-lowercase commit SHAs. For local weights, replace `source` with
+lowercase commit SHAs. For local weights, replace `maia3.source` with
 `{"type": "local", "path": "weights/checkpoint.pt"}`. Relative checkpoint
 paths resolve against the config file, not the working directory.
 Absolute local checkpoint paths are also accepted; prefer relative paths for
@@ -432,6 +438,43 @@ verification reads the model filename from the generated manifest.
 It checks top-1/top-k move agreement and max probability error to detect
 export/runtime regressions. The bundled `maia3-5m.onnx` passes with 100% top-1
 and top-5 agreement and max probability error < 1e-4.
+
+## Configure Stockfish
+
+The same `model.config.json` selects the exact npm `stockfish` version and
+default engine flavor. `18.0.8` is the npm package version; it contains the
+Stockfish 18 engine. Version ranges, tags, and prereleases are not accepted.
+Supported flavors are `full`, `single`, `lite`, `lite-single`, `single-lite`
+(an alias), and `asm`.
+
+After editing the `stockfish` section:
+
+```bash
+pnpm stockfish:prepare
+pnpm check
+pnpm test:package
+```
+
+Preparation uses pnpm to pin and install the exact dependency and update the
+lockfile, compiles TypeScript, then checks initialization, UCI readiness,
+analysis, and shutdown using the configured flavor. Only after successful
+verification is the default flavor recorded in `package.json`. An incompatible
+version fails preparation; older loader APIs are not automatically adapted.
+If preparation fails, dependency files may already have changed. Correct the
+configuration or compatibility error and rerun it; Git changes are never
+automatically reverted.
+
+Runtime selection is an explicit engine option, then `STOCKFISH_FLAVOR`, then
+the packaged default. The real loader rejects an installed package version
+that differs from the pinned dependency. Consumers receive Stockfish as an
+exact npm dependency; the running server never installs or switches versions.
+
+`pnpm model:check` checks both engines without downloading or installing
+anything. Stockfish-only changes do not require Maia export: its manifest
+continues to record only normalized Maia settings. Schema version 1 build
+configs must be updated to the two-section format above. Ordinary builds do
+not install engines. External NNUE replacement and flavor-specific package
+size optimization are not provided.
 
 ## Package verification
 

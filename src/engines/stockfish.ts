@@ -1,22 +1,24 @@
 import { AsyncLocalStorage, createHook } from "node:async_hooks";
 import { createRequire } from "node:module";
 import { dirname, sep } from "node:path";
+import { readFileSync } from "node:fs";
 import type { SfLine } from "../domain.js";
 import { ChessError } from "../errors.js";
 import { mergeAnalysisInfo, parseAnalysisInfo } from "./stockfish-info.js";
+import {
+  assertStockfishVersion,
+  readStockfishConfig,
+  resolveConfiguredStockfishFlavor,
+  type StockfishConfig,
+} from "./stockfish-config.js";
+
+export {
+  STOCKFISH_FLAVORS,
+  resolveStockfishFlavor,
+} from "./stockfish-config.js";
+export type { StockfishFlavor } from "./stockfish-config.js";
 
 const require = createRequire(import.meta.url);
-
-export const STOCKFISH_FLAVORS = [
-  "full",
-  "lite",
-  "single",
-  "lite-single",
-  "single-lite",
-  "asm",
-] as const;
-
-export type StockfishFlavor = (typeof STOCKFISH_FLAVORS)[number];
 
 export type StockfishEngine = {
   listener: ((line: string) => void) | null;
@@ -134,8 +136,6 @@ type EngineTermination = {
   start: () => void;
 };
 
-const DEFAULT_FLAVOR: StockfishFlavor = "lite-single";
-const FLAVORS = new Set<string>(STOCKFISH_FLAVORS);
 const DEFAULT_TIMEOUTS: Timeouts = {
   init: 15000,
   handshake: 15000,
@@ -144,16 +144,6 @@ const DEFAULT_TIMEOUTS: Timeouts = {
 };
 const DEFAULT_MAX_QUEUE = 32;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
-
-export function resolveStockfishFlavor(value?: string): StockfishFlavor {
-  const normalized = (value || DEFAULT_FLAVOR).toLowerCase();
-  if (!FLAVORS.has(normalized)) {
-    throw new Error(
-      `invalid STOCKFISH_FLAVOR: ${JSON.stringify(value)}; expected one of ${STOCKFISH_FLAVORS.join(", ")}`,
-    );
-  }
-  return normalized as StockfishFlavor;
-}
 
 function loadStockfish(captureGrace: number): StockfishInit {
   const entry = require.resolve("stockfish");
@@ -813,8 +803,23 @@ export class Stockfish {
     );
 
     try {
-      const selectedFlavor = resolveStockfishFlavor(
-        this.configuredFlavor ?? process.env.STOCKFISH_FLAVOR,
+      let metadata: StockfishConfig | undefined;
+      if (!this.initEngine) {
+        metadata = readStockfishConfig();
+        const installedPackageJsonPath = require.resolve("stockfish/package.json");
+        const installedPackage = JSON.parse(
+          readFileSync(installedPackageJsonPath, "utf8"),
+        ) as { version?: unknown };
+        assertStockfishVersion(
+          metadata.version,
+          installedPackage.version,
+          installedPackageJsonPath,
+        );
+      }
+      const selectedFlavor = resolveConfiguredStockfishFlavor(
+        this.configuredFlavor,
+        process.env.STOCKFISH_FLAVOR,
+        metadata,
       );
       const engine = (this.initEngine ?? loadStockfish(this.timeouts.init))(
         selectedFlavor,

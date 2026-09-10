@@ -4,6 +4,7 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { checkStockfishConfig, validateStockfishConfig } from "./stockfish-config.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MODEL_KEYS = new Set(["3m", "5m", "23m", "79m"]);
@@ -52,14 +53,37 @@ function assertSource(source) {
   fail(`unsupported config.source.type: ${source.type}`);
 }
 
-export function validateModelConfig(config) {
-  object(config, "model.config.json");
-  if (!isDeepStrictEqual(Object.keys(config).sort(), ["model", "schemaVersion", "source"])) fail("config has invalid fields");
-  if (config.schemaVersion !== 1) fail("config.schemaVersion must be 1");
-  string(config.model, "config.model");
-  if (!MODEL_KEYS.has(config.model)) fail(`unsupported config.model: ${config.model}`);
+function normalizeMaiaConfig(config) {
+  object(config, "config.maia3");
+  if (!isDeepStrictEqual(Object.keys(config).sort(), ["model", "source"])) fail("config.maia3 has invalid fields");
+  string(config.model, "config.maia3.model");
+  if (!MODEL_KEYS.has(config.model)) fail(`unsupported config.maia3.model: ${config.model}`);
+  assertSource(config.source);
+  return { schemaVersion: 1, model: config.model, source: config.source };
+}
+
+function validateNormalizedMaiaConfig(config) {
+  object(config, "manifest.config");
+  if (!isDeepStrictEqual(Object.keys(config).sort(), ["model", "schemaVersion", "source"])) fail("manifest.config has invalid fields");
+  if (config.schemaVersion !== 1) fail("manifest.config.schemaVersion must be 1");
+  string(config.model, "manifest.config.model");
+  if (!MODEL_KEYS.has(config.model)) fail(`unsupported manifest.config.model: ${config.model}`);
   assertSource(config.source);
   return config;
+}
+
+export function validateBuildConfig(config) {
+  object(config, "model.config.json");
+  if (!isDeepStrictEqual(Object.keys(config).sort(), ["maia3", "schemaVersion", "stockfish"])) fail("config has invalid fields");
+  if (config.schemaVersion !== 2) fail("config.schemaVersion must be 2");
+  return {
+    maia3: normalizeMaiaConfig(config.maia3),
+    stockfish: validateStockfishConfig(config.stockfish),
+  };
+}
+
+export function validateModelConfig(config) {
+  return validateBuildConfig(config).maia3;
 }
 
 export function validateModelManifest(manifest) {
@@ -104,11 +128,13 @@ async function digest(path) {
 }
 
 export async function checkModelBundle({ configPath = join(ROOT, "model.config.json"), modelsDir = join(ROOT, "models") } = {}) {
-  const config = validateModelConfig(JSON.parse(await readFile(configPath, "utf8")));
+  const buildConfig = validateBuildConfig(JSON.parse(await readFile(configPath, "utf8")));
+  const config = buildConfig.maia3;
+  await checkStockfishConfig({ root: resolve(dirname(configPath)), config: buildConfig.stockfish });
   const manifestPath = join(modelsDir, "manifest.json");
   const manifest = validateModelManifest(JSON.parse(await readFile(manifestPath, "utf8")));
   if (manifest.model !== config.model) fail("manifest.model does not match config.model");
-  validateModelConfig(manifest.config);
+  validateNormalizedMaiaConfig(manifest.config);
   if (!isDeepStrictEqual(manifest.config, config)) fail("manifest.config does not match model.config.json");
 
   const listed = new Set(manifest.files.keys());

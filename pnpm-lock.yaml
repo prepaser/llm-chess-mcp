@@ -24,7 +24,7 @@ importers:
         specifier: 1.27.0
         version: 1.27.0
       stockfish:
-        specifier: ^18.0.8
+        specifier: 18.0.8
         version: 18.0.8
       zod:
         specifier: 4.4.3

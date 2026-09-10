@@ -39,7 +39,11 @@ class ModelExportTests(unittest.TestCase):
             manifest = root / "models" / "manifest.json"
             manifest.write_text("existing bundle")
             torch.save({"unexpected": torch.zeros(1)}, root / "checkpoint.pt")
-            config = {"schemaVersion": 1, "model": "5m", "source": {"type": "local", "path": "checkpoint.pt"}}
+            config = {
+                "schemaVersion": 2,
+                "maia3": {"model": "5m", "source": {"type": "local", "path": "checkpoint.pt"}},
+                "stockfish": {"version": "18.0.8", "flavor": "lite-single"},
+            }
             path = root / "model.config.json"
             path.write_text(json.dumps(config))
             with patch.object(export_maia3, "ROOT", root), patch("sys.argv", ["export", "--config", str(path)]):
@@ -53,7 +57,11 @@ class ModelExportTests(unittest.TestCase):
             (root / "models").mkdir()
             manifest = root / "models" / "manifest.json"
             manifest.write_text("existing bundle")
-            config = {"schemaVersion": 1, "model": "3m", "source": {"type": "local", "path": "checkpoint.pt"}}
+            config = {
+                "schemaVersion": 2,
+                "maia3": {"model": "3m", "source": {"type": "local", "path": "checkpoint.pt"}},
+                "stockfish": {"version": "18.0.8", "flavor": "lite-single"},
+            }
             path = root / "model.config.json"
             path.write_text(json.dumps(config))
             (root / "checkpoint.pt").write_bytes(b"fixture")
