@@ -352,17 +352,70 @@ Go deeper only when you need to:
 
 ## Export Maia3 to ONNX
 
-This step needs Python + PyTorch once. It downloads the Maia3 checkpoint, verifies
-the reimplementation against the original, and exports `models/maia3-5m.onnx`.
+The publisher chooses the model in `model.config.json`. The export step needs
+Python + PyTorch once; it downloads the pinned checkpoint, verifies the
+reimplementation against the original, and writes the verified ONNX bundle to
+`models/`.
 
 ```bash
 uv venv .venv-maia3 --python 3.13
 uv pip install --python .venv-maia3/bin/python -r scripts/requirements.txt
 uv pip install --python .venv-maia3/bin/python "maia3 @ git+https://github.com/CSSLab/maia3.git@1e13597c42d4858b7cfd7cfdae01e297263364b2"
-pnpm export:maia3            # -> models/maia3-5m.onnx
+.venv-maia3/bin/python scripts/export_maia3.py --device cpu
 ```
 
-The resulting `.onnx` is committed/bundled.
+The default `--config` is the repository's `model.config.json`; pass another
+config path to export a different supported Maia3 variant. The generated
+`models/manifest.json` records the source, checkpoint digest, model filename,
+and artifact digests. Run `pnpm model:check` before packaging to verify that
+the manifest still matches the config and files.
+
+The default config selects the current pinned 5M checkpoint:
+
+```json
+{
+  "schemaVersion": 1,
+  "model": "5m",
+  "source": {
+    "type": "huggingface",
+    "repoId": "UofTCSSLab/Maia3-5M",
+    "filename": "maia3-5m.pt",
+    "revision": "b6559de2398d7140b985f28fd2c19fb5e47ddabe"
+  }
+}
+```
+
+Supported architectures are `3m`, `5m`, `23m`, and `79m`; the source checkpoint
+must match the selected architecture. Hugging Face revisions must be full
+lowercase commit SHAs. For local weights, replace `source` with
+`{"type": "local", "path": "weights/checkpoint.pt"}`. Relative checkpoint
+paths resolve against the config file, not the working directory.
+Absolute local checkpoint paths are also accepted; prefer relative paths for
+portable configs.
+`--cache-dir` optionally controls the Hugging Face download cache.
+
+Model/source selection now uses the config file instead of the old `--model`
+and `--checkpoint` flags. Export always verifies before replacing the bundle;
+there is no `--skip-verify` or custom `--out`. `pnpm export:maia3` is equivalent
+when the required Python environment is active.
+
+The workflow is: edit the root config, export, run `pnpm check`, then run
+`pnpm test:package`. Exporting with another config does not change the root
+config; make them agree before packaging. Any unlisted files left over after
+switching models must be removed or moved out of `models/` explicitly; checks
+report them and never delete them automatically.
+
+Normal `pnpm build` only compiles TypeScript. npm includes the generated
+`models/` alongside `dist/`, not the Python scripts, source checkpoint, or build
+config. Consumers do not download weights from Hugging Face at install or
+runtime. With `MAIA3_MODEL` unset, the bundled manifest chooses the default;
+an explicit supported key retains package-then-working-directory model lookup.
+
+Exporter regression tests run separately from the Python-free Node checks:
+
+```bash
+.venv-maia3/bin/python -m unittest discover -s scripts -p 'test_model_*.py'
+```
 
 ## Maia3 ONNX verification
 
@@ -370,8 +423,11 @@ The exported ONNX model is regression-tested against the upstream Maia3
 implementation across fixed positions and Elo pairs:
 
 ```bash
-.venv-maia3/bin/python scripts/verify_maia3.py --model 5m
+.venv-maia3/bin/python scripts/verify_maia3.py --config model.config.json
 ```
+
+Use `--onnx path/to/model.onnx` to verify a specific ONNX artifact. Without it,
+verification reads the model filename from the generated manifest.
 
 It checks top-1/top-k move agreement and max probability error to detect
 export/runtime regressions. The bundled `maia3-5m.onnx` passes with 100% top-1

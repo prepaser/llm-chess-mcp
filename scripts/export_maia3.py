@@ -3,16 +3,20 @@
 
 Reimplements the Chessformer model with ONNX-friendly ops (manual attention,
 manual RMSNorm, explicit GELU) while keeping state-dict keys identical to the
-original so the released checkpoint loads directly. Optionally verifies logits
+original so the released checkpoint loads directly. Verifies logits
 against the original maia3 package before exporting.
 
 Usage:
-    python scripts/export_maia3.py --model 5m --out models/maia3-5m.onnx
+    python scripts/export_maia3.py --config model.config.json
 """
 
 import argparse
 import math
-import sys
+import json
+from pathlib import Path
+import tempfile
+
+from model_config import ROOT, checkpoint_path, load_checkpoint, read_config, sha256
 
 import torch
 import torch.nn as nn
@@ -269,54 +273,20 @@ class MAIA3Model(nn.Module):
 # Checkpoint loading
 # ---------------------------------------------------------------------------
 
-def load_checkpoint(path, device):
-    ckpt = torch.load(path, map_location=device, weights_only=True)
-    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-        ckpt = ckpt["model_state_dict"]
-    return {k.replace("smolgen", "gab"): v for k, v in ckpt.items()}
-
-
-def download_checkpoint(model_key, cache_dir):
-    from huggingface_hub import hf_hub_download
-    if model_key == "3m":
-        return hf_hub_download(
-            repo_id="UofTCSSLab/Maia3-ablate-3M", filename="maia3-3m.pt",
-            revision="990dfd78e6403805dbbbb5fcfccd4b3d3e778cc1", cache_dir=cache_dir,
-        )
-    if model_key == "5m":
-        return hf_hub_download(
-            repo_id="UofTCSSLab/Maia3-5M", filename="maia3-5m.pt",
-            revision="b6559de2398d7140b985f28fd2c19fb5e47ddabe", cache_dir=cache_dir,
-        )
-    if model_key == "23m":
-        return hf_hub_download(
-            repo_id="UofTCSSLab/Maia3-23M", filename="maia3-23m.pt",
-            revision="51a0145a8178046f7de23119160b136672deeb2b", cache_dir=cache_dir,
-        )
-    return hf_hub_download(
-        repo_id="UofTCSSLab/Maia3-79M", filename="maia3-79m.pt",
-        revision="a107d6ceb7b298cb04ae1da4edffe2939858b894", cache_dir=cache_dir,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Verification against original maia3
 # ---------------------------------------------------------------------------
 
 def verify_against_original(cfg, state_dict, device):
-    try:
-        from maia3.models import MAIA3Model as OrigModel
-    except ImportError:
-        print("maia3 not installed; skipping verification", file=sys.stderr)
-        return
+    from maia3.models import MAIA3Model as OrigModel
 
     orig = OrigModel(cfg).to(device)
     renamed = {k.replace("smolgen", "gab"): v for k, v in state_dict.items()}
-    orig.load_state_dict(renamed, strict=False)
+    orig.load_state_dict(renamed, strict=True)
     orig.eval()
 
     mine = MAIA3Model(cfg).to(device)
-    mine.load_state_dict(state_dict, strict=False)
+    mine.load_state_dict(state_dict, strict=True)
     mine.eval()
 
     tokens = torch.randn(1, 64, 12 * cfg.history, device=device)
@@ -334,7 +304,7 @@ def verify_against_original(cfg, state_dict, device):
     ]:
         diff = (a - b).abs().max().item()
         print(f"  {name}: max abs diff = {diff:.6e}")
-        if diff > 1e-3:
+        if not math.isfinite(diff) or diff > 1e-3:
             raise SystemExit(f"VERIFICATION FAILED for {name}: {diff}")
 
 
@@ -354,7 +324,7 @@ def export(cfg, model, out_path, device):
         out_path,
         input_names=["tokens", "self_elo", "oppo_elo"],
         output_names=["logits_move", "logits_value", "logits_ponder"],
-        opset_version=17,
+        opset_version=18,
         do_constant_folding=True,
         dynamic_axes=None,
     )
@@ -363,33 +333,48 @@ def export(cfg, model, out_path, device):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="5m", choices=list(MODELS))
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--checkpoint", default=None, help="local .pt path (skips download)")
+    ap.add_argument("--config", default=None)
     ap.add_argument("--device", default="cpu")
-    ap.add_argument("--skip-verify", action="store_true")
+    ap.add_argument("--cache-dir", default=None)
     args = ap.parse_args()
 
-    cfg = Cfg(MODELS[args.model])
-    out = args.out or f"models/maia3-{args.model}.onnx"
-
-    ckpt_path = args.checkpoint or download_checkpoint(args.model, cache_dir=None)
+    config, config_path = read_config(args.config)
+    cfg = Cfg(MODELS[config["model"]])
+    ckpt_path = checkpoint_path(config, config_path, args.cache_dir)
     print(f"checkpoint: {ckpt_path}")
-
+    checkpoint_hash = sha256(ckpt_path)
     state_dict = load_checkpoint(ckpt_path, args.device)
     model = MAIA3Model(cfg).to(args.device)
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if missing:
-        print(f"warning: missing keys: {missing[:5]}", file=sys.stderr)
-    if unexpected:
-        print(f"warning: unexpected keys: {unexpected[:5]}", file=sys.stderr)
+    model.load_state_dict(state_dict, strict=True)
     model.eval()
 
-    if not args.skip_verify:
-        print("verifying against original maia3...")
-        verify_against_original(cfg, state_dict, args.device)
+    print("verifying against original maia3...")
+    verify_against_original(cfg, state_dict, args.device)
 
-    export(cfg, model, out, args.device)
+    from model_bundle import bundle_files, install_bundle
+    from verify_maia3 import verify_model
+
+    destination = ROOT / "models"
+    destination.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".maia-export-", dir=ROOT) as temporary:
+        staging = Path(temporary)
+        out = staging / f"maia3-{config['model']}.onnx"
+        export(cfg, model, out, args.device)
+        if not verify_model(config, ckpt_path, out, device=args.device):
+            raise RuntimeError("ONNX verification failed; existing bundle preserved")
+        if sha256(ckpt_path) != checkpoint_hash:
+            raise RuntimeError("checkpoint changed during export")
+        manifest = {
+            "schemaVersion": 1,
+            "model": config["model"],
+            "config": config,
+            "checkpointSha256": checkpoint_hash,
+            "modelFile": out.name,
+            "files": bundle_files(out),
+        }
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        install_bundle(staging, destination, [f["path"] for f in manifest["files"]])
+
 
 
 if __name__ == "__main__":

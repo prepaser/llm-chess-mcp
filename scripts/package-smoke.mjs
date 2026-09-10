@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { childLifecycle, cleanupChild } from "./child-lifecycle.mjs";
+import { checkModelBundle } from "./model-check.mjs";
 
 const execFile = promisify(execFileCallback);
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -100,6 +101,7 @@ async function call(client, name, args) {
 }
 
 async function pack(workspace, cache) {
+  const bundle = await checkModelBundle();
   const npm = await npmInvocation([
     "--cache",
     cache,
@@ -119,16 +121,21 @@ async function pack(workspace, cache) {
   assert.equal(typeof result?.filename, "string", "npm pack did not report a tarball");
 
   const files = new Set(result.files.map((file) => file.path));
+  const expectedModelFiles = [
+    "models/manifest.json",
+    ...bundle.files.map((path) => `models/${path}`),
+  ];
   for (const expected of [
     "dist/index.js",
     "dist/index.d.ts",
-    "models/maia3-5m.onnx",
-    "models/maia3-5m.onnx.data",
     "README.md",
     "LICENSE",
     ".env.example",
     "docs/architecture.md",
   ]) {
+    assert.ok(files.has(expected), `tarball is missing ${expected}`);
+  }
+  for (const expected of new Set(expectedModelFiles)) {
     assert.ok(files.has(expected), `tarball is missing ${expected}`);
   }
   for (const forbidden of [
@@ -141,6 +148,7 @@ async function pack(workspace, cache) {
     "scripts",
     "src",
     "tests",
+    "model.config.json",
   ]) {
     assert.ok(
       ![...files].some((file) => file === forbidden || file.startsWith(`${forbidden}/`)),
@@ -226,7 +234,9 @@ function serverEnv() {
     Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
   env[pathKey] = [dirname(process.execPath), env[pathKey]].filter(Boolean).join(delimiter);
   env.LICHESS_TOKEN = "";
-  env.MAIA3_MODEL = "5m";
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === "maia3_model") delete env[key];
+  }
   env.STOCKFISH_FLAVOR = "lite-single";
   return env;
 }

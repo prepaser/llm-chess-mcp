@@ -4,3 +4,4 @@ python-chess
 huggingface-hub
 onnx
 onnxscript
+onnxruntime

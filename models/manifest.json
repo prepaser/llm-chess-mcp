@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "model": "5m",
+  "config": {
+    "schemaVersion": 1,
+    "model": "5m",
+    "source": {
+      "type": "huggingface",
+      "repoId": "UofTCSSLab/Maia3-5M",
+      "filename": "maia3-5m.pt",
+      "revision": "b6559de2398d7140b985f28fd2c19fb5e47ddabe"
+    }
+  },
+  "checkpointSha256": "ba14208b2992d85502f5fb501934abf6aaaeb355e9f3fdf90e326911f562524f",
+  "modelFile": "maia3-5m.onnx",
+  "files": [
+    {
+      "path": "maia3-5m.onnx",
+      "sha256": "e68e22eb346ee097769e88aac7b5c7a959b75b6155266cb0ac90c0b34616744b"
+    },
+    {
+      "path": "maia3-5m.onnx.data",
+      "sha256": "b8557e99ecc2bf56297928399a1c345a6c8aa2d4efaef657c9e4333f7d6f53ff"
+    }
+  ]
+}

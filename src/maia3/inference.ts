@@ -17,12 +17,13 @@ import type {
   MaiaWorkerRequest,
   MaiaWorkerResponse,
 } from "./inference-worker.js";
+import { resolveModelPath } from "./model.js";
 
-const MODEL_KEYS = new Set(["3m", "5m", "23m", "79m"]);
 const DEFAULT_MAX_CONCURRENCY = 2;
 const DEFAULT_MAX_QUEUE = 32;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const here = dirname(fileURLToPath(import.meta.url));
 
 type AdmissionWaiter = {
   onAbort: () => void;
@@ -500,23 +501,8 @@ export class MaiaWorkerPool {
   }
 }
 
-const here = dirname(fileURLToPath(import.meta.url));
-
 function modelPath(): string {
-  const modelKey = process.env.MAIA3_MODEL || "5m";
-  if (!MODEL_KEYS.has(modelKey)) {
-    throw new Error(`unsupported Maia3 model: ${modelKey}`);
-  }
-  const candidates = [
-    resolve(here, "../../models", `maia3-${modelKey}.onnx`),
-    resolve(process.cwd(), "models", `maia3-${modelKey}.onnx`),
-  ];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-  throw new Error(
-    `maia3 model not found (models/maia3-${modelKey}.onnx). Run \`pnpm export:maia3\` first.`,
-  );
+  return resolveModelPath();
 }
 
 function workerUrl(): URL {
