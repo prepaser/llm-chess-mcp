@@ -109,7 +109,7 @@ async function candidatePayload(services: CandidateServices, input: CandidateToo
     candidateExplorerFilters(input), signal);
   signal.throwIfAborted();
   validateCandidates(computed, request.multipv, elo, chess.turn(), legal);
-  return { legal, payload: { ...base, ...computed, candidates: consensusCandidates(computed.candidates, computed.enginesUsed) } };
+  return { legal, payload: { ...computed, ...base, candidates: consensusCandidates(computed.candidates, computed.enginesUsed) } };
 }
 
 export function registerCandidateTools(server: McpServer, services: CandidateServices): void {

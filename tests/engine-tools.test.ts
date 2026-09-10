@@ -4,6 +4,8 @@ import type { ServerContext } from "@modelcontextprotocol/server";
 import { GameStore } from "../src/games.js";
 import type { EngineAnalysis } from "../src/engines/types.js";
 import { registerAnalysisTools } from "../src/tools/analysis.js";
+import { registerCandidateTools } from "../src/tools/candidates.js";
+import { candidateSetFromEngineAnalysis } from "../src/engine-consensus.js";
 import type { AppServices } from "../src/services.js";
 import { MoveEvaluateOutputSchema, PositionAnalyzeOutputSchema } from "../src/tool-schemas.js";
 
@@ -84,4 +86,35 @@ test("move_evaluate reports independent engine evaluations", async () => {
   assert.equal(output.results[0]?.result, "ongoing");
   assert.equal(output.results[0]?.classificationBasis, "engine_cp_heuristic");
   assert.equal(calls, 2);
+});
+
+test("candidate tools keep server-owned snapshot fields despite injected extra properties", async () => {
+  const games = new GameStore({ createId: () => "candidate-snapshot" });
+  const gameId = games.createGame();
+  const snapshot = games.getSnapshot(gameId);
+  const handlers = new Map<string, (args: Record<string, unknown>, context: ServerContext) => Promise<unknown>>();
+  const server = { registerTool(name: string, _config: unknown, handler: (args: Record<string, unknown>, context: ServerContext) => Promise<unknown>) { handlers.set(name, handler); } } as never;
+  const injected = services(games, undefined);
+  injected.computeEngineCandidates = async (chess, elo, request) => ({
+    ...candidateSetFromEngineAnalysis(chess, elo, analysis(), [],
+      { status: "disabled", totalGames: null, moves: [] }, request.multipv),
+    game_id: "wrong-game", revision: 999, fen: "wrong-fen", turn: "b",
+    elo: 999, analysis_level: "fast",
+  });
+  registerCandidateTools(server, injected);
+  for (const name of ["move_candidates", "move_candidates_by_intent"]) {
+    const response = await handlers.get(name)!({
+      game_id: gameId, engine_mode: "both", sf_multipv: 1,
+      ...(name === "move_candidates_by_intent" ? { intent: "best" } : {}),
+    }, context()) as { isError?: boolean; structuredContent: Record<string, unknown> };
+    assert.notEqual(response.isError, true);
+    const result = response.structuredContent;
+    assert.equal(result.game_id, gameId);
+    assert.equal(result.revision, snapshot.revision);
+    assert.equal(result.fen, snapshot.chess.fen());
+    assert.equal(result.turn, snapshot.chess.turn());
+    assert.equal(result.elo, 1500);
+    assert.equal(result.analysis_level, "normal");
+    assert.equal((result.candidates as unknown[]).length, 1);
+  }
 });

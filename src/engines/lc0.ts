@@ -194,6 +194,8 @@ type Session = {
   process: Lc0Process;
   listeners: Set<(line: string) => void>;
   exit: Promise<void>;
+  drainDiagnostics(): Promise<void>;
+  decorate(error: Error): Error;
   resetOutput(): void;
   error(): Error | null;
   supportsWdl: boolean;
@@ -300,6 +302,23 @@ export class Lc0 {
     let processError: Error | null = null;
     let outputBytes = 0;
     let stderrTail = "";
+    let resolveDiagnostics!: () => void;
+    let diagnosticsSettled = false;
+    let diagnosticsTimer: NodeJS.Timeout | null = null;
+    const diagnostics = new Promise<void>((resolvePromise) => { resolveDiagnostics = resolvePromise; });
+    const finishDiagnostics = () => {
+      if (diagnosticsSettled) return;
+      diagnosticsSettled = true;
+      if (diagnosticsTimer) this.options.clearTimeout(diagnosticsTimer);
+      diagnosticsTimer = null;
+      resolveDiagnostics();
+    };
+    const drainDiagnostics = () => {
+      if (!diagnosticsSettled && !diagnosticsTimer) {
+        diagnosticsTimer = this.options.setTimeout(finishDiagnostics, this.options.timeouts.stopGrace);
+      }
+      return diagnostics;
+    };
     const decoratedErrors = new WeakSet<Error>();
     const withStderr = (error: Error): Error => {
       const diagnostic = stderrTail.trim();
@@ -315,7 +334,7 @@ export class Lc0 {
     };
     const failProcess = (error: Error) => {
       if (processError) return;
-      processError = withStderr(error);
+      processError = error;
       if (this.session?.process === child) this.session = null;
       for (const listener of [...listeners]) listener("__lc0_process_exit__");
       void this.terminateProcess(child, exit).catch(() => {});
@@ -343,12 +362,16 @@ export class Lc0 {
       this.exited.add(child);
       this.processes.delete(child);
       resolveExit();
-      if (!processError) processError = withStderr(new Error(`Lc0 exited before completion (${code ?? signal ?? "unknown"})`));
+      if (!processError) processError = new Error(`Lc0 exited before completion (${code ?? signal ?? "unknown"})`);
       if (this.session?.process === child) this.session = null;
       for (const listener of [...listeners]) listener("__lc0_process_exit__");
     };
+    const onClose = (code: number | null, signal: string | null) => {
+      if (!this.exited.has(child)) onExit(code, signal);
+      finishDiagnostics();
+    };
     child.once("exit", onExit);
-    child.once("close", onExit);
+    child.once("close", onClose);
     child.stdin.once?.("error", failProcess);
     const command = (value: string): void => {
       if (processError) throw processError;
@@ -366,13 +389,18 @@ export class Lc0 {
       const handshake = await this.waitForHandshake(command, listeners, manifest.engineVersion, Math.min(this.options.timeouts.init, this.options.timeouts.handshake), () => processError);
       signal?.throwIfAborted();
       if (this.quitting) throw new Error("lc0 shutting down");
-      const session: Session = { process: child, listeners, exit, resetOutput: () => { outputBytes = 0; }, error: () => processError, meta: { version: handshake.version, weightsSha256: manifest.weights.sha256, backend: platform.backend }, supportsWdl: handshake.supportsWdl, supportsScoreType: handshake.supportsScoreType };
+      const session: Session = { process: child, listeners, exit, drainDiagnostics, decorate: withStderr, resetOutput: () => { outputBytes = 0; }, error: () => processError, meta: { version: handshake.version, weightsSha256: manifest.weights.sha256, backend: platform.backend }, supportsWdl: handshake.supportsWdl, supportsScoreType: handshake.supportsScoreType };
       this.pendingProcess = null;
       this.session = session;
       return session;
     } catch (error) {
       this.pendingProcess = null;
-      await this.terminateProcess(child, exit);
+      try {
+        await this.terminateProcess(child, exit);
+      } catch (terminationFailure) {
+        throw new Error(errorOf(terminationFailure).message, { cause: error });
+      }
+      await drainDiagnostics();
       throw withStderr(errorOf(error));
     } finally {
       signal?.removeEventListener("abort", abortInit);
@@ -474,7 +502,12 @@ export class Lc0 {
         signal?.removeEventListener("abort", onAbort);
         const failure = error ?? (this.quitting ? new Error("lc0 quit") :
           bufferLines.size === 0 ? new Error("Lc0 returned no analysis lines") : null);
-        if (failure) void this.invalidate(session).then(() => reject(failure), reject);
+        if (failure) {
+          void this.invalidate(session).then(async () => {
+            await session.drainDiagnostics();
+            reject(session.decorate(failure));
+          }, reject);
+        }
         else resolvePromise([...bufferLines.values()].sort((a, b) => a.multipv - b.multipv));
       };
       const listener = (line: string) => {

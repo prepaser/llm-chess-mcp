@@ -30,6 +30,9 @@ type FakeOptions = {
   epipe?: boolean;
   oversizedOutput?: boolean;
   stderr?: string;
+  lateStderr?: string;
+  lateStderrDelayMs?: number;
+  closeAfterExit?: boolean;
   bestmoveOnQuit?: boolean;
   exitOnKill?: "any" | "sigkill" | "never";
 };
@@ -98,6 +101,14 @@ class FakeLc0Process extends EventEmitter implements Lc0Process {
     this.exited = true;
     this.emit("exit", code, signal);
     this.exitEvent.resolve();
+    if (this.options.lateStderr || this.options.closeAfterExit !== false) {
+      const close = () => {
+        if (this.options.lateStderr) this.stderr.emit("data", this.options.lateStderr);
+        if (this.options.closeAfterExit !== false) this.emit("close", code, signal);
+      };
+      if (this.options.lateStderrDelayMs) setTimeout(close, this.options.lateStderrDelayMs);
+      else queueMicrotask(close);
+    }
   }
 }
 
@@ -185,6 +196,7 @@ test("quit during handshake waits for exit and rejects queued work", { timeout: 
   const active = engine.analyze(FEN, REQUEST);
   await spawned.promise;
   const queued = engine.analyze(FEN, REQUEST);
+  const queuedFailure = assert.rejects(queued, /lc0 quit/);
   const quitting = engine.quit();
   let quitSettled = false;
   void quitting.then(() => { quitSettled = true; });
@@ -192,7 +204,7 @@ test("quit during handshake waits for exit and rejects queued work", { timeout: 
   assert.equal(quitSettled, false);
   child.emitExit(0, null);
   await assert.rejects(active, /Lc0 process exited|exited before completion|lc0 quit/);
-  await assert.rejects(queued, /lc0 quit/);
+  await queuedFailure;
   await quitting;
 });
 
@@ -205,6 +217,7 @@ test("quit during analysis waits for exit and rejects queued work", { timeout: 5
   await spawned.promise;
   await child.goStarted.promise;
   const queued = engine.analyze(FEN, REQUEST);
+  const queuedFailure = assert.rejects(queued, /lc0 quit/);
   const quitting = engine.quit();
   let quitSettled = false;
   void quitting.then(() => { quitSettled = true; });
@@ -212,7 +225,7 @@ test("quit during analysis waits for exit and rejects queued work", { timeout: 5
   assert.equal(quitSettled, false);
   child.emitExit(0, null);
   await assert.rejects(active, /Lc0 process exited|lc0 quit/);
-  await assert.rejects(queued, /lc0 quit/);
+  await queuedFailure;
   await quitting;
 });
 
@@ -324,6 +337,71 @@ test("analysis process failures include the captured stderr diagnostic", { timeo
     return true;
   });
   await engine.quit();
+});
+
+test("startup failures include stderr delivered after exit", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  let child!: FakeLc0Process;
+  const spawned = deferred<FakeLc0Process>();
+  const engine = new Lc0({
+    manifest,
+    manifestPath: join(root, "manifest.json"),
+    spawn: () => { child = new FakeLc0Process({ handshake: "hang", lateStderr: "late startup diagnostic", closeAfterExit: true }); spawned.resolve(child); return child; },
+    timeouts: { handshake: 50, stopGrace: 20 },
+  });
+  const analysis = engine.analyze(FEN, REQUEST);
+  await spawned.promise;
+  child.emitExit(1, null);
+  await assert.rejects(analysis, /stderr: late startup diagnostic/);
+  await engine.quit();
+});
+
+test("active failures include stderr delivered after exit", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  let child!: FakeLc0Process;
+  const spawned = deferred<FakeLc0Process>();
+  const engine = new Lc0({
+    manifest,
+    manifestPath: join(root, "manifest.json"),
+    spawn: () => { child = new FakeLc0Process({ analysis: "hang", lateStderr: "late analysis diagnostic", closeAfterExit: true }); spawned.resolve(child); return child; },
+    timeouts: { handshake: 50, stopGrace: 20 },
+  });
+  const analysis = engine.analyze(FEN, REQUEST);
+  await spawned.promise;
+  await child.goStarted.promise;
+  child.emitExit(1, null);
+  await assert.rejects(analysis, /stderr: late analysis diagnostic/);
+  await engine.quit();
+});
+
+test("diagnostic drain starts after forced termination", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  const child = new FakeLc0Process({ handshake: "hang", exitOnKill: "sigkill",
+    lateStderr: "late forced-exit diagnostic", lateStderrDelayMs: 5 });
+  const engine = new Lc0({ manifest, manifestPath: join(root, "manifest.json"),
+    spawn: () => child, timeouts: { handshake: 10, stopGrace: 20 } });
+  t.after(() => engine.quit());
+  await assert.rejects(engine.analyze(FEN, REQUEST), /handshake timeout.*stderr: late forced-exit diagnostic/);
+  assert.ok(child.kills.includes("SIGKILL"));
+});
+
+test("missing close bounds diagnostic drain and permits the next analysis", { timeout: 500 }, async (t) => {
+  const { root, manifest } = await fixture(t);
+  const failed = new FakeLc0Process({ analysis: "hang", closeAfterExit: false,
+    lateStderr: "diagnostic without close", lateStderrDelayMs: 5 });
+  const next = new FakeLc0Process({ exitOnKill: "any" });
+  let spawns = 0;
+  const engine = new Lc0({ manifest, manifestPath: join(root, "manifest.json"),
+    spawn: () => spawns++ === 0 ? failed : next, timeouts: { handshake: 100, stopGrace: 20 } });
+  t.after(() => engine.quit());
+  const analysis = engine.analyze(FEN, REQUEST);
+  const rejected = assert.rejects(analysis, /stderr: diagnostic without close/);
+  await failed.goStarted.promise;
+  const queued = engine.analyze(FEN, REQUEST);
+  failed.emitExit(1, null);
+  await rejected;
+  assert.equal((await queued)[0]?.scoreCp, 31);
+  assert.equal(spawns, 2);
 });
 
 test("terminal positions return no lines without starting Lc0", { timeout: 500 }, async (t) => {
