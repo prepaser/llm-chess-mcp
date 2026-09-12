@@ -50,14 +50,12 @@ test("pre-aborted HTTP startup has no side effects", async () => {
 });
 
 for (const readonlyStorage of [false, true]) test(`aborting ACME HTTP startup cleans up or reports lock failure (readonly=${readonlyStorage})`, {
-  timeout: 10_000,
+  timeout: 30_000,
   skip: readonlyStorage && (process.platform === "win32" || process.getuid?.() === 0),
 }, async (t) => {
   const storageDir = await mkdtemp(join(tmpdir(), "llm-chess-mcp-startup-abort-"));
-  t.after(async () => {
-    if (readonlyStorage) await chmod(storageDir, 0o700);
-    await rm(storageDir, { recursive: true, force: true });
-  });
+  const controller = new AbortController();
+  let startup: ReturnType<typeof serveHttp> | undefined;
 
   let received!: () => void;
   let disconnected!: () => void;
@@ -67,14 +65,23 @@ for (const readonlyStorage of [false, true]) test(`aborting ACME HTTP startup cl
     request.socket.once("close", disconnected);
     received();
   });
+  t.after(async () => {
+    controller.abort();
+    directory.closeAllConnections();
+    try {
+      await startup?.then((server) => server.close(), () => {});
+    } finally {
+      await close(directory);
+      if (readonlyStorage) await chmod(storageDir, 0o700);
+      await rm(storageDir, { recursive: true, force: true });
+    }
+  }, { timeout: 10_000 });
   const directoryPort = await listen(directory);
-  t.after(() => close(directory));
 
   const challengePortProbe = createServer();
   const challengePort = await listen(challengePortProbe);
   await close(challengePortProbe);
-  const controller = new AbortController();
-  const startup = serveHttp({
+  startup = serveHttp({
     signal: controller.signal,
     host: "127.0.0.1",
     port: 0,
@@ -91,23 +98,29 @@ for (const readonlyStorage of [false, true]) test(`aborting ACME HTTP startup cl
     },
   });
 
-  await requestReceived;
+  await Promise.race([
+    requestReceived,
+    startup.then(() => { throw new Error("ACME startup completed without a pending directory request"); }),
+  ]);
   await stat(join(storageDir, "issue.lock"));
   if (readonlyStorage) await chmod(storageDir, 0o500);
-  controller.abort();
-  if (readonlyStorage) {
-    await assert.rejects(startup, (error: unknown) => {
-      assert.ok(error instanceof AggregateError);
-      assert.equal((error.errors[1] as NodeJS.ErrnoException).code, "EACCES");
-      return true;
-    });
-  } else {
-    await assert.rejects(startup, /cancelled|closed|aborted/i);
-  }
-  await requestDisconnected;
-  if (readonlyStorage) await stat(join(storageDir, "issue.lock"));
-  else await assert.rejects(stat(join(storageDir, "issue.lock")), { code: "ENOENT" });
-  await canBind(challengePort);
+  const pendingStartup = startup;
+  await t.test("cancels and releases resources within five seconds", { timeout: 5_000 }, async () => {
+    controller.abort();
+    if (readonlyStorage) {
+      await assert.rejects(pendingStartup, (error: unknown) => {
+        assert.ok(error instanceof AggregateError);
+        assert.equal((error.errors[1] as NodeJS.ErrnoException).code, "EACCES");
+        return true;
+      });
+    } else {
+      await assert.rejects(pendingStartup, /cancelled|closed|aborted/i);
+    }
+    await requestDisconnected;
+    if (readonlyStorage) await stat(join(storageDir, "issue.lock"));
+    else await assert.rejects(stat(join(storageDir, "issue.lock")), { code: "ENOENT" });
+    await canBind(challengePort);
+  });
 });
 
 test("the startup signal does not stop a running HTTP handle", async (t) => {
