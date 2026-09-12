@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -93,6 +93,33 @@ test("rejects malformed source metadata", async () => {
   badRevision.config.source = { ...source, revision: "not-a-commit" };
   const revisionFixture = await fixture({ manifest: badRevision });
   assert.throws(() => readManifest(revisionFixture.models), /invalid Hugging Face source/);
+});
+
+test("build and runtime preserve source filename whitespace consistently", async () => {
+  const { validateModelConfig } = await import(new URL("../scripts/model-check.mjs", import.meta.url).href);
+  const config = JSON.parse(await readFile(new URL("../model.config.json", import.meta.url), "utf8"));
+  for (const path of [" checkpoint.pt", "checkpoint.pt ", " checkpoint.pt ", "check point.pt"]) {
+    for (const metadata of [{ type: "local", path }, { ...source, filename: path }]) {
+      const value = { ...manifest(), config: { schemaVersion: 1, model: "5m", source: metadata } };
+      assert.doesNotThrow(() => validateModelConfig({ ...config, maia3: { model: "5m", source: metadata } }));
+      const { root, models } = await fixture({ manifest: value });
+      assert.deepEqual(readManifest(models).config.source, metadata);
+      assert.equal(resolveModelPath({ packageModelsDir: models, cwd: root, modelKey: "" }), join(models, "maia3-5m.onnx"));
+    }
+  }
+});
+
+test("build and runtime reject empty or NUL-containing source paths", async () => {
+  const { validateModelConfig } = await import(new URL("../scripts/model-check.mjs", import.meta.url).href);
+  const config = JSON.parse(await readFile(new URL("../model.config.json", import.meta.url), "utf8"));
+  for (const path of ["", " \t ", "checkpoint\0.pt"]) {
+    for (const metadata of [{ type: "local", path }, { ...source, filename: path }]) {
+      const value = { ...manifest(), config: { schemaVersion: 1, model: "5m", source: metadata } };
+      assert.throws(() => validateModelConfig({ ...config, maia3: { model: "5m", source: metadata } }));
+      const { models } = await fixture({ manifest: value });
+      assert.throws(() => readManifest(models), /invalid Maia3 model manifest/);
+    }
+  }
 });
 
 test("does not use a cwd manifest as the package default", async () => {

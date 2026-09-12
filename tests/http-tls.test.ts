@@ -9,7 +9,7 @@ import { connect } from "node:net";
 import { connect as connectTls } from "node:tls";
 import { X509Certificate } from "node:crypto";
 import test from "node:test";
-import { prepareHttpTls } from "../src/http-tls.js";
+import { prepareHttpTls, type HttpTlsOptions } from "../src/http-tls.js";
 import { installAcmeAbortPolling, type AcmeClient } from "../src/http-tls-acme.js";
 import { serveHttp } from "../src/http.js";
 import { resolveHttpConfig } from "../src/http-config.js";
@@ -69,6 +69,21 @@ test("disabled TLS does not provide HTTPS server options", async () => {
   assert.equal(tls.getServerOptions(), undefined);
   assert.equal(tls.isAvailable(), true);
   await tls.close();
+});
+
+test("invalid TLS modes fail before controller or HTTP startup", async () => {
+  for (const mode of ["bogus", "ACME", "", undefined, null, false, 0]) {
+    const tls = { mode } as unknown as HttpTlsOptions;
+    assert.throws(() => resolveHttpConfig({ tls }), /TLS mode/);
+    await assert.rejects(prepareHttpTls(tls), /TLS mode/);
+    await assert.rejects(async () => {
+      const server = await serveHttp({ port: 0, tls });
+      await server.close();
+    }, /TLS mode/);
+  }
+  for (const value of [null, undefined, false, "off", []]) {
+    await assert.rejects(prepareHttpTls(value as unknown as HttpTlsOptions), /invalid TLS configuration/);
+  }
 });
 
 test("manual TLS fails before opening a server for missing files", async () => {

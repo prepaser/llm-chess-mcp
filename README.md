@@ -610,6 +610,9 @@ portable configs.
 
 Model/source selection uses the config file. Export always verifies before
 replacing the bundle; there is no `--skip-verify` or custom `--out`.
+If installation fails, export attempts to restore the previous bundle. Files
+that cannot be restored remain in a `.maia-backup-*` directory beside `models/`;
+the error reports their paths for manual recovery.
 `pnpm export:maia3` is equivalent
 when the required Python environment is active.
 

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path, PurePosixPath
+import shutil
 import tempfile
 
 from model_config import sha256
@@ -42,6 +43,25 @@ def bundle_files(model_path):
             for name in sorted(names)]
 
 
+class BundleInstallError(OSError):
+    def __init__(self, message, errors, backup_paths=None):
+        super().__init__(message)
+        self.errors = tuple(errors)
+        self.backup_paths = dict(backup_paths or {})
+
+
+def _backup_error(primary, restore_errors, backup_paths):
+    details = [f"bundle installation failed: {primary}"]
+    if restore_errors:
+        details.append("rollback errors: " + "; ".join(
+            f"{name}: {error}" for name, error in restore_errors))
+    if backup_paths:
+        details.append("recoverable backups: " + "; ".join(
+            f"{name}={path}" for name, path in backup_paths.items()))
+    errors = [primary, *(error for _, error in restore_errors)]
+    return BundleInstallError("; ".join(details), errors, backup_paths)
+
+
 def install_bundle(staging, destination, names):
     names = [*names, "manifest.json"]
     if len(names) != len(set(names)):
@@ -50,21 +70,47 @@ def install_bundle(staging, destination, names):
     for source, target in paths:
         if not source.is_file() or (target.exists() and not target.is_file()):
             raise ValueError(f"invalid bundle file: {target}")
-    with tempfile.TemporaryDirectory(prefix=".maia-backup-", dir=staging) as backup:
-        replaced = []
-        try:
-            for index, (source, target) in enumerate(paths):
-                target.parent.mkdir(parents=True, exist_ok=True)
-                previous = Path(backup) / str(index)
-                existed = target.exists()
-                if existed:
-                    os.replace(target, previous)
-                replaced.append((target, previous, existed))
-                os.replace(source, target)
-        except BaseException:
-            for target, previous, existed in reversed(replaced):
-                if existed:
+
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    backup = Path(tempfile.mkdtemp(prefix=".maia-backup-", dir=destination.parent)).resolve()
+    replaced = []
+    try:
+        for source, target in paths:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            name = str(target.relative_to(destination))
+            previous = backup / name
+            existed = target.exists()
+            if existed:
+                previous.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(target, previous)
+            replaced.append((target, previous, existed, name))
+            os.replace(source, target)
+    except BaseException as primary:
+        restore_errors = []
+        recoverable = {}
+        for target, previous, existed, name in reversed(replaced):
+            if existed:
+                try:
                     os.replace(previous, target)
-                else:
+                except BaseException as error:
+                    restore_errors.append((name, error))
+                    recoverable[name] = previous
+            else:
+                try:
                     target.unlink(missing_ok=True)
-            raise
+                except BaseException as error:
+                    restore_errors.append((name, error))
+        if restore_errors:
+            raise _backup_error(primary, restore_errors, recoverable) from primary
+        try:
+            shutil.rmtree(backup)
+        except BaseException as cleanup_error:
+            raise _backup_error(primary, [("backup", cleanup_error)], {"backup": backup}) from primary
+        raise
+    try:
+        shutil.rmtree(backup)
+    except BaseException as cleanup_error:
+        raise BundleInstallError(
+            f"bundle installed but backup cleanup failed: {cleanup_error}; "
+            f"recoverable backup: {backup}", [cleanup_error], {"backup": backup}) from cleanup_error

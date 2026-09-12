@@ -27,7 +27,14 @@ class ModelConfigTests(unittest.TestCase):
             self.assertEqual(actual, {"schemaVersion": 1, **root_config["maia3"]})
             self.assertEqual(checkpoint_path(actual, config_path), checkpoint)
             self.assertEqual(len(sha256(checkpoint)), 64)
-            checkpoint.unlink()
+            spaced = root / " weights.pt "
+            checkpoint.rename(spaced)
+            root_config["maia3"]["source"]["path"] = spaced.name
+            path.write_text(json.dumps(root_config))
+            actual, config_path = read_config(path)
+            self.assertEqual(actual["source"]["path"], spaced.name)
+            self.assertEqual(checkpoint_path(actual, config_path), spaced)
+            spaced.unlink()
             with self.assertRaisesRegex(ValueError, "checkpoint not found"):
                 checkpoint_path(actual, config_path)
 

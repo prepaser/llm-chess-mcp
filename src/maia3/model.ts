@@ -59,15 +59,19 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.trim() === value;
 }
 
+function sourceString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && !value.includes("\0");
+}
+
 function parseSource(value: unknown): Maia3ModelSource {
   if (!isRecord(value) || typeof value.type !== "string") {
     throw invalidManifest("invalid model source");
   }
   if (value.type === "huggingface") {
     if (
-      !nonEmptyString(value.repoId) ||
-      !nonEmptyString(value.filename) ||
-      !nonEmptyString(value.revision) ||
+      !sourceString(value.repoId) ||
+      !sourceString(value.filename) ||
+      !sourceString(value.revision) ||
       !/^[0-9a-f]{40}$/i.test(value.revision)
     ) {
       throw invalidManifest("invalid Hugging Face source");
@@ -79,7 +83,7 @@ function parseSource(value: unknown): Maia3ModelSource {
       revision: value.revision,
     };
   }
-  if (value.type === "local" && nonEmptyString(value.path)) {
+  if (value.type === "local" && sourceString(value.path)) {
     return { type: "local", path: value.path };
   }
   throw invalidManifest("unsupported model source");

@@ -75,6 +75,9 @@ function assertText(name: string, value: string): void {
 }
 
 export function snapshotHttpTlsOptions(options: HttpTlsOptions): HttpTlsOptions {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new Error("invalid TLS configuration");
+  }
   if (options.mode === "manual") {
     assertText("TLS certificate path", options.certPath);
     assertText("TLS private key path", options.keyPath);
@@ -94,7 +97,8 @@ export function snapshotHttpTlsOptions(options: HttpTlsOptions): HttpTlsOptions 
       ...(options.operationTimeoutMs === undefined ? {} : { operationTimeoutMs: options.operationTimeoutMs }),
     };
   }
-  return { mode: options.mode };
+  if (options.mode === "off") return { mode: "off" };
+  throw new Error("TLS mode must be off, manual, or acme");
 }
 
 function validateAcmeDomain(domain: string): void {
@@ -184,7 +188,7 @@ class TlsController implements HttpTlsController {
 
   constructor(options: HttpTlsOptions, dependencies: HttpTlsDependencies = {}) {
     this.options = snapshotHttpTlsOptions(options);
-    this.mode = options.mode;
+    this.mode = this.options.mode;
     this.now = dependencies.now ?? Date.now;
     this.loadAcme = dependencies.loadAcme ?? defaultLoadAcme;
     this.createChallengeServer = dependencies.createChallengeServer ?? ((handler) => createServer(handler));
