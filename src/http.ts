@@ -63,9 +63,9 @@ export async function serveHttp(
   signal?.throwIfAborted();
   const config = resolveHttpConfig(options);
   const appServices = services ?? defaultAppServices;
-  const auth = await loadBearerAuthenticator(options.auth);
   const security = new HttpSecurity(options.rateLimits);
   const proxies = new TrustedProxySet(options.trustedProxies);
+  const auth = await loadBearerAuthenticator(options.auth);
   const runtime = new HttpRuntime(
     appServices,
     config.path,

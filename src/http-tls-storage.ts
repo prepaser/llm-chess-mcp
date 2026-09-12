@@ -1,11 +1,18 @@
 import { randomBytes } from "node:crypto";
 import { open, rename, unlink, chmod, lstat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { orderedTeardown } from "./lifecycle.js";
+import { failAfterCleanup, orderedTeardown } from "./lifecycle.js";
 
 function ignoreMissing(error: unknown): undefined {
   if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
   return undefined;
+}
+
+async function unlinkOwnedLock(path: string, identity: { dev: number; ino: number }): Promise<void> {
+  const current = await lstat(path).catch(ignoreMissing);
+  if (current && current.dev === identity.dev && current.ino === identity.ino) {
+    await unlink(path).catch(ignoreMissing);
+  }
 }
 
 export async function writePrivateFile(path: string, data: string): Promise<void> {
@@ -46,9 +53,10 @@ export class AcmeStorageLock {
         this.identity = { dev: stat.dev, ino: stat.ino };
         this.directory = directory;
       } catch (error) {
-        await handle.close().catch(() => undefined);
-        await unlink(path).catch(() => undefined);
-        throw error;
+        return failAfterCleanup(error, () => orderedTeardown([
+          async () => unlinkOwnedLock(path, await handle.stat()),
+          () => handle.close(),
+        ], "ACME lock cleanup failed"), "ACME lock initialization and cleanup failed");
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === "EEXIST") {
@@ -66,10 +74,7 @@ export class AcmeStorageLock {
         this.directory = undefined;
         if (identity && directory) {
           const path = `${directory}/issue.lock`;
-          const current = await lstat(path).catch(ignoreMissing);
-          if (current && current.dev === identity.dev && current.ino === identity.ino) {
-            await unlink(path).catch(ignoreMissing);
-          }
+          await unlinkOwnedLock(path, identity);
         }
       },
       async () => {

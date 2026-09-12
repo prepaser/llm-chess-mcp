@@ -74,6 +74,29 @@ function assertText(name: string, value: string): void {
   }
 }
 
+export function snapshotHttpTlsOptions(options: HttpTlsOptions): HttpTlsOptions {
+  if (options.mode === "manual") {
+    assertText("TLS certificate path", options.certPath);
+    assertText("TLS private key path", options.keyPath);
+    return { mode: "manual", certPath: resolve(options.certPath), keyPath: resolve(options.keyPath) };
+  }
+  if (options.mode === "acme") {
+    assertText("ACME storage directory", options.storageDir);
+    return {
+      mode: "acme",
+      domain: options.domain,
+      email: options.email,
+      storageDir: resolve(options.storageDir),
+      termsOfServiceAgreed: options.termsOfServiceAgreed,
+      ...(options.directoryUrl === undefined ? {} : { directoryUrl: options.directoryUrl }),
+      ...(options.challengeHost === undefined ? {} : { challengeHost: options.challengeHost }),
+      ...(options.challengePort === undefined ? {} : { challengePort: options.challengePort }),
+      ...(options.operationTimeoutMs === undefined ? {} : { operationTimeoutMs: options.operationTimeoutMs }),
+    };
+  }
+  return { mode: options.mode };
+}
+
 function validateAcmeDomain(domain: string): void {
   assertText("ACME domain", domain);
   if (isIP(domain) || domain.length > 253 || domain.includes("/") || domain.includes(":")) {
@@ -160,7 +183,7 @@ class TlsController implements HttpTlsController {
   private readonly options: HttpTlsOptions;
 
   constructor(options: HttpTlsOptions, dependencies: HttpTlsDependencies = {}) {
-    this.options = options;
+    this.options = snapshotHttpTlsOptions(options);
     this.mode = options.mode;
     this.now = dependencies.now ?? Date.now;
     this.loadAcme = dependencies.loadAcme ?? defaultLoadAcme;
@@ -215,7 +238,7 @@ class TlsController implements HttpTlsController {
       const options = this.options;
       if (options.mode !== "manual") throw new Error("invalid manual TLS configuration");
       try {
-        const [cert, key] = await Promise.all([readFile(resolve(options.certPath), "utf8"), readFile(resolve(options.keyPath), "utf8")]);
+        const [cert, key] = await Promise.all([readFile(options.certPath, "utf8"), readFile(options.keyPath, "utf8")]);
         this.setCertificate(validateCertificate(cert, key, this.now()));
       } catch (error) {
         this.started = false;
@@ -260,8 +283,8 @@ class TlsController implements HttpTlsController {
     const challengePort = options.challengePort ?? DEFAULT_CHALLENGE_PORT;
     if (!Number.isInteger(challengePort) || challengePort < 0 || challengePort > 65_535) throw new RangeError("invalid ACME challenge port");
     assertText("ACME storage directory", options.storageDir);
-    await mkdir(resolve(options.storageDir), { recursive: true, mode: 0o700 });
-    const storageDir = resolve(options.storageDir);
+    const storageDir = options.storageDir;
+    await mkdir(storageDir, { recursive: true, mode: 0o700 });
     await this.storageLock.acquire(storageDir);
     if (this.closed) {
       return failAfterCleanup(new Error("TLS controller is closed"), () => this.storageLock.release(storageDir), "ACME startup cancellation and lock cleanup failed");
@@ -524,7 +547,7 @@ class TlsController implements HttpTlsController {
     const options = this.options;
     if (options.mode !== "acme") return;
     try {
-      const issued = await this.issue({ bundle: join(resolve(options.storageDir), "certificate-bundle.json"), account: join(resolve(options.storageDir), "account-key.pem") }, options, options.challengePort ?? DEFAULT_CHALLENGE_PORT, options.operationTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS);
+      const issued = await this.issue({ bundle: join(options.storageDir, "certificate-bundle.json"), account: join(options.storageDir, "account-key.pem") }, options, options.challengePort ?? DEFAULT_CHALLENGE_PORT, options.operationTimeoutMs ?? DEFAULT_OPERATION_TIMEOUT_MS);
       if (!this.closed) {
         this.setCertificate(issued);
         this.renewalBackoffMs = 1_000;
@@ -567,9 +590,5 @@ class TlsController implements HttpTlsController {
 }
 
 export async function prepareHttpTls(options: HttpTlsOptions, dependencies?: HttpTlsDependencies): Promise<HttpTlsController> {
-  if (options.mode === "manual") {
-    assertText("TLS certificate path", options.certPath);
-    assertText("TLS private key path", options.keyPath);
-  }
   return new TlsController(options, dependencies);
 }

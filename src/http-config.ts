@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 import type { BearerAuthOptions, HttpSecurityLimits } from "./http-security.js";
 import type { HttpTlsOptions } from "./http-tls.js";
+import { snapshotHttpTlsOptions } from "./http-tls.js";
 
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_HTTP_PORT = 3_000;
@@ -196,7 +197,7 @@ function resolveTlsOptions(
   listenHost: string,
   port: number,
 ): HttpTlsOptions {
-  const tls = options ?? { mode: "off" as const };
+  const tls = snapshotHttpTlsOptions(options ?? { mode: "off" });
   if (tls.mode === "acme") {
     const challengePort = tls.challengePort ?? 80;
     if (!Number.isInteger(challengePort) || challengePort < 0 || challengePort > 65_535) {

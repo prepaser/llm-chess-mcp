@@ -111,6 +111,11 @@ await server.close();
 Pass `signal: abortController.signal` to cancel pending startup, including initial
 ACME issuance. Once startup resolves, use `server.close()` to stop the server.
 
+TLS file paths are resolved when `serveHttp()` is called, so later working-directory
+changes do not redirect certificate storage. Rate-limit and TLS settings are
+copied at startup; modifying the original option objects does not reconfigure
+a running server.
+
 The root API also exports `buildServer`, `GameStore`, `ChessError`,
 `ExplorerError`, the service/domain types needed to provide custom
 `AppServices`, and safe chess helpers including `parseImportedPgn`, `pgnOf`,

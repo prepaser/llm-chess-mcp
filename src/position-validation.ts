@@ -326,6 +326,38 @@ function ordinaryDoubleCheckPredecessor(
       if (chess.get(from) !== undefined) continue;
       for (const captured of [undefined, ...CAPTURED_PIECES] as const) {
         if (captured === "p" && (to[1] === "1" || to[1] === "8")) continue;
+        const promotionRank = previous === "w" ? "8" : "1";
+        const pawnRank = previous === "w" ? "7" : "2";
+        if (
+          moved.type !== "p" &&
+          moved.type !== "k" &&
+          to[1] === promotionRank &&
+          from[1] === pawnRank &&
+          currentHalfmove === 0
+        ) {
+          const promotedSetup = new Chess(currentFen);
+          promotedSetup.remove(to);
+          promotedSetup.put({ type: "p", color: previous }, from);
+          if (captured) promotedSetup.put({ type: captured, color: active }, to);
+          const promotionPrior = priorChess(
+            promotedSetup,
+            previous,
+            fields[2]!,
+            "-",
+            0,
+            fullmove,
+          );
+          if (
+            reachesPosition(
+              promotionPrior,
+              { from, to, promotion: moved.type },
+              currentFen,
+            )
+          ) {
+            return true;
+          }
+        }
+
         const halfmove = moved.type === "p" || captured ? 0 : currentHalfmove - 1;
         if (
           halfmove < 0 ||
@@ -346,38 +378,6 @@ function ordinaryDoubleCheckPredecessor(
           fullmove,
         );
         if (reachesPosition(prior, { from, to }, currentFen)) return true;
-
-        const promotionRank = previous === "w" ? "8" : "1";
-        const pawnRank = previous === "w" ? "7" : "2";
-        if (
-          moved.type !== "p" &&
-          moved.type !== "k" &&
-          to[1] === promotionRank &&
-          from[1] === pawnRank
-        ) {
-          const promotedSetup = new Chess(currentFen);
-          promotedSetup.remove(to);
-          promotedSetup.put({ type: "p", color: previous }, from);
-          if (captured) promotedSetup.put({ type: captured, color: active }, to);
-          const promotionPrior = priorChess(
-            promotedSetup,
-            previous,
-            fields[2]!,
-            "-",
-            0,
-            fullmove,
-          );
-          if (
-            currentHalfmove === 0 &&
-            reachesPosition(
-              promotionPrior,
-              { from, to, promotion: moved.type },
-              currentFen,
-            )
-          ) {
-            return true;
-          }
-        }
       }
     }
   }

@@ -578,6 +578,20 @@ test("Streamable HTTP rate limits anonymous initialization by client IP", async 
   assert.ok(Number(capped.headers["retry-after"]) >= 1);
 });
 
+test("HTTP startup snapshots rate limits before yielding to authentication loading", async (t) => {
+  const ip = { ratePerMinute: 1, burst: 1 };
+  const startup = serveHttp({ port: 0, rateLimits: { request: { ip } } }, fakeServices(new GameStore()));
+  ip.ratePerMinute = NaN;
+  ip.burst = Infinity;
+  const http = await startup;
+  t.after(() => http.close());
+  assert.equal((await httpRequest(http.url)).status, 400);
+  assert.equal((await httpRequest(http.url)).status, 429);
+  ip.ratePerMinute = 1_000;
+  ip.burst = 100;
+  assert.equal((await httpRequest(http.url)).status, 429);
+});
+
 test("HTTP startup rejects malformed trusted proxy prefixes", async () => {
   for (const proxy of ["127.0.0.1/", "::1/", "127.0.0.1/0x0", "::1/0e0"]) {
     await assert.rejects(serveHttp({ port: 0, trustedProxies: [proxy] }), /invalid trusted proxy CIDR/);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { resolve } from "node:path";
 import {
   canonicalHttpHostname,
   DEFAULT_HTTP_HOST,
@@ -70,6 +71,21 @@ test("resolved ACME config follows the application bind host by default", () => 
   });
   assert.equal(config.tls.mode, "acme");
   if (config.tls.mode === "acme") assert.equal(config.tls.challengeHost, "::");
+});
+
+test("HTTP configuration snapshots TLS paths and leaves caller options unchanged", () => {
+  const tls = {
+    mode: "acme" as const, domain: "chess.example", email: "ops@example.com",
+    storageDir: "certs", termsOfServiceAgreed: true as const,
+  };
+  const config = resolveHttpConfig({ tls });
+  assert.equal(tls.storageDir, "certs");
+  tls.storageDir = "other";
+  assert.equal(config.tls.mode, "acme");
+  if (config.tls.mode === "acme") assert.equal(config.tls.storageDir, resolve("certs"));
+  const manual = resolveHttpConfig({ tls: { mode: "manual", certPath: "cert.pem", keyPath: "key.pem" } }).tls;
+  assert.deepEqual(manual, { mode: "manual", certPath: resolve("cert.pem"), keyPath: resolve("key.pem") });
+  assert.throws(() => resolveHttpConfig({ tls: { ...tls, storageDir: "" } }), /storage directory/);
 });
 
 test("HTTP configuration rejects fixed ACME port collisions", () => {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   BearerAuthenticator,
+  DEFAULT_HTTP_SECURITY_LIMITS,
   HttpSecurity,
   TrustedProxySet,
   canonicalClientIp,
@@ -12,6 +13,7 @@ import {
   loadBearerAuthenticator,
   resolveClientIp,
 } from "../src/http-security.js";
+import type { RateLimitKind, RateLimitDimension } from "../src/http-security.js";
 
 test("Bearer authentication is optional but strict when configured", () => {
   const anonymous = new BearerAuthenticator();
@@ -103,6 +105,41 @@ test("trusted proxy prefixes require decimal digits without implicit /0 coercion
   }
   assert.equal(new TrustedProxySet(["127.0.0.1/0"]).contains("198.51.100.9"), true);
   assert.equal(new TrustedProxySet(["::1/0"]).contains("2001:db8::1"), true);
+});
+
+test("HTTP security snapshots every rate-limit dimension before validating it", () => {
+  for (const kind of ["request", "initialize", "work", "authFailure", "control"] satisfies RateLimitKind[]) {
+    for (const dimension of ["global", "ip", "bearer"] satisfies RateLimitDimension[]) {
+      let now = 0;
+      const limit = { ratePerMinute: 1, burst: 1 };
+      const security = new HttpSecurity({ [kind]: { [dimension]: limit } }, () => now);
+      const subject = { ip: "192.0.2.1", bearer: "test" };
+      assert.equal(security.consume(kind, subject, 1, [dimension]).allowed, true);
+      limit.ratePerMinute = NaN;
+      limit.burst = Infinity;
+      assert.equal(security.consume(kind, subject, 1, [dimension]).allowed, false);
+      now = 60_000;
+      assert.equal(security.consume(kind, subject, 1, [dimension]).allowed, true);
+      assert.equal(security.consume(kind, subject, 1, [dimension]).allowed, false);
+      assert.throws(() => new HttpSecurity({ [kind]: { [dimension]: limit } }), /must be/);
+    }
+  }
+});
+
+test("HTTP security snapshots defaults without freezing caller-owned configuration", () => {
+  const defaults = DEFAULT_HTTP_SECURITY_LIMITS.request.ip;
+  const saved = { ...defaults };
+  const security = new HttpSecurity({}, () => 0);
+  try {
+    defaults.burst = Infinity;
+    defaults.ratePerMinute = NaN;
+    for (let i = 0; i < saved.burst; i++) {
+      assert.equal(security.consume("request", { ip: "192.0.2.1" }, 1, ["ip"]).allowed, true);
+    }
+    assert.equal(security.consume("request", { ip: "192.0.2.1" }, 1, ["ip"]).allowed, false);
+  } finally {
+    Object.assign(defaults, saved);
+  }
 });
 
 test("HTTP security charges global and IP buckets and supports bearer-only charging", () => {

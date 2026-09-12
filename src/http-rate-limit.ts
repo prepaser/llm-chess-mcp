@@ -100,10 +100,14 @@ function mergeRateLimit(
   fallback: Required<SecurityRateLimitConfig>,
 ): Required<SecurityRateLimitConfig> {
   return {
-    global: value?.global ?? fallback.global,
-    ip: value?.ip ?? fallback.ip,
-    bearer: value?.bearer ?? fallback.bearer,
+    global: copyRateLimit(value?.global ?? fallback.global),
+    ip: copyRateLimit(value?.ip ?? fallback.ip),
+    bearer: copyRateLimit(value?.bearer ?? fallback.bearer),
   };
+}
+
+function copyRateLimit(value: RateLimit): RateLimit {
+  return { ratePerMinute: value.ratePerMinute, burst: value.burst };
 }
 
 function validateRateLimit(value: RateLimit, name: string): void {

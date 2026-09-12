@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, get as httpGet, type Server } from "node:http";
@@ -163,6 +163,95 @@ test("serveHttp uses HTTPS, authentication, and the TLS availability gate", asyn
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("manual TLS snapshots relative paths before asynchronous startup", async () => {
+  const cwd = process.cwd();
+  const dir = await mkdtemp(join(tmpdir(), "tls-relative-paths-"));
+  const options = { mode: "manual" as const, certPath: "cert.pem", keyPath: "key.pem" };
+  let tls: Awaited<ReturnType<typeof prepareHttpTls>> | undefined;
+  try {
+    await writeFile(join(dir, "cert.pem"), TEST_CERT);
+    await writeFile(join(dir, "key.pem"), TEST_KEY);
+    process.chdir(dir);
+    const preparing = prepareHttpTls(options);
+    options.certPath = "missing.pem";
+    process.chdir(cwd);
+    tls = await preparing;
+    await tls.start();
+    assert.equal(tls.getServerOptions()?.cert, TEST_CERT);
+    options.certPath = "cert.pem";
+    process.chdir(dir);
+    const startingHttp = serveHttp({ port: 0, tls: options });
+    options.keyPath = "missing.pem";
+    process.chdir(cwd);
+    const http = await startingHttp;
+    await http.close();
+  } finally {
+    process.chdir(cwd);
+    await tls?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ACME renewal keeps its original storage and account after cwd and options change", { timeout: 10_000 }, async () => {
+  const cwd = process.cwd();
+  const root = await mkdtemp(join(tmpdir(), "acme-storage-snapshot-"));
+  const firstDir = join(root, "first");
+  const secondDir = join(root, "second");
+  const cert = new X509Certificate(TEST_CERT);
+  const renewAt = Date.parse(cert.validFrom) + (Date.parse(cert.validTo) - Date.parse(cert.validFrom)) * 2 / 3;
+  let now = renewAt - 1_000;
+  const accounts: string[] = [];
+  const loadAcme = (account: string) => async () => ({
+    crypto: { createPrivateRsaKey: async () => account, createCsr: async () => [TEST_KEY, "csr"] },
+    Client: class {
+      constructor(options: { accountKey: string }) { accounts.push(options.accountKey); }
+      async auto() { return TEST_CERT; }
+    },
+  });
+  const options = {
+    mode: "acme" as const, domain: "localhost", email: "ops@example.com", storageDir: "certs",
+    termsOfServiceAgreed: true as const, challengeHost: "127.0.0.1", challengePort: 0,
+  };
+  let first: Awaited<ReturnType<typeof prepareHttpTls>> | undefined;
+  let second: typeof first;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await mkdir(firstDir);
+    await mkdir(secondDir);
+    process.chdir(firstDir);
+    first = await prepareHttpTls(options, { now: () => now, loadAcme: loadAcme("first-account") });
+    await first.start();
+    process.chdir(secondDir);
+    second = await prepareHttpTls({ ...options }, { loadAcme: loadAcme("second-account") });
+    await second.start();
+    const firstBundle = join(firstDir, "certs/certificate-bundle.json");
+    const secondBundle = join(secondDir, "certs/certificate-bundle.json");
+    const firstInode = (await stat(firstBundle)).ino;
+    const secondInode = (await stat(secondBundle)).ino;
+    options.storageDir = join(secondDir, "certs");
+    const renewed = new Promise<void>((resolve, reject) => {
+      first!.onSecureContext(() => resolve());
+      timer = setTimeout(() => reject(new Error("ACME renewal did not finish")), 5_000);
+    });
+    now = renewAt + 1;
+    await renewed;
+    assert.deepEqual(accounts, ["first-account", "second-account", "first-account"]);
+    assert.notEqual((await stat(firstBundle)).ino, firstInode);
+    assert.equal((await stat(secondBundle)).ino, secondInode);
+    await stat(join(firstDir, "certs/issue.lock"));
+    await stat(join(secondDir, "certs/issue.lock"));
+    await first.close();
+    await assert.rejects(stat(join(firstDir, "certs/issue.lock")), { code: "ENOENT" });
+    await stat(join(secondDir, "certs/issue.lock"));
+  } finally {
+    clearTimeout(timer);
+    process.chdir(cwd);
+    await first?.close();
+    await second?.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -417,7 +506,7 @@ test("closing during ACME startup drains initialization and releases its lock", 
   await assert.rejects(stat(join(dir, "issue.lock")), { code: "ENOENT" });
 });
 
-test("ACME close aborts the real callable Axios instance's network request", { timeout: 5_000 }, async (t) => {
+test("ACME close aborts the real callable Axios instance's network request", { timeout: 30_000 }, async (t) => {
   const acme = await import("acme-client");
   assert.equal(typeof acme.axios, "function");
   const dir = await mkdtemp(join(tmpdir(), "llm-chess-acme-network-close-"));
@@ -427,7 +516,7 @@ test("ACME close aborts the real callable Axios instance's network request", { t
   const receiving = new Promise<void>((resolve) => { received = resolve; });
   const disconnecting = new Promise<void>((resolve) => { disconnected = resolve; });
   const ca = createServer((req) => {
-    req.once("close", disconnected);
+    req.socket.once("close", disconnected);
     received();
   });
   await new Promise<void>((resolve) => ca.listen(0, "127.0.0.1", resolve));
@@ -447,10 +536,12 @@ test("ACME close aborts the real callable Axios instance's network request", { t
   t.after(() => tls.close());
   const rejected = assert.rejects(tls.start());
   await receiving;
-  await tls.close();
-  await rejected;
-  await disconnecting;
-  await assert.rejects(stat(join(dir, "certificate-bundle.json")), { code: "ENOENT" });
+  await t.test("closes the active request within five seconds", { timeout: 5_000 }, async () => {
+    await tls.close();
+    await rejected;
+    await disconnecting;
+    await assert.rejects(stat(join(dir, "certificate-bundle.json")), { code: "ENOENT" });
+  });
 });
 
 test("ACME polling cancellation stops the installed client's retry timer", { timeout: 5_000 }, async () => {
