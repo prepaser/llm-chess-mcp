@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   isInitializeRequest,
   SUPPORTED_PROTOCOL_VERSIONS,
   validateHostHeader,
-  validateOriginHeader,
 } from "@modelcontextprotocol/server";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
@@ -15,13 +15,17 @@ import {
   MAX_CANCELLATION_PROBE_BYTES,
   parsePostBody,
 } from "./http-body.js";
-import { canonicalHttpPath } from "./http-config.js";
 import type { HttpLimits } from "./http-config.js";
 import { HttpBodyAdmission, HttpPostAdmission } from "./http-posts.js";
 import { closeWithError } from "./http-response.js";
 import { HttpSessionRegistry } from "./http-sessions.js";
 import { HttpWorkAdmission, withSessionWorkAdmission } from "./http-work.js";
 import type { AppServices } from "./services.js";
+import { BearerAuthenticator, HttpSecurity, TrustedProxySet } from "./http-security.js";
+import { HttpRequestPolicy, rateError, requestPath, sessionId } from "./http-policy.js";
+import { withHttpWorkBudget } from "./http-invocation.js";
+import { ANONYMOUS_GAME_SCOPE, createScopedGameRepository } from "./games.js";
+import type { SecuritySubject, SecurityLease, RateLimitDecision } from "./http-security.js";
 
 type Session = {
   server: McpServer;
@@ -31,20 +35,10 @@ type Session = {
   activeRequests: number;
   activePosts: number;
   controlPosts: { activePosts: number };
+  owner: string | undefined;
+  quota: SecurityLease;
 };
 
-function requestPath(req: IncomingMessage): string | null {
-  const raw = req.url;
-  if (raw === undefined) return null;
-  const queryIndex = raw.search(/[?#]/);
-  return canonicalHttpPath(queryIndex === -1 ? raw : raw.slice(0, queryIndex));
-}
-
-function sessionId(req: IncomingMessage): string | null | undefined {
-  const value = req.headers["mcp-session-id"];
-  if (value === undefined) return undefined;
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
 
 export class HttpRuntime {
   readonly #sessions: HttpSessionRegistry<Session>;
@@ -55,13 +49,23 @@ export class HttpRuntime {
   #closing = false;
   #sessionSweep: NodeJS.Timeout | undefined;
   #shutdown: Promise<void> | undefined;
+  readonly #requestContext = new AsyncLocalStorage<SecuritySubject>();
+  readonly #controlOnly = new WeakMap<IncomingMessage, RateLimitDecision>();
+  readonly #policy: HttpRequestPolicy;
 
   constructor(
     private readonly services: AppServices,
     private readonly path: string,
     private readonly allowedHosts: string[],
     private readonly limits: HttpLimits,
+    private readonly security = new HttpSecurity(),
+    auth = new BearerAuthenticator(),
+    proxies = new TrustedProxySet(),
   ) {
+    if (auth.enabled && typeof services.games.forScope !== "function") {
+      throw new Error("authenticated HTTP requires a scope-aware game repository");
+    }
+    this.#policy = new HttpRequestPolicy(path, allowedHosts, security, auth, proxies);
     this.#sessions = new HttpSessionRegistry<Session>(limits.maxSessions);
     this.#bodyAdmission = new HttpBodyAdmission(
       limits.maxConcurrentPosts,
@@ -94,7 +98,10 @@ export class HttpRuntime {
   }
 
   handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    return this.#handle(req, res);
+    const admitted = this.#policy.admit(req, res);
+    if (!admitted) return Promise.resolve();
+    if (admitted.controlOnly) this.#controlOnly.set(req, admitted.controlOnly);
+    return this.#requestContext.run(admitted.subject, () => this.#handle(req, res));
   }
 
   close(): Promise<void> {
@@ -104,7 +111,11 @@ export class HttpRuntime {
   async #stopSession(session: Session): Promise<void> {
     session.abort.abort(new DOMException("MCP session closed", "AbortError"));
     await new Promise<void>((resolve) => setImmediate(resolve));
-    await session.server.close();
+    try {
+      await session.server.close();
+    } finally {
+      session.quota.release();
+    }
   }
 
   #closeSession(id: string, session: Session): Promise<void> {
@@ -135,7 +146,7 @@ export class HttpRuntime {
     try {
       body = await parsePostBody(
         req,
-        admission.kind === "full"
+        admission.kind === "full" && !this.#controlOnly.has(req)
           ? this.limits.maxRequestBodyBytes
           : Math.min(this.limits.maxRequestBodyBytes, MAX_CANCELLATION_PROBE_BYTES),
         this.limits.bodyTimeoutMs,
@@ -145,6 +156,11 @@ export class HttpRuntime {
       admission.release();
     }
     if (!body.ok) {
+      const limited = this.#controlOnly.get(req);
+      if (limited) {
+        rateError(req, res, limited);
+        return;
+      }
       if (admission.kind === "probe") {
         closeWithError(req, res, 503, "server request body limit reached", {
           "retry-after": "1",
@@ -158,6 +174,20 @@ export class HttpRuntime {
         body.message,
       );
       return;
+    }
+    const limited = this.#controlOnly.get(req);
+    if (limited && !isCancellationPostBody(body.value)) {
+      rateError(req, res, limited);
+      return;
+    }
+    if (!limited && isCancellationPostBody(body.value)) {
+      const subject = this.#requestContext.getStore();
+      if (!subject) throw new Error("missing HTTP request context");
+      const control = this.security.consume("control", subject);
+      if (!control.allowed) {
+        rateError(req, res, control);
+        return;
+      }
     }
     if (admission.kind === "probe" && !isCancellationPostBody(body.value)) {
       closeWithError(req, res, 503, "server request body limit reached", {
@@ -285,6 +315,13 @@ export class HttpRuntime {
       closeWithError(req, res, 400, "MCP session initialization requires POST");
       return;
     }
+    const subject = this.#requestContext.getStore();
+    if (!subject) throw new Error("missing HTTP request context");
+    const rate = this.security.consume("initialize", subject);
+    if (!rate.allowed) {
+      rateError(req, res, rate);
+      return;
+    }
     await this.#withParsedPostBody(req, res, (body) =>
       this.#withAdmittedPost(undefined, req, res, body, async () => {
         if (!isInitializeRequest(body)) {
@@ -305,6 +342,12 @@ export class HttpRuntime {
           });
           return;
         }
+        const quota = this.security.acquire("session", subject);
+        if (!("release" in quota)) {
+          reservation.finish();
+          rateError(req, res, quota);
+          return;
+        }
         try {
           const transport = new NodeStreamableHTTPServerTransport({
             sessionIdGenerator: randomUUID,
@@ -312,10 +355,16 @@ export class HttpRuntime {
             onsessionclosed: (id) => reservation.closed(id),
           });
           const abort = new AbortController();
+          const owner = typeof subject.bearer === "string" ? subject.bearer : subject.bearer?.digest;
+          const games = this.services.games.forScope
+            ? createScopedGameRepository(this.services.games, owner ? `bearer:${owner}` : ANONYMOUS_GAME_SCOPE)
+            : this.services.games;
+          const run = this.#workAdmission.forSession(abort.signal);
           const mcp = buildServer(
             withSessionWorkAdmission(
               this.services,
-              this.#workAdmission.forSession(abort.signal),
+              withHttpWorkBudget(run, this.security, () => this.#requestContext.getStore()),
+              games,
             ),
           );
           const session: Session = {
@@ -326,11 +375,14 @@ export class HttpRuntime {
             activeRequests: 0,
             activePosts: 0,
             controlPosts: { activePosts: 0 },
+            owner,
+            quota,
           };
           reservation.attach(session);
           transport.onclose = () => {
             session.abort.abort(new DOMException("MCP session closed", "AbortError"));
             reservation.close();
+            quota.release();
           };
           try {
             await this.#sessions.withActive(session, async () => {
@@ -338,10 +390,14 @@ export class HttpRuntime {
               await transport.handleRequest(req, res, body);
             });
           } finally {
-            if (!reservation.finish()) await mcp.close();
+            if (!reservation.finish()) {
+              quota.release();
+              await mcp.close();
+            }
           }
         } catch (error) {
           reservation.finish();
+          quota.release();
           throw error;
         }
       }),
@@ -362,11 +418,6 @@ export class HttpRuntime {
     const host = validateHostHeader(req.headers.host, this.allowedHosts);
     if (!host.ok) {
       closeWithError(req, res, 403, host.message);
-      return;
-    }
-    const origin = validateOriginHeader(req.headers.origin, this.allowedHosts);
-    if (!origin.ok) {
-      closeWithError(req, res, 403, origin.message);
       return;
     }
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {
@@ -390,7 +441,9 @@ export class HttpRuntime {
       return;
     }
     const session = this.#sessions.get(id);
-    if (!session) {
+    const subject = this.#requestContext.getStore();
+    const owner = typeof subject?.bearer === "string" ? subject.bearer : subject?.bearer?.digest;
+    if (!session || session.owner !== owner) {
       closeWithError(req, res, 404, "MCP session not found");
       return;
     }

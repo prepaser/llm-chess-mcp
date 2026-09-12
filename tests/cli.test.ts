@@ -160,3 +160,171 @@ test("parseCli requires allowed hosts for wildcard HTTP bindings", () => {
     help: false,
   });
 });
+
+test("parseCli accepts bearer file, proxy, and rate-limit settings", () => {
+  assert.deepEqual(
+    parseCli([
+      "--http",
+      "--bearer-file",
+      "/etc/llm-chess/bearers",
+      "--trusted-proxy=10.0.0.0/8",
+      "--trusted-proxy",
+      "192.168.0.0/16",
+      "--rate-limit-ip-request-per-minute",
+      "90",
+      "--rate-limit-ip-request-burst=12",
+      "--rate-limit-bearer-work-per-minute",
+      "20",
+    ]),
+    {
+      transport: "http",
+      host: "127.0.0.1",
+      port: 3_000,
+      path: "/mcp",
+      allowedHosts: [],
+      bearerFile: "/etc/llm-chess/bearers",
+      trustedProxies: ["10.0.0.0/8", "192.168.0.0/16"],
+      rateLimits: {
+        request: { ip: { ratePerMinute: 90, burst: 12 } },
+        work: { bearer: { ratePerMinute: 20, burst: 2 } },
+      },
+      help: false,
+    },
+  );
+});
+
+test("parseCli preserves the other rate-limit default when overriding one field", () => {
+  const burst = parseCli([
+    "--http",
+    "--rate-limit-ip-request-burst",
+    "7",
+  ]).rateLimits?.request?.ip;
+  assert.deepEqual(burst, { ratePerMinute: 60, burst: 7 });
+
+  const rate = parseCli([
+    "--http",
+    "--rate-limit-ip-request-per-minute",
+    "90",
+  ]).rateLimits?.request?.ip;
+  assert.deepEqual(rate, { ratePerMinute: 90, burst: 10 });
+
+  const first = parseCli([
+    "--http",
+    "--rate-limit-ip-request-burst",
+    "7",
+  ]).rateLimits?.request?.ip;
+  const second = parseCli([
+    "--http",
+    "--rate-limit-ip-request-burst",
+    "8",
+  ]).rateLimits?.request?.ip;
+  assert.deepEqual(first, { ratePerMinute: 60, burst: 7 });
+  assert.deepEqual(second, { ratePerMinute: 60, burst: 8 });
+});
+
+test("parseCli accepts manual TLS and defaults its port to 443", () => {
+  assert.deepEqual(
+    parseCli(["--http", "--tls-cert", "cert.pem", "--tls-key=key.pem"]),
+    {
+      transport: "http",
+      host: "127.0.0.1",
+      port: 443,
+      path: "/mcp",
+      allowedHosts: [],
+      tls: { mode: "manual", certPath: "cert.pem", keyPath: "key.pem" },
+      help: false,
+    },
+  );
+  assert.equal(parseCli(["--http", "--port", "9443", "--tls-cert", "c", "--tls-key", "k"]).port, 9443);
+});
+
+test("parseCli validates ACME settings", () => {
+  assert.deepEqual(
+    parseCli([
+      "--http",
+      "--acme-domain",
+      "chess.example",
+      "--acme-email",
+      "ops@example.com",
+      "--acme-storage",
+      "/var/lib/llm-chess/acme",
+      "--acme-agree-tos",
+      "--acme-staging",
+    ]),
+    {
+      transport: "http",
+      host: "127.0.0.1",
+      port: 443,
+      path: "/mcp",
+      allowedHosts: [],
+      tls: {
+        mode: "acme",
+        domain: "chess.example",
+        email: "ops@example.com",
+        storageDir: "/var/lib/llm-chess/acme",
+        termsOfServiceAgreed: true,
+        directoryUrl: "https://acme-staging-v02.api.letsencrypt.org/directory",
+        challengePort: 80,
+      },
+      help: false,
+    },
+  );
+  assert.throws(
+    () => parseCli(["--http", "--tls-cert", "cert.pem"]),
+    /--tls-cert and --tls-key must be provided together/,
+  );
+  assert.throws(
+    () => parseCli(["--http", "--acme-domain", "chess.example", "--acme-email", "ops@example.com"]),
+    /ACME requires --acme-domain, --acme-email, and --acme-storage/,
+  );
+  assert.throws(
+    () => parseCli(["--http", "--acme-domain", "127.0.0.1", "--acme-email", "ops@example.com", "--acme-storage", "/tmp/acme", "--acme-agree-tos"]),
+    /--acme-domain must be a hostname/,
+  );
+});
+
+test("parseCli accepts and canonicalizes the ACME challenge host", () => {
+  assert.deepEqual(
+    parseCli([
+      "--http",
+      "--acme-domain", "chess.example",
+      "--acme-email", "ops@example.com",
+      "--acme-storage", "/var/lib/llm-chess/acme",
+      "--acme-agree-tos",
+      "--acme-challenge-host", "0:0:0:0:0:0:0:1",
+    ]).tls,
+    {
+      mode: "acme",
+      domain: "chess.example",
+      email: "ops@example.com",
+      storageDir: "/var/lib/llm-chess/acme",
+      termsOfServiceAgreed: true,
+      challengePort: 80,
+      challengeHost: "::1",
+    },
+  );
+  assert.throws(
+    () => parseCli([
+      "--http", "--acme-domain", "chess.example", "--acme-email", "ops@example.com",
+      "--acme-storage", "/tmp/acme", "--acme-agree-tos", "--acme-challenge-host", "bad/path",
+    ]),
+    /--acme-challenge-host must be a hostname/,
+  );
+});
+
+test("parseCli rejects an ACME challenge port equal to the HTTPS port", () => {
+  assert.throws(
+    () => parseCli([
+      "--http", "--port", "8443", "--acme-domain", "chess.example", "--acme-email", "ops@example.com",
+      "--acme-storage", "/tmp/acme", "--acme-agree-tos", "--acme-challenge-port", "8443",
+    ]),
+    /HTTPS listen port and ACME challenge port must differ/,
+  );
+});
+
+test("parseCli rejects malformed trusted proxy addresses", () => {
+  assert.throws(
+    () => parseCli(["--http", "--trusted-proxy", "not-an-ip"]),
+    /--trusted-proxy must contain valid IP addresses or CIDRs/,
+  );
+});

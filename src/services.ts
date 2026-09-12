@@ -9,7 +9,7 @@ import {
 } from "./explorer.js";
 import type { ExplorerResult } from "./explorer.js";
 import { defaultGameStore } from "./games.js";
-import type { GameStore } from "./games.js";
+import type { GameRepository } from "./games.js";
 import { createCandidateComputation, rankByIntent } from "./intents.js";
 import type { CandidateSet, LichessOpts } from "./intents.js";
 import type { Candidate, Intent, Maia3Move, SfLine } from "./domain.js";
@@ -19,7 +19,7 @@ import { createEngineCandidateComputation, rankEngineCandidates } from "./engine
 import type { ComputeEngineCandidates } from "./engine-consensus.js";
 
 export interface GameServices {
-  games: GameStore;
+  games: GameRepository;
 }
 
 export interface AnalysisServices {

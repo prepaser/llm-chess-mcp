@@ -31,16 +31,33 @@ export interface GameStoreOptions {
   createId?: () => string;
 }
 
+export type GameScope = string;
+
+export const ANONYMOUS_GAME_SCOPE = "anonymous";
+
+export interface GameRepository {
+  forScope?(scope: GameScope): GameRepository;
+  createGame(fen?: string): string;
+  createGameFromChess(chess: Chess): string;
+  getSnapshot(id: string): GameSnapshot;
+  applyMove(id: string, expectedRevision: number, move: Move): GameSnapshot;
+  deleteGame(id: string): boolean;
+  listGames(): string[];
+  gameCount(): number;
+}
+
 export interface GameSnapshot {
   chess: Chess;
   revision: number;
 }
 
-export class GameStore {
+type OwnedGameRecord = GameRecord & { owner: GameScope };
+
+export class GameStore implements GameRepository {
   readonly maxGames: number;
   readonly idleTtlMs: number;
 
-  private readonly games = new Map<string, GameRecord>();
+  private readonly games = new Map<string, OwnedGameRecord>();
   private readonly clock: () => number;
   private readonly createId: () => string;
   private lastClockTime: number | undefined;
@@ -60,6 +77,11 @@ export class GameStore {
     }
   }
 
+  forScope(scope: GameScope): GameRepository {
+    assertGameScope(scope);
+    return new ScopedGameStore(this, scope);
+  }
+
   cleanupGames(now?: number): number {
     const current =
       now === undefined ? this.clockTime() : this.validateCleanupTime(now);
@@ -77,7 +99,12 @@ export class GameStore {
   }
 
   createGame(fen?: string): string {
-    if (fen === undefined) return this.createGameFromChess(new Chess());
+    return this.createGameInScope(ANONYMOUS_GAME_SCOPE, fen);
+  }
+
+  /** @internal */
+  createGameInScope(scope: GameScope, fen?: string): string {
+    if (fen === undefined) return this.createGameFromChessInScope(scope, new Chess());
 
     assertSafeFenCounters(fen);
     let chess: Chess;
@@ -86,10 +113,16 @@ export class GameStore {
     } catch {
       throw new ChessError("INVALID_FEN", "invalid FEN");
     }
-    return this.createGameFromChess(chess);
+    return this.createGameFromChessInScope(scope, chess);
   }
 
   createGameFromChess(chess: Chess): string {
+    return this.createGameFromChessInScope(ANONYMOUS_GAME_SCOPE, chess);
+  }
+
+  /** @internal */
+  createGameFromChessInScope(scope: GameScope, chess: Chess): string {
+    assertGameScope(scope);
     assertLegalPosition(chess);
     const now = this.clockTime();
     this.cleanupGamesAt(now);
@@ -127,6 +160,7 @@ export class GameStore {
       this.assertCapacity();
       this.assertUnique(id);
       this.games.set(id, {
+        owner: scope,
         chess: snapshot,
         createdAt: insertionTime,
         lastAccessedAt: insertionTime,
@@ -142,18 +176,23 @@ export class GameStore {
   }
 
   getSnapshot(id: string): GameSnapshot {
-    const game = this.getLiveGame(id);
+    const game = this.getLiveGameInScope(undefined, id);
     return { chess: snapshotChess(game.chess), revision: game.revision };
   }
 
   applyMove(id: string, expectedRevision: number, move: Move): GameSnapshot {
+    return this.applyMoveInScope(undefined, id, expectedRevision, move);
+  }
+
+  /** @internal */
+  applyMoveInScope(scope: GameScope | undefined, id: string, expectedRevision: number, move: Move): GameSnapshot {
     const promotion = move.promotion;
     const materialized = materializeMove({
       from: move.from,
       to: move.to,
       ...(promotion ? { promotion } : {}),
     });
-    const game = this.getLiveGame(id);
+    const game = this.getLiveGameInScope(scope, id);
     if (expectedRevision !== game.revision) {
       throw new ChessError(
         "STALE_POSITION",
@@ -174,9 +213,12 @@ export class GameStore {
     }
   }
 
-  private getLiveGame(id: string): GameRecord {
+  /** @internal */
+  getLiveGameInScope(scope: GameScope | undefined, id: string): OwnedGameRecord {
     const game = this.games.get(id);
-    if (!game) throw new ChessError("GAME_NOT_FOUND", `game not found: ${id}`);
+    if (!game || (scope !== undefined && game.owner !== scope)) {
+      throw new ChessError("GAME_NOT_FOUND", `game not found: ${id}`);
+    }
 
     const now = this.clockTime();
     if (this.isExpired(game, now)) {
@@ -188,18 +230,42 @@ export class GameStore {
   }
 
   deleteGame(id: string): boolean {
+    return this.deleteGameInScope(undefined, id);
+  }
+
+  /** @internal */
+  deleteGameInScope(scope: GameScope | undefined, id: string): boolean {
     this.cleanupGames();
-    return this.games.delete(id);
+    const game = this.games.get(id);
+    return game !== undefined && (scope === undefined || game.owner === scope)
+      ? this.games.delete(id)
+      : false;
   }
 
   listGames(): string[] {
+    return this.listGamesInScope(undefined);
+  }
+
+  /** @internal */
+  listGamesInScope(scope: GameScope | undefined): string[] {
     this.cleanupGames();
-    return [...this.games.keys()];
+    return [...this.games]
+      .filter(([, game]) => scope === undefined || game.owner === scope)
+      .map(([id]) => id);
   }
 
   gameCount(): number {
+    return this.gameCountInScope(undefined);
+  }
+
+  /** @internal */
+  gameCountInScope(scope: GameScope | undefined): number {
     this.cleanupGames();
-    return this.games.size;
+    let count = 0;
+    for (const game of this.games.values()) {
+      if (scope === undefined || game.owner === scope) count += 1;
+    }
+    return count;
   }
 
   private isExpired(game: GameRecord, now: number): boolean {
@@ -254,6 +320,63 @@ export class GameStore {
       throw new RangeError("clock must return finite, safe, monotonic time");
     }
   }
+}
+
+export function createScopedGameRepository(
+  store: GameRepository,
+  scope: GameScope | undefined,
+): GameRepository {
+  if (!store.forScope) throw new Error("game repository does not support scopes");
+  const scoped = store.forScope(scope ?? ANONYMOUS_GAME_SCOPE);
+  return {
+    createGame: (...args) => scoped.createGame(...args),
+    createGameFromChess: (...args) => scoped.createGameFromChess(...args),
+    getSnapshot: (...args) => scoped.getSnapshot(...args),
+    applyMove: (...args) => scoped.applyMove(...args),
+    deleteGame: (...args) => scoped.deleteGame(...args),
+    listGames: () => scoped.listGames(),
+    gameCount: () => scoped.gameCount(),
+  };
+}
+
+class ScopedGameStore implements GameRepository {
+  constructor(
+    private readonly store: GameStore,
+    private readonly scope: GameScope,
+  ) {}
+
+  createGame(fen?: string): string {
+    return this.store.createGameInScope(this.scope, fen);
+  }
+
+  createGameFromChess(chess: Chess): string {
+    return this.store.createGameFromChessInScope(this.scope, chess);
+  }
+
+  getSnapshot(id: string): GameSnapshot {
+    const game = this.store.getLiveGameInScope(this.scope, id);
+    return { chess: snapshotChess(game.chess), revision: game.revision };
+  }
+
+  applyMove(id: string, expectedRevision: number, move: Move): GameSnapshot {
+    return this.store.applyMoveInScope(this.scope, id, expectedRevision, move);
+  }
+
+  deleteGame(id: string): boolean {
+    return this.store.deleteGameInScope(this.scope, id);
+  }
+
+  listGames(): string[] {
+    return this.store.listGamesInScope(this.scope);
+  }
+
+  gameCount(): number {
+    return this.store.gameCountInScope(this.scope);
+  }
+}
+
+function assertGameScope(scope: string): void {
+  if (scope.length === 0) throw new RangeError("game scope must not be empty");
 }
 
 export const defaultGameStore = new GameStore();

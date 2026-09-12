@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { Chess } from "chess.js";
 import type { EngineLine, EngineMeta, EngineRequest } from "./types.js";
 import { WDL_TOTAL } from "../domain.js";
+import { engineChildEnv } from "../engine-env.js";
 
 type Lc0ManifestFile = { path: string; sha256: string };
 export type Lc0PlatformManifest = {
@@ -286,7 +287,7 @@ export class Lc0 {
     const child = this.options.spawn(executable, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
-        ...process.env,
+        ...engineChildEnv(),
         OPENBLAS_NUM_THREADS: threads, OMP_NUM_THREADS: threads, MKL_NUM_THREADS: threads,
         ...(process.platform === "linux" ? {
           LD_LIBRARY_PATH: [dirname(executable), process.env.LD_LIBRARY_PATH].filter(Boolean).join(":"),

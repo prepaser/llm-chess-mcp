@@ -88,7 +88,7 @@ HTTP options:
 --host <host>            Bind host (default: 127.0.0.1)
 --port <port>            Listen port (default: 3000)
 --path <path>            Endpoint path (default: /mcp)
---allowed-host <host>    Allowed Host/Origin hostname; repeat as needed
+--allowed-host <host>    Allowed Host hostname; repeat as needed
 ```
 
 The package also exposes a typed ESM API:
@@ -113,10 +113,91 @@ change for integrations that imported internal modules.
 The deprecated `requestTimeoutMs` alias remains supported when `bodyTimeoutMs`
 is omitted.
 
-Binding to `0.0.0.0` or `::` requires at least one `--allowed-host`. HTTP mode
-does not provide authentication or TLS; use a trusted network or an
-authenticated reverse proxy when exposing it beyond localhost. Origin values
-are validated when present, but the server does not emit browser CORS headers.
+Binding to `0.0.0.0` or `::` requires at least one `--allowed-host`.
+Authentication and TLS are optional. Without Bearer configuration, HTTP is
+anonymous and sessions share games: anyone who knows a game ID can access it.
+With authentication enabled, each Bearer is a separate identity; sessions using
+the same Bearer share games, while other Bearers and anonymous clients cannot
+access them. Games remain in memory and expire after an hour of inactivity.
+
+For personal use, set `HTTP_BEARER` in the environment or `.env`. For multiple
+Bearers, use `--bearer-file /path/to/bearers.txt` with one raw Bearer per UTF-8
+line (blank lines are ignored). These sources are mutually exclusive, and an
+explicitly empty source fails startup. Files are read only at startup; restart
+to add or revoke a Bearer. Generate secrets with `openssl rand -hex 32`, protect
+the file, and never put it in version control. Each key is one identity, not an
+alias for another key. API callers supply `auth: { bearer }` or
+`auth: { bearerFile }`; `serveHttp()` does not implicitly read environment secrets.
+Custom `AppServices.games` must implement `forScope(scope)` when authentication
+is enabled; the built-in `GameStore` already provides this ownership boundary.
+Repositories without that capability remain supported for anonymous HTTP and
+stdio, but authenticated startup rejects them instead of silently sharing games.
+HTTP and stdio tools receive scoped views even when they share one backing store.
+The raw `GameStore` API remains administrative and can access all scopes; do not
+expose it directly to untrusted clients. `createScopedGameRepository()` selects
+a scope without exposing its factory to the tool layer.
+
+Clients send `Authorization: Bearer <key>` on every MCP request, including SSE
+and DELETE. This is static Bearer authentication, not OAuth discovery. Use HTTPS
+or a trusted TLS-terminating proxy to avoid sending keys in plaintext.
+
+Browser CORS is unrestricted (`Access-Control-Allow-Origin: *`), including MCP
+preflight requests. Cookies and credentialed CORS are not supported. Host
+validation remains enabled, but Origin is not an access restriction. An
+anonymous endpoint is therefore intentionally accessible to arbitrary websites;
+rate limits are resource controls, not authorization.
+
+### HTTPS
+
+Use existing PEM files with manual TLS (restart after replacing them):
+
+```bash
+node dist/index.js --http --host 0.0.0.0 --allowed-host chess.example.com \
+  --bearer-file /etc/llm-chess/bearers.txt \
+  --tls-cert /etc/llm-chess/fullchain.pem --tls-key /etc/llm-chess/key.pem
+```
+
+For built-in Let's Encrypt HTTP-01 issuance and renewal:
+
+```bash
+node dist/index.js --http --host 0.0.0.0 --allowed-host chess.example.com \
+  --bearer-file /etc/llm-chess/bearers.txt \
+  --acme-domain chess.example.com --acme-email admin@example.com \
+  --acme-agree-tos --acme-storage /var/lib/llm-chess/acme
+```
+
+TLS defaults to port 443 unless `--port` is explicit. The domain must resolve to
+this server and external port 80 must reach the challenge listener. You may map
+port 80 to a different local `--acme-challenge-port`; wildcard certificates and
+DNS-01 are not supported. Use port forwarding or a service-manager configuration
+to bind privileged ports without running the entire application as root.
+The challenge listener uses the application's bind host by default. Use
+`--host ::` for IPv6 (and IPv4 too where the OS supports dual-stack binding), or
+override only the challenge address with `--acme-challenge-host <host>`.
+Every published A/AAAA address must route external port 80 to that listener.
+HTTPS and the challenge listener must use different fixed local ports; conflicting
+settings fail before issuance. For example, a loopback-only application behind a
+proxy can use `--host 127.0.0.1 --acme-challenge-host ::` for a public challenge
+listener while keeping the application on loopback.
+
+The challenge listener serves only active HTTP-01 challenges, never MCP or a
+plaintext-to-HTTPS redirect. Existing valid certificates are reused; otherwise
+startup waits for issuance. Certificates are renewed automatically and replaced
+without restarting the HTTPS server. Renewal failures are retried; if a
+certificate expires, connections are closed and MCP is unavailable until a
+valid certificate is installed. There is no plaintext fallback.
+
+Keep the ACME storage directory private and persistent. A lock prevents two
+controllers from sharing it; after an unclean process exit, verify that no
+instance uses the directory before removing a stale lock. Back up the directory
+securely. Use `--acme-staging` with a **separate storage directory** to test the
+deployment without production issuance; staging certificates are not publicly
+trusted. Specifying `--acme-agree-tos` explicitly accepts the provider's terms.
+Manual TLS and ACME options cannot be combined.
+
+Programmatic configuration uses `tls: { mode: "manual", certPath, keyPath }` or
+`tls: { mode: "acme", domain, email, storageDir, termsOfServiceAgreed: true }`.
+Both modes require TLS 1.2 or newer.
 
 ## Lichess token (optional)
 
@@ -353,10 +434,64 @@ rejected:
   connections at 128 and applies a 15-second body upload deadline plus bounded
   header, socket, and keep-alive timeouts.
 
-Programmatic users can override the HTTP limits through `HttpServerOptions`.
-These safeguards do not replace public-edge quotas: a public deployment must
-still enforce request, connection, and authentication limits at the reverse
-proxy.
+HTTP applies global and IP limits even without authentication; authenticated
+requests additionally consume Bearer limits. Sessions or keys cannot bypass an
+IP quota, and changing IP cannot bypass a Bearer quota. Counters are local to
+one server runtime and reset on restart; they are not distributed quotas.
+
+| Resource | Per IP | Per Bearer | Global |
+| --- | --- | --- | --- |
+| Requests/minute (burst) | 60 (10) | 60 (10) | 600 (100) |
+| Session creations/minute (burst) | 6 (2) | 6 (2) | 60 (10) |
+| Heavy tool calls/minute (burst) | 12 (2) | 12 (2) | 60 (10) |
+| Open sessions | 4 | 4 | 64 |
+| Concurrent operations | 2 | 2 | 16 |
+| TCP connections | 8 | — | 128 |
+
+Failed authentication has an additional IP budget of 10/minute (burst 5).
+The failure budgets apply only to invalid credentials; exhausted failure budgets
+do not reject valid Bearers. Ordinary global/IP/Bearer request limits still apply.
+Cancellation and deletion use a separate bounded control budget. HTTP rejection
+returns `429` and `Retry-After`; tool-level throttling returns `RATE_LIMITED`
+with `error.retry_after_seconds`. Existing upload and concurrency protections
+still apply. Identity state is bounded; new identities are rejected when the
+state table is full instead of evicting active quotas.
+
+A tool call consumes one heavy token when its first heavy operation starts.
+Multiple moves in `move_evaluate`, internal retries, and parallel work within that
+call do not consume extra tokens. Each tool call in a JSON-RPC batch has its own
+budget. Input validation failures and work rejected by concurrency limits before
+starting consume no heavy tokens; started work is not refunded on failure or
+cancellation. Actual service operations still acquire separate concurrency slots
+and hold them until they settle, including uncooperative cancelled work. Larger
+calls can cost more CPU time even though their token cost is the same; input
+limits and engine concurrency safeguards remain in force.
+
+By default the client IP is the socket peer. Repeat `--trusted-proxy <CIDR>` to
+trust explicit reverse proxies: only their `X-Forwarded-For` chain is used,
+walking from the nearest hop to the first untrusted address. Your proxy must
+overwrite or correctly append this header. IPv4-mapped addresses are normalized
+and IPv6 quotas use /64 prefixes. TCP quotas always apply to the actual peer;
+adjust them when a trusted proxy aggregates many clients. Public-edge protection
+is still useful against traffic that saturates the host or network itself.
+
+Programmatic users can override limits through `HttpServerOptions`; use
+`--help` for the corresponding CLI settings.
+
+For example, tune IP request and work budgets independently:
+
+```bash
+node dist/index.js --http \
+  --rate-limit-ip-request-per-minute 120 --rate-limit-ip-request-burst 20 \
+  --rate-limit-ip-work-per-minute 6 --rate-limit-ip-work-burst 2 \
+  --max-connections-per-ip 8 --max-sessions-per-ip 4 --max-work-per-ip 2
+```
+
+The equivalent API settings are
+`rateLimits: { request: { ip: { ratePerMinute: 120, burst: 20 } }, work: { ip: { ratePerMinute: 6, burst: 2 } } }`.
+Each `global`, `ip`, and `bearer` dimension is independently configurable. A zero
+rate denies that operation; it does not disable its limiter. Shared NATs share
+IP budgets, so adjust limits to your actual deployment.
 
 MCP cancellation notifications, session deletion, and server shutdown propagate
 to body uploads and Stockfish, Lc0, Maia, and Lichess work. Stockfish stops safely at

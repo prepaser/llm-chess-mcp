@@ -28,7 +28,7 @@ process.on("message", ({ id, modelPath }: Request) => {
       send({
         id,
         ok: true,
-        logits: new Float32Array([process.env.LICHESS_TOKEN === undefined ? 1 : -1]),
+        logits: new Float32Array([process.env.LICHESS_TOKEN === undefined && process.env.HTTP_BEARER === undefined ? 1 : -1]),
       });
       return;
     case "node-options":

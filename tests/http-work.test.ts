@@ -130,12 +130,94 @@ test("HTTP work admission preserves class-based service methods and receivers", 
   }
 
   const services = new ClassServices();
+  const scopedGames = services.games.forScope("bearer:test");
   const admitted = withSessionWorkAdmission(
     services,
     async (_signal, work) => work(new AbortController().signal),
+    scopedGames,
   );
+  assert.equal(admitted.games, scopedGames);
+  assert.notEqual(admitted.games, services.games);
   assert.equal(admitted.explorerEnabled(), true);
   assert.deepEqual(admitted.rankByIntent([], "best"), []);
   await admitted.quit();
   assert.equal(services.quitCalls, 1);
+});
+
+test("HTTP work admission forwards optional multi-engine services", async () => {
+  let runs = 0;
+  let engineCalls = 0;
+  let candidateCalls = 0;
+  let rankCalls = 0;
+  let forwardedRanker: unknown;
+  const services = {
+    games: new GameStore(),
+    analyze: async () => [],
+    analyzeEngines: async (..._args: Parameters<NonNullable<AppServices["analyzeEngines"]>>) => {
+      engineCalls += 1;
+      return undefined as never;
+    },
+    humanMoveDistribution: async () => [],
+    explorerEnabled: () => false,
+    openingExplorer: async () => ({ db: "lichess" as const, white: 0, draws: 0, black: 0, moves: [], opening: null }),
+    computeCandidates: async () => ({ candidates: [], moveSensitivity: { level: "low" as const, topMoveSpreadCp: null } }),
+    computeEngineCandidates: async (..._args: Parameters<NonNullable<AppServices["computeEngineCandidates"]>>) => {
+      candidateCalls += 1;
+      return undefined as never;
+    },
+    rankEngineCandidates: (...args: Parameters<NonNullable<AppServices["rankEngineCandidates"]>>) => {
+      rankCalls += 1;
+      forwardedRanker = args[3];
+      return [...args[0]];
+    },
+    rankByIntent: (candidates: never[]) => candidates,
+    quit: async () => {},
+  } satisfies AppServices;
+  const admitted = withSessionWorkAdmission(services, async (_signal, work) => {
+    runs += 1;
+    return work(new AbortController().signal);
+  });
+
+  await admitted.analyzeEngines?.(undefined as never, undefined as never);
+  await admitted.computeEngineCandidates?.(undefined as never, 1, undefined as never, 1, null);
+  const ranker: AppServices["rankByIntent"] = (candidates) => candidates;
+  assert.deepEqual(admitted.rankEngineCandidates?.([], "best", [], ranker), []);
+  assert.equal(forwardedRanker, ranker);
+  assert.equal(engineCalls, 1);
+  assert.equal(candidateCalls, 1);
+  assert.equal(rankCalls, 1);
+  assert.equal(runs, 2);
+});
+
+test("optional engine methods added or replaced later cannot bypass work admission", async () => {
+  const services: AppServices = {
+    games: new GameStore(),
+    analyze: async () => [],
+    humanMoveDistribution: async () => [],
+    explorerEnabled: () => false,
+    openingExplorer: async () => ({ db: "lichess", white: 0, draws: 0, black: 0, moves: [], opening: null }),
+    computeCandidates: async () => ({ candidates: [], moveSensitivity: { level: "low", topMoveSpreadCp: null } }),
+    rankByIntent: (candidates) => candidates,
+    quit: async () => {},
+  };
+  let runs = 0;
+  const seen: string[] = [];
+  const admitted = withSessionWorkAdmission(services, async (signal, work) => {
+    runs += 1;
+    return work(signal);
+  });
+  assert.equal(admitted.analyzeEngines, undefined);
+  assert.equal(admitted.computeEngineCandidates, undefined);
+  for (const name of ["first", "replacement"]) {
+    services.analyzeEngines = async () => { seen.push(`analyze:${name}`); return undefined as never; };
+    services.computeEngineCandidates = async () => { seen.push(`candidates:${name}`); return undefined as never; };
+    await (admitted as AppServices).analyzeEngines!(undefined as never, undefined as never);
+    await (admitted as AppServices).computeEngineCandidates!(undefined as never, 1500, undefined as never, 5);
+  }
+  assert.equal(runs, 4);
+  assert.deepEqual(seen, ["analyze:first", "candidates:first", "analyze:replacement", "candidates:replacement"]);
+  delete services.analyzeEngines;
+  delete services.computeEngineCandidates;
+  assert.equal(admitted.analyzeEngines, undefined);
+  assert.equal(admitted.computeEngineCandidates, undefined);
 });

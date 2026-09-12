@@ -40,13 +40,26 @@ async function fixture() {
   };
 }
 
-test("Lc0 performs a UCI handshake and returns MultiPV lines", async () => {
+test("Lc0 performs a UCI handshake without inheriting application credentials", async (t) => {
+  const env = globalThis.process.env;
+  const bearer = env.HTTP_BEARER;
+  const lichess = env.LICHESS_TOKEN;
+  env.HTTP_BEARER = "test-bearer";
+  env.LICHESS_TOKEN = "test-lichess";
+  t.after(() => {
+    if (bearer === undefined) delete env.HTTP_BEARER;
+    else env.HTTP_BEARER = bearer;
+    if (lichess === undefined) delete env.LICHESS_TOKEN;
+    else env.LICHESS_TOKEN = lichess;
+  });
   const { root, manifest } = await fixture();
   let process: FakeLc0Process | undefined;
   const engine = new Lc0({
     manifest,
     manifestPath: join(root, "manifest.json"),
-    spawn: (_executable, args) => {
+    spawn: (_executable, args, options) => {
+      assert.equal(options.env?.HTTP_BEARER, undefined);
+      assert.equal(options.env?.LICHESS_TOKEN, undefined);
       assert.deepEqual(args.slice(1), ["--backend=dnnl", "--config=", "--threads=2", "--minibatch-size=16"]);
       process = new FakeLc0Process();
       return process;

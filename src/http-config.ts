@@ -1,4 +1,6 @@
 import { isIP } from "node:net";
+import type { BearerAuthOptions, HttpSecurityLimits } from "./http-security.js";
+import type { HttpTlsOptions } from "./http-tls.js";
 
 export const DEFAULT_HTTP_HOST = "127.0.0.1";
 export const DEFAULT_HTTP_PORT = 3_000;
@@ -10,6 +12,10 @@ export type HttpServerOptions = {
   port?: number;
   path?: string;
   allowedHosts?: readonly string[];
+  auth?: BearerAuthOptions;
+  trustedProxies?: readonly string[];
+  rateLimits?: HttpSecurityLimits;
+  tls?: HttpTlsOptions;
   maxSessions?: number;
   sessionIdleTtlMs?: number;
   sessionSweepIntervalMs?: number;
@@ -29,7 +35,7 @@ export type HttpServerOptions = {
 };
 
 export type HttpLimits = Required<
-  Omit<HttpServerOptions, "host" | "port" | "path" | "allowedHosts" | "requestTimeoutMs">
+  Omit<HttpServerOptions, "host" | "port" | "path" | "allowedHosts" | "requestTimeoutMs" | "auth" | "trustedProxies" | "rateLimits" | "tls">
 >;
 
 export type ResolvedHttpConfig = {
@@ -38,6 +44,7 @@ export type ResolvedHttpConfig = {
   port: number;
   path: string;
   allowedHosts: string[];
+  tls: HttpTlsOptions;
   limits: HttpLimits;
 };
 
@@ -194,7 +201,7 @@ export function resolveHttpConfig(options: HttpServerOptions): ResolvedHttpConfi
   if (isWildcardHttpBindHost(host) && options.allowedHosts === undefined) {
     throw new Error("wildcard HTTP binding requires allowed hostnames");
   }
-  const port = options.port ?? DEFAULT_HTTP_PORT;
+  const port = options.port ?? (options.tls && options.tls.mode !== "off" ? 443 : DEFAULT_HTTP_PORT);
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
     throw new Error("invalid HTTP listen address");
   }
@@ -211,12 +218,47 @@ export function resolveHttpConfig(options: HttpServerOptions): ResolvedHttpConfi
   ) {
     throw new Error("at least one allowed HTTP hostname is required");
   }
+  const tls = resolveTlsOptions(options.tls, bindHttpHost(host), port);
   return {
     host,
     listenHost: bindHttpHost(host),
     port,
     path,
     allowedHosts: normalizedAllowedHosts as string[],
+    tls,
     limits: resolveLimits(options),
   };
+}
+
+function resolveTlsOptions(
+  options: HttpTlsOptions | undefined,
+  listenHost: string,
+  port: number,
+): HttpTlsOptions {
+  const tls = options ?? { mode: "off" as const };
+  if (tls.mode === "acme") {
+    const challengePort = tls.challengePort ?? 80;
+    if (!Number.isInteger(challengePort) || challengePort < 0 || challengePort > 65_535) {
+      throw new Error("invalid ACME challenge port");
+    }
+    validateHttpTlsPortCollision(port, tls);
+    const challengeHost = tls.challengeHost === undefined
+      ? listenHost
+      : canonicalHttpHostname(tls.challengeHost);
+    if (challengeHost === null) throw new Error("invalid ACME challenge host");
+    return { ...tls, challengeHost: bindHttpHost(challengeHost), challengePort };
+  }
+  return tls;
+}
+
+/** Reject fixed listener configurations that cannot renew HTTP-01 safely. */
+export function validateHttpTlsPortCollision(
+  httpPort: number,
+  tls: HttpTlsOptions | undefined,
+): void {
+  if (!tls || tls.mode !== "acme") return;
+  const challengePort = tls.challengePort ?? 80;
+  if (httpPort > 0 && challengePort > 0 && httpPort === challengePort) {
+    throw new Error("HTTPS listen port and ACME challenge port must differ");
+  }
 }

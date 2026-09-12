@@ -1,14 +1,21 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const ALLOWED_KEYS = new Set(["LICHESS_TOKEN", "MAIA3_MODEL", "STOCKFISH_FLAVOR", "ENGINE_MODE"]);
+const ALLOWED_KEYS = new Set([
+  "LICHESS_TOKEN",
+  "MAIA3_MODEL",
+  "STOCKFISH_FLAVOR",
+  "ENGINE_MODE",
+  "HTTP_BEARER",
+]);
 
 export function loadEnv(path = ".env"): void {
   let text: string;
   try {
     text = readFileSync(resolve(process.cwd(), path), "utf8");
-  } catch {
-    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new Error("failed to read environment configuration", { cause: error });
   }
   for (const line of text.split("\n")) {
     const trimmed = line.trim();

@@ -10,6 +10,7 @@ const E2E_RUNTIME_ENV_KEYS = new Set([
   "LICHESS_TOKEN",
   "MAIA3_MODEL",
   "STOCKFISH_FLAVOR",
+  "HTTP_BEARER",
 ]);
 
 export function childEnv(

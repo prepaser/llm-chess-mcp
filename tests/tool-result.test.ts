@@ -34,6 +34,16 @@ test("safeHandler contextually checks toolResult payloads", () => {
   assert.equal(typeof invalid, "function");
 });
 
+test("rate limit errors retain structured retry timing", async () => {
+  const handler = safeHandler(z.object({}), z.object({}), async () => {
+    throw new ChessError("RATE_LIMITED", "work limit reached", 5);
+  });
+  const result = await handler({});
+  assert.deepEqual(result.structuredContent, {
+    error: { code: "RATE_LIMITED", message: "work limit reached", retry_after_seconds: 5 },
+  });
+});
+
 test("toolError returns a structured MCP tool error", () => {
   assert.deepEqual(toolError("GAME_NOT_FOUND", "game not found: missing"), {
     content: [{ type: "text", text: "GAME_NOT_FOUND: game not found: missing" }],

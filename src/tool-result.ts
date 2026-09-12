@@ -2,6 +2,7 @@ import type { ServerContext } from "@modelcontextprotocol/server";
 import type { ExplorerErrorKind } from "./domain.js";
 import { ChessError } from "./errors.js";
 import { ExplorerError } from "./explorer.js";
+import { withToolInvocation } from "./tool-invocation.js";
 import * as z from "zod/v4";
 
 const UNABORTABLE_SIGNAL = new AbortController().signal;
@@ -18,7 +19,7 @@ type ToolSuccessResult<StructuredContent extends Record<string, unknown>> =
 
 export type ToolErrorResult = {
   content: { type: "text"; text: string }[];
-  structuredContent: { error: { code: string; message: string } };
+  structuredContent: { error: { code: string; message: string; retry_after_seconds?: number } };
   isError: true;
 };
 
@@ -46,10 +47,10 @@ export function toolResult<StructuredContent extends Record<string, unknown>>(
   };
 }
 
-export function toolError(code: string, message: string): ToolErrorResult {
+export function toolError(code: string, message: string, retryAfterSeconds?: number): ToolErrorResult {
   return {
     content: [{ type: "text", text: `${code}: ${message}` }],
-    structuredContent: { error: { code, message } },
+    structuredContent: { error: { code, message, ...(retryAfterSeconds === undefined ? {} : { retry_after_seconds: retryAfterSeconds }) } },
     isError: true,
   };
 }
@@ -61,7 +62,7 @@ function explorerErrorCode(kind: ExplorerErrorKind): string {
 const ToolErrorSchema = z.strictObject({
   content: z.array(z.strictObject({ type: z.literal("text"), text: z.string() })).min(1),
   structuredContent: z.strictObject({
-    error: z.strictObject({ code: z.string(), message: z.string() }),
+    error: z.strictObject({ code: z.string(), message: z.string(), retry_after_seconds: z.number().int().positive().optional() }),
   }),
   isError: z.literal(true),
 });
@@ -148,7 +149,7 @@ export function safeHandler<
       if (!parsedInput.success) {
         return toolError("INVALID_INPUT", "invalid tool input");
       }
-      const result = await handler(parsedInput.data, signal);
+      const result = await withToolInvocation(() => handler(parsedInput.data, signal));
       signal.throwIfAborted();
       if (result.isError !== undefined && typeof result.isError !== "boolean") {
         throw new TypeError("tool result isError must be a boolean");
@@ -167,7 +168,7 @@ export function safeHandler<
       if (signal.aborted) {
         signal.throwIfAborted();
       }
-      if (error instanceof ChessError) return toolError(error.code, error.message);
+      if (error instanceof ChessError) return toolError(error.code, error.message, error.retryAfterSeconds);
       if (error instanceof ExplorerError) {
         return toolError(explorerErrorCode(error.kind), error.message);
       }

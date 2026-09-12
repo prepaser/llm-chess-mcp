@@ -1,15 +1,11 @@
 import { ChessError } from "./errors.js";
+import { decorateAppServices } from "./service-decorator.js";
 import type { AppServices } from "./services.js";
 
 export type WorkRunner = <T>(
   signal: AbortSignal,
   work: (signal: AbortSignal) => Promise<T>,
 ) => Promise<T>;
-
-type WorkAdmittedServices = Pick<
-  AppServices,
-  "analyze" | "humanMoveDistribution" | "openingExplorer" | "computeCandidates"
->;
 
 const NO_REQUEST_SIGNAL = new AbortController().signal;
 
@@ -56,46 +52,37 @@ export class HttpWorkAdmission {
 export function withSessionWorkAdmission(
   services: AppServices,
   run: WorkRunner,
+  games: AppServices["games"] = services.games,
 ): AppServices {
-  const admitted: WorkAdmittedServices = {
+  return decorateAppServices(services, {
+    games,
     analyze: (fen, depth, multipv, request) =>
       run(request ?? NO_REQUEST_SIGNAL, (signal) =>
-        services.analyze(fen, depth, multipv, signal),
-      ),
+        services.analyze(fen, depth, multipv, signal)),
     humanMoveDistribution: (chess, elo, opponentElo, topN, request) =>
       run(request ?? NO_REQUEST_SIGNAL, (signal) =>
-        services.humanMoveDistribution(chess, elo, opponentElo, topN, signal),
-      ),
+        services.humanMoveDistribution(chess, elo, opponentElo, topN, signal)),
     openingExplorer: (chess, db, speeds, ratings, request) =>
       run(request ?? NO_REQUEST_SIGNAL, (signal) =>
-        services.openingExplorer(chess, db, speeds, ratings, signal),
-      ),
-    computeCandidates: (
-      chess,
-      elo,
-      sfDepth,
-      sfMultipv,
-      maiaTopN,
-      lichess,
-      request,
-    ) =>
+        services.openingExplorer(chess, db, speeds, ratings, signal)),
+    computeCandidates: (chess, elo, sfDepth, sfMultipv, maiaTopN, lichess, request) =>
       run(request ?? NO_REQUEST_SIGNAL, (signal) =>
-        services.computeCandidates(
-          chess,
-          elo,
-          sfDepth,
-          sfMultipv,
-          maiaTopN,
-          lichess,
-          signal,
-        ),
-      ),
-  };
-  return {
-    games: services.games,
-    ...admitted,
-    explorerEnabled: () => services.explorerEnabled(),
-    rankByIntent: (candidates, intent) => services.rankByIntent(candidates, intent),
-    quit: () => services.quit(),
-  };
+        services.computeCandidates(chess, elo, sfDepth, sfMultipv, maiaTopN, lichess, signal)),
+    get analyzeEngines(): AppServices["analyzeEngines"] {
+      const analyze = services.analyzeEngines;
+      return analyze
+        ? (chess, request, requestSignal) =>
+            run(requestSignal ?? NO_REQUEST_SIGNAL, (signal) =>
+              analyze.call(services, chess, request, signal))
+        : undefined;
+    },
+    get computeEngineCandidates(): AppServices["computeEngineCandidates"] {
+      const compute = services.computeEngineCandidates;
+      return compute
+        ? (chess, elo, request, maiaTopN, lichess, requestSignal) =>
+            run(requestSignal ?? NO_REQUEST_SIGNAL, (signal) =>
+              compute.call(services, chess, elo, request, maiaTopN, lichess, signal))
+        : undefined;
+    },
+  });
 }

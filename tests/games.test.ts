@@ -6,6 +6,7 @@ import { parseMove } from "../src/chess.js";
 import { ChessError } from "../src/errors.js";
 import { unicodeLength } from "../src/string-length.js";
 import {
+  ANONYMOUS_GAME_SCOPE,
   GAME_TTL_MS,
   GameStore,
   MAX_GAMES,
@@ -156,6 +157,51 @@ test("GameStore isolates game collections", () => {
 
   assert.deepEqual(left.listGames(), ["0:left"]);
   assert.deepEqual(right.listGames(), ["0:right"]);
+});
+
+test("scoped repositories isolate games while sharing global capacity", () => {
+  const store = new GameStore({ maxGames: 2, createId: (() => {
+    let id = 0;
+    return () => `scoped-${id++}`;
+  })() });
+  const left = store.forScope("left");
+  const right = store.forScope("right");
+  const sameScope = store.forScope("left");
+  const leftId = left.createGame();
+  const rightId = right.createGame();
+
+  assert.equal(left.getSnapshot(leftId).revision, 0);
+  assert.equal(sameScope.getSnapshot(leftId).revision, 0);
+  assert.equal(right.getSnapshot(rightId).revision, 0);
+  expectChessError("GAME_NOT_FOUND", () => right.getSnapshot(leftId));
+  assert.equal(left.listGames().length, 1);
+  assert.equal(right.listGames().length, 1);
+  assert.equal(store.gameCount(), 2);
+  assert.equal(left.deleteGame(rightId), false);
+  expectChessError("GAME_LIMIT_REACHED", () => left.createGame());
+});
+
+test("GameStore public methods retain anonymous scope behavior", () => {
+  const store = new GameStore({ createId: () => "anonymous" });
+  const scoped = store.forScope(ANONYMOUS_GAME_SCOPE);
+  const id = store.createGame();
+  assert.equal(scoped.getSnapshot(id).revision, 0);
+  assert.deepEqual(scoped.listGames(), [id]);
+});
+
+test("cross-scope access does not refresh or delete another scope's TTL", () => {
+  let now = 0;
+  const store = new GameStore({ clock: () => now });
+  const left = store.forScope("left");
+  const right = store.forScope("right");
+  const id = left.createGame();
+
+  now = GAME_TTL_MS - 1;
+  expectChessError("GAME_NOT_FOUND", () => right.getSnapshot(id));
+  assert.equal(left.gameCount(), 1);
+  now = GAME_TTL_MS;
+  expectChessError("GAME_EXPIRED", () => left.getSnapshot(id));
+  assert.equal(left.gameCount(), 0);
 });
 
 test("GameStore validates limits and generations distinguish repeated ID sources", () => {

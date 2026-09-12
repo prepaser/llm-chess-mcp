@@ -13,8 +13,8 @@ import {
   waitForOutput,
 } from "../support/process.js";
 
-test(
-  "CLI serves Streamable HTTP and shuts down cleanly",
+for (const bearer of [undefined, "personal-e2e-bearer"] as const) test(
+  `CLI serves ${bearer ? "Bearer-authenticated" : "anonymous"} Streamable HTTP and shuts down cleanly`,
   { timeout: 30_000 },
   async () => {
     const child = spawn(
@@ -22,7 +22,7 @@ test(
       ["dist/index.js", "--transport", "http", "--port", "0"],
       {
         cwd: REPO,
-        env: childEnv(),
+        env: { ...childEnv(), ...(bearer ? { HTTP_BEARER: bearer } : {}) },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -51,7 +51,14 @@ test(
     try {
       await ready;
       assert.ok(endpoint);
-      const transport = new StreamableHTTPClientTransport(new URL(endpoint));
+      if (bearer) {
+        const unauthorized = await fetch(endpoint);
+        assert.equal(unauthorized.status, 401);
+        await unauthorized.text();
+      }
+      const transport = new StreamableHTTPClientTransport(new URL(endpoint), {
+        ...(bearer ? { requestInit: { headers: { Authorization: `Bearer ${bearer}` } } } : {}),
+      });
       await client.connect(transport);
       const tools = await client.listTools();
       assert.ok(tools.tools.some(({ name }) => name === "create_game"));

@@ -266,6 +266,9 @@ function serverEnv() {
   env[pathKey] = [dirname(process.execPath), env[pathKey]].filter(Boolean).join(delimiter);
   env.LICHESS_TOKEN = "";
   for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === "http_bearer") delete env[key];
+  }
+  for (const key of Object.keys(env)) {
     if (key.toLowerCase() === "engine_mode") delete env[key];
   }
   for (const key of Object.keys(env)) {

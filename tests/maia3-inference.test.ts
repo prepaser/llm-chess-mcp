@@ -264,15 +264,19 @@ test("validates child pool configuration", () => {
   }
 });
 
-test("inference children do not inherit the Lichess credential", async () => {
+test("inference children do not inherit application credentials", async () => {
   const previous = process.env.LICHESS_TOKEN;
+  const bearer = process.env.HTTP_BEARER;
   process.env.LICHESS_TOKEN = "secret";
+  process.env.HTTP_BEARER = "test-bearer";
   const pool = new MaiaWorkerPool(1, 2_000, testChildUrl);
   try {
     assert.deepEqual(await pool.run(poolRequest("env")), new Float32Array([1]));
   } finally {
     if (previous === undefined) delete process.env.LICHESS_TOKEN;
     else process.env.LICHESS_TOKEN = previous;
+    if (bearer === undefined) delete process.env.HTTP_BEARER;
+    else process.env.HTTP_BEARER = bearer;
     await pool.close(new Error("closed"));
   }
 });

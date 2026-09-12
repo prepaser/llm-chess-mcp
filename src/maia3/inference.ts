@@ -18,6 +18,7 @@ import type {
   MaiaWorkerResponse,
 } from "./inference-worker.js";
 import { resolveModelPath } from "./model.js";
+import { engineChildEnv } from "../engine-env.js";
 
 const DEFAULT_MAX_CONCURRENCY = 2;
 const DEFAULT_MAX_QUEUE = 32;
@@ -233,10 +234,7 @@ export function withoutNodeInputType(value: string): string {
 }
 
 function childEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === "LICHESS_TOKEN") delete env[key];
-  }
+  const env = engineChildEnv();
   if (env.NODE_OPTIONS) {
     env.NODE_OPTIONS = withoutNodeInputType(env.NODE_OPTIONS);
   }

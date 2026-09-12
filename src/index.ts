@@ -10,11 +10,24 @@ import { buildServer } from "./server.js";
 export { buildServer } from "./server.js";
 export { serveHttp } from "./http.js";
 export { ChessError } from "./errors.js";
-export { GAME_TTL_MS, GameStore, MAX_GAMES } from "./games.js";
+export {
+  ANONYMOUS_GAME_SCOPE,
+  createScopedGameRepository,
+  GAME_TTL_MS,
+  GameStore,
+  MAX_GAMES,
+} from "./games.js";
 export { ExplorerError } from "./explorer.js";
 export type { HttpServerHandle, HttpServerOptions } from "./http.js";
+export type { BearerAuthOptions, HttpSecurityLimits, RateLimit, SecurityRateLimitConfig } from "./http-security.js";
+export type { HttpTlsOptions } from "./http-tls.js";
 export type { ExplorerResult } from "./explorer.js";
-export type { GameSnapshot, GameStoreOptions } from "./games.js";
+export type {
+  GameRepository,
+  GameScope,
+  GameSnapshot,
+  GameStoreOptions,
+} from "./games.js";
 export type { CandidateSet, LichessOpts } from "./intents.js";
 export type {
   Candidate,
@@ -97,11 +110,14 @@ async function main(): Promise<void> {
     return;
   }
 
+  const { allowedHosts, ...httpOptions } = options;
   const handle = await serveHttp({
-    host: options.host,
-    port: options.port,
-    path: options.path,
-    ...(options.allowedHosts.length ? { allowedHosts: options.allowedHosts } : {}),
+    ...httpOptions,
+    ...(allowedHosts.length ? { allowedHosts } : {}),
+    auth: {
+      ...(process.env.HTTP_BEARER === undefined ? {} : { bearer: process.env.HTTP_BEARER }),
+      ...(options.bearerFile === undefined ? {} : { bearerFile: options.bearerFile }),
+    },
   });
   console.error(`llm-chess-mcp listening on ${handle.url}`);
   installShutdown(() => handle.close());

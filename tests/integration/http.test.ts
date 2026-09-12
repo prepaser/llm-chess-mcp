@@ -538,10 +538,10 @@ test("Streamable HTTP rejects invalid routing, sessions, and browser headers", a
   const rejectedHost = await httpRequest(http.url, { headers: { host: "attacker.example" } });
   assert.equal(rejectedHost.status, 403);
 
-  const rejectedOrigin = await httpRequest(http.url, {
+  const unrestrictedOrigin = await httpRequest(http.url, {
     headers: { origin: "https://attacker.example" },
   });
-  assert.equal(rejectedOrigin.status, 403);
+  assert.equal(unrestrictedOrigin.status, 400);
 });
 
 test("Streamable HTTP validates resource limits before listening", async () => {
@@ -838,7 +838,6 @@ test("Streamable HTTP closes rejected slow request bodies", async (t) => {
 
   for (const [label, headers] of [
     ["invalid Host", ["Host: attacker.example"]],
-    ["invalid Origin", ["Host: 127.0.0.1", "Origin: https://attacker.example"]],
   ] as const) {
     const response = await slowRejectedRequest(http.url, headers, label);
     assert.match(response, /^HTTP\/1\.1 403 /);
@@ -851,7 +850,20 @@ test("Streamable HTTP closes rejected slow request bodies", async (t) => {
 });
 
 test("Streamable HTTP bounds declared and chunked request bodies", async (t) => {
-  const http = await serveHttp({ port: 0, maxRequestBodyBytes: 8 }, fakeServices(new GameStore()));
+  const http = await serveHttp(
+    {
+      port: 0,
+      maxRequestBodyBytes: 8,
+      rateLimits: {
+        initialize: {
+          global: { ratePerMinute: 100, burst: 100 },
+          ip: { ratePerMinute: 100, burst: 100 },
+          bearer: { ratePerMinute: 100, burst: 100 },
+        },
+      },
+    },
+    fakeServices(new GameStore()),
+  );
   t.after(() => http.close());
 
   const oversized = "x".repeat(9);
@@ -904,7 +916,18 @@ test("Streamable HTTP bounds declared and chunked request bodies", async (t) => 
 
 test("Streamable HTTP rejects ordinary overflow body probes", async (t) => {
   const http = await serveHttp(
-    { port: 0, maxConcurrentPosts: 1, maxConcurrentPostsPerSession: 1 },
+    {
+      port: 0,
+      maxConcurrentPosts: 1,
+      maxConcurrentPostsPerSession: 1,
+      rateLimits: {
+        initialize: {
+          global: { ratePerMinute: 100, burst: 100 },
+          ip: { ratePerMinute: 100, burst: 100 },
+          bearer: { ratePerMinute: 100, burst: 100 },
+        },
+      },
+    },
     fakeServices(new GameStore()),
   );
   const uploads: Awaited<ReturnType<typeof partialPost>>[] = [];
