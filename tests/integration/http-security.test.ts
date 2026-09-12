@@ -331,6 +331,53 @@ test("Streamable HTTP rejects authenticated services without game scoping", asyn
   );
 });
 
+test("authenticated sessions fail closed when the game repository loses scoping", async (t) => {
+  const services = fakeServices(new GameStore());
+  const budget = { ratePerMinute: 60, burst: 10 };
+  const http = await serveHttp({
+    port: 0,
+    auth: { bearer: "alpha" },
+    rateLimits: { initialize: { global: budget, ip: budget, bearer: budget } },
+    maxSessions: 2,
+  }, services);
+  t.after(() => http.close());
+  const existing = await initialize(http.url, "alpha");
+  assert.equal(existing.response.status, 200);
+  const replacement = new GameStore();
+  services.games = replacement.forScope("anonymous");
+  const errors = t.mock.method(console, "error", () => {});
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const rejected = await initialize(http.url, "alpha");
+    assert.equal(rejected.response.status, 500);
+    assert.equal(rejected.sessionId, "");
+    assert.equal(http.sessionCount(), 1);
+  }
+  errors.mock.restore();
+  const retained = await callTool(http.url, existing.sessionId, "alpha", "create_game", {});
+  assert.notEqual(retained.result.isError, true);
+  assert.equal(replacement.gameCount(), 0);
+  services.games = replacement;
+  const recovered = await initialize(http.url, "alpha");
+  assert.equal(recovered.response.status, 200);
+  const created = await callTool(http.url, recovered.sessionId, "alpha", "create_game", {});
+  assert.notEqual(created.result.isError, true);
+  assert.equal(replacement.forScope("anonymous").gameCount(), 0);
+  assert.equal(replacement.gameCount(), 1);
+});
+
+test("anonymous sessions still accept replacement repositories without a scope factory", async (t) => {
+  const services = fakeServices(new GameStore());
+  const http = await serveHttp({ port: 0 }, services);
+  t.after(() => http.close());
+  const replacement = new GameStore().forScope("anonymous");
+  services.games = replacement;
+  const session = await initialize(http.url);
+  assert.equal(session.response.status, 200);
+  const created = await callTool(http.url, session.sessionId, undefined, "create_game", {});
+  assert.notEqual(created.result.isError, true);
+  assert.equal(replacement.gameCount(), 1);
+});
+
 test("Streamable HTTP loads one Bearer per line from the Bearer file", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "llm-chess-http-auth-"));
   const bearerFile = join(directory, "bearers.txt");

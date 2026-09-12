@@ -100,6 +100,9 @@ const server = await serveHttp({ port: 3000, bodyTimeoutMs: 15_000 });
 await server.close();
 ```
 
+Pass `signal: abortController.signal` to cancel pending startup, including initial
+ACME issuance. Once startup resolves, use `server.close()` to stop the server.
+
 The root API also exports `buildServer`, `GameStore`, `ChessError`,
 `ExplorerError`, the service/domain types needed to provide custom
 `AppServices`, and safe chess helpers including `parseImportedPgn`, `pgnOf`,

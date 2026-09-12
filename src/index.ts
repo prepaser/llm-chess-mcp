@@ -111,16 +111,33 @@ async function main(): Promise<void> {
   }
 
   const { allowedHosts, ...httpOptions } = options;
-  const handle = await serveHttp({
+  const startupAbort = new AbortController();
+  const startup = serveHttp({
     ...httpOptions,
+    signal: startupAbort.signal,
     ...(allowedHosts.length ? { allowedHosts } : {}),
     auth: {
       ...(process.env.HTTP_BEARER === undefined ? {} : { bearer: process.env.HTTP_BEARER }),
       ...(options.bearerFile === undefined ? {} : { bearerFile: options.bearerFile }),
     },
   });
+  installShutdown(async () => {
+    startupAbort.abort();
+    const handle = await startup.catch((error: unknown) => {
+      if (error !== startupAbort.signal.reason) throw error;
+      return undefined;
+    });
+    await handle?.close();
+  });
+  let handle: Awaited<typeof startup>;
+  try {
+    handle = await startup;
+  } catch (error) {
+    if (error === startupAbort.signal.reason) return;
+    throw error;
+  }
+  if (startupAbort.signal.aborted) return;
   console.error(`llm-chess-mcp listening on ${handle.url}`);
-  installShutdown(() => handle.close());
 }
 
 function isDirectEntry(entry: string | undefined): boolean {

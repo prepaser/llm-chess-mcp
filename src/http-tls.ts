@@ -5,6 +5,7 @@ import type { SecureContext } from "node:tls";
 import { isIP } from "node:net";
 import {
   acmeAbortStorage,
+  installAcmeAbortPolling,
   installAcmeAbortInterceptor,
   loadAcme as defaultLoadAcme,
   unwrapAcmeModule as unwrapModule,
@@ -375,9 +376,11 @@ class TlsController implements HttpTlsController {
       this.ensureIssueActive(generation);
       const privateKey = Buffer.isBuffer(privateKeyRaw) ? privateKeyRaw.toString("utf8") : String(privateKeyRaw);
       const csr = Buffer.isBuffer(csrRaw) ? csrRaw : String(csrRaw);
-      const client = new acme.Client({ directoryUrl: options.directoryUrl ?? DEFAULT_DIRECTORY_URL, accountKey });
+      // acme-client's retry timer cannot be cancelled; polling is wrapped below.
+      const client = new acme.Client({ directoryUrl: options.directoryUrl ?? DEFAULT_DIRECTORY_URL, accountKey, backoffAttempts: 1 });
       const abortController = new AbortController();
       this.issueAbortControllers.set(generation, abortController);
+      installAcmeAbortPolling(client, abortController.signal);
       const certificateOperation = acmeAbortStorage.run(abortController.signal, () => client.auto({
         csr,
         email: options.email,

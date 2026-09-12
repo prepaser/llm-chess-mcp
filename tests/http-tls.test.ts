@@ -10,6 +10,7 @@ import { connect as connectTls } from "node:tls";
 import { X509Certificate } from "node:crypto";
 import test from "node:test";
 import { prepareHttpTls } from "../src/http-tls.js";
+import { installAcmeAbortPolling, type AcmeClient } from "../src/http-tls-acme.js";
 import { serveHttp } from "../src/http.js";
 import { resolveHttpConfig } from "../src/http-config.js";
 
@@ -400,6 +401,87 @@ test("ACME close aborts the real callable Axios instance's network request", { t
   await rejected;
   await disconnecting;
   await assert.rejects(stat(join(dir, "certificate-bundle.json")), { code: "ENOENT" });
+});
+
+test("ACME polling cancellation stops the installed client's retry timer", { timeout: 5_000 }, async () => {
+  const acme = await import("acme-client");
+  const pollingClient = new acme.Client({ directoryUrl: "http://127.0.0.1/unused", accountKey: "unused", backoffAttempts: 1 }) as unknown as AcmeClient;
+  const statuses = ["pending", "valid"];
+  let pollingAttempts = 0;
+  pollingClient.api!.apiRequest = async () => {
+    pollingAttempts += 1;
+    return { data: { status: statuses.shift() } };
+  };
+  installAcmeAbortPolling(pollingClient, new AbortController().signal, { attempts: 3, min: 1, max: 1 });
+  assert.deepEqual(await pollingClient.waitForValidStatus!({ url: "http://127.0.0.1/unused" }), { status: "valid" });
+  assert.equal(pollingAttempts, 2);
+
+  const invalidClient = new acme.Client({ directoryUrl: "http://127.0.0.1/unused", accountKey: "unused", backoffAttempts: 1 }) as unknown as AcmeClient;
+  let invalidAttempts = 0;
+  invalidClient.api!.apiRequest = async () => {
+    invalidAttempts += 1;
+    return { data: { status: "invalid", detail: "certificate rejected\n" } };
+  };
+  installAcmeAbortPolling(invalidClient, new AbortController().signal, { attempts: 3, min: 1, max: 1 });
+  await assert.rejects(invalidClient.waitForValidStatus!({ url: "http://127.0.0.1/unused" }), /certificate rejected/);
+  assert.equal(invalidAttempts, 1);
+
+  const lateClient = new acme.Client({ directoryUrl: "http://127.0.0.1/unused", accountKey: "unused", backoffAttempts: 1 }) as unknown as AcmeClient;
+  const lateAbort = new AbortController();
+  lateClient.api!.apiRequest = async () => {
+    lateAbort.abort();
+    return { data: { status: "valid" } };
+  };
+  installAcmeAbortPolling(lateClient, lateAbort.signal);
+  await assert.rejects(lateClient.waitForValidStatus!({ url: "http://127.0.0.1/unused" }), { name: "AbortError" });
+
+  const client = new acme.Client({ directoryUrl: "http://127.0.0.1/unused", accountKey: "unused", backoffAttempts: 1 }) as unknown as AcmeClient;
+  const controller = new AbortController();
+  let attempts = 0;
+  client.api!.apiRequest = async () => {
+    attempts += 1;
+    return { data: { status: "pending" } };
+  };
+  installAcmeAbortPolling(client, controller.signal, { attempts: 3, min: 1_000, max: 1_000 });
+  const pending = client.waitForValidStatus!({ url: "http://127.0.0.1/unused" });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(attempts, 1);
+});
+
+test("ACME challenge verification retries normally and cancels its retry delay", { timeout: 5_000 }, async (t) => {
+  const acme = await import("acme-client");
+  let attempts = 0;
+  let valid = true;
+  t.mock.method(acme.axios, "get", async () => ({
+    data: ++attempts > 1 && valid ? "token.thumbprint" : "not-ready",
+  }));
+  const makeClient = (): AcmeClient => {
+    const client = new acme.Client({ directoryUrl: "http://127.0.0.1/unused", accountKey: "unused", backoffAttempts: 1 });
+    client.getChallengeKeyAuthorization = async () => "token.thumbprint";
+    return client as unknown as AcmeClient;
+  };
+  const authz = { url: "http://127.0.0.1/authz", identifier: { value: "localhost" } };
+  const challenge = { url: "http://127.0.0.1/challenge", type: "http-01", token: "token" };
+  const normal = makeClient();
+  installAcmeAbortPolling(normal, new AbortController().signal, { attempts: 3, min: 1, max: 1 });
+  await normal.verifyChallenge!(authz, challenge);
+  assert.equal(attempts, 2);
+  await assert.rejects(normal.verifyChallenge!({}, challenge), /URL not found/);
+  await assert.rejects(normal.verifyChallenge!(authz, { ...challenge, type: "unsupported" }), /unknown type/);
+  assert.equal(attempts, 2);
+
+  attempts = 0;
+  valid = false;
+  const cancelled = makeClient();
+  const controller = new AbortController();
+  installAcmeAbortPolling(cancelled, controller.signal, { attempts: 3, min: 1_000, max: 1_000 });
+  const pending = cancelled.verifyChallenge!(authz, challenge);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(attempts, 1);
 });
 
 test("ACME never serves or persists a certificate for a different domain", async (t) => {

@@ -349,16 +349,17 @@ export class HttpRuntime {
           return;
         }
         try {
+          const owner = typeof subject.bearer === "string" ? subject.bearer : subject.bearer?.digest;
+          const repository = this.services.games;
+          const games = owner !== undefined || typeof repository.forScope === "function"
+            ? createScopedGameRepository(repository, owner !== undefined ? `bearer:${owner}` : ANONYMOUS_GAME_SCOPE)
+            : repository;
           const transport = new NodeStreamableHTTPServerTransport({
             sessionIdGenerator: randomUUID,
             onsessioninitialized: (id) => reservation.initialized(id),
             onsessionclosed: (id) => reservation.closed(id),
           });
           const abort = new AbortController();
-          const owner = typeof subject.bearer === "string" ? subject.bearer : subject.bearer?.digest;
-          const games = this.services.games.forScope
-            ? createScopedGameRepository(this.services.games, owner ? `bearer:${owner}` : ANONYMOUS_GAME_SCOPE)
-            : this.services.games;
           const run = this.#workAdmission.forSession(abort.signal);
           const mcp = buildServer(
             withSessionWorkAdmission(

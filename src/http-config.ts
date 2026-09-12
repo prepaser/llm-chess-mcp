@@ -8,6 +8,8 @@ export const DEFAULT_HTTP_PATH = "/mcp";
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export type HttpServerOptions = {
+  /** Cancels startup; use the returned handle to close a running server. */
+  signal?: AbortSignal;
   host?: string;
   port?: number;
   path?: string;
@@ -35,7 +37,7 @@ export type HttpServerOptions = {
 };
 
 export type HttpLimits = Required<
-  Omit<HttpServerOptions, "host" | "port" | "path" | "allowedHosts" | "requestTimeoutMs" | "auth" | "trustedProxies" | "rateLimits" | "tls">
+  Omit<HttpServerOptions, "host" | "port" | "path" | "allowedHosts" | "requestTimeoutMs" | "auth" | "trustedProxies" | "rateLimits" | "tls" | "signal">
 >;
 
 export type ResolvedHttpConfig = {
