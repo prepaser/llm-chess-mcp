@@ -6,7 +6,6 @@ import {
   DEFAULT_HTTP_PATH,
   DEFAULT_HTTP_PORT,
   isCanonicalHttpPath,
-  isWildcardHttpBindHost,
   resolveHttpConfig,
 } from "../src/http-config.js";
 
@@ -14,16 +13,6 @@ test("HTTP configuration defaults and shared address rules stay stable", () => {
   assert.equal(DEFAULT_HTTP_HOST, "127.0.0.1");
   assert.equal(DEFAULT_HTTP_PORT, 3_000);
   assert.equal(DEFAULT_HTTP_PATH, "/mcp");
-  assert.equal(isWildcardHttpBindHost("0.0.0.0"), true);
-  assert.equal(isWildcardHttpBindHost("0x0"), true);
-  assert.equal(isWildcardHttpBindHost("[::]"), true);
-  assert.equal(isWildcardHttpBindHost("[0:0:0:0:0:0:0:0]"), true);
-  assert.equal(isWildcardHttpBindHost("0:0:0:0:0:0:0:0"), true);
-  assert.equal(isWildcardHttpBindHost("[::ffff:0.0.0.0]"), true);
-  assert.equal(isWildcardHttpBindHost("0:0:0:0:0:ffff:0:0"), true);
-  assert.equal(isWildcardHttpBindHost("[::ffff:127.0.0.1]"), false);
-  assert.equal(isWildcardHttpBindHost("127.0.0.1"), false);
-
   assert.equal(canonicalHttpHostname("EXAMPLE.COM"), "example.com");
   assert.equal(canonicalHttpHostname("127.1"), "127.0.0.1");
   assert.equal(canonicalHttpHostname("0:0:0:0:0:0:0:1"), "[::1]");
@@ -52,8 +41,12 @@ test("HTTP configuration resolves listener and resource settings together", () =
   assert.equal(config.listenHost, "127.0.0.1");
   assert.equal(config.port, 0);
   assert.equal(config.path, "/mcp");
-  assert.deepEqual(config.allowedHosts, ["localhost", "127.0.0.1", "[::1]"]);
   assert.equal(config.limits.bodyTimeoutMs, 123);
+});
+
+test("HTTP configuration accepts wildcard listener hosts", () => {
+  assert.equal(resolveHttpConfig({ host: "0.0.0.0" }).listenHost, "0.0.0.0");
+  assert.equal(resolveHttpConfig({ host: "::" }).listenHost, "::");
 });
 
 test("TLS selects HTTPS defaults without changing explicit ports or HTTP limits", () => {
@@ -67,7 +60,6 @@ test("TLS selects HTTPS defaults without changing explicit ports or HTTP limits"
 test("resolved ACME config follows the application bind host by default", () => {
   const config = resolveHttpConfig({
     host: "::",
-    allowedHosts: ["chess.example"],
     tls: {
       mode: "acme",
       domain: "chess.example",

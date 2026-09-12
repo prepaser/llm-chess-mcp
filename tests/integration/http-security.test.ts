@@ -523,7 +523,7 @@ test("Streamable HTTP isolates authenticated games and keeps anonymous games sha
   assert.equal(games.getSnapshot(alphaGameId as string).revision, 0);
 });
 
-test("Streamable HTTP allows open CORS preflight without weakening Host checks", async (t) => {
+test("Streamable HTTP allows open CORS preflight for arbitrary hosts", async (t) => {
   const http = await serveHttp({ port: 0 }, fakeServices(new GameStore()));
   t.after(() => http.close());
 
@@ -539,11 +539,11 @@ test("Streamable HTTP allows open CORS preflight without weakening Host checks",
   assert.equal(preflight.headers["access-control-allow-origin"], "*");
   assert.match(String(preflight.headers["access-control-allow-methods"]), /POST/);
 
-  const invalidHost = await httpRequest(http.url, {
+  const otherHost = await httpRequest(http.url, {
     method: "OPTIONS",
     headers: { host: "attacker.example", origin: "https://attacker.example" },
   });
-  assert.equal(invalidHost.status, 403);
+  assert.equal(otherHost.status, 204);
 });
 
 test("Streamable HTTP rate limits anonymous initialization by client IP", async (t) => {
@@ -576,6 +576,12 @@ test("Streamable HTTP rate limits anonymous initialization by client IP", async 
   });
   assert.equal(capped.status, 429);
   assert.ok(Number(capped.headers["retry-after"]) >= 1);
+});
+
+test("HTTP startup rejects malformed trusted proxy prefixes", async () => {
+  for (const proxy of ["127.0.0.1/", "::1/", "127.0.0.1/0x0", "::1/0e0"]) {
+    await assert.rejects(serveHttp({ port: 0, trustedProxies: [proxy] }), /invalid trusted proxy CIDR/);
+  }
 });
 
 test("Streamable HTTP uses X-Forwarded-For only for trusted proxies", async (t) => {

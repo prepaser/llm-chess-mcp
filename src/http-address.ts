@@ -131,6 +131,7 @@ function parseCidr(value: string): Cidr | null {
   const address = parts[0];
   const bitsText = parts[1];
   if (!address || parts.length > 2) return null;
+  if (bitsText !== undefined && !/^\d+$/.test(bitsText)) return null;
   const parsed = parseIp(address);
   if (!parsed) return null;
   const bits = bitsText === undefined ? (parsed.version === 4 ? 32 : 128) : Number(bitsText);

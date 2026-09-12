@@ -8,7 +8,6 @@ test("parseCli defaults to stdio", () => {
     host: "127.0.0.1",
     port: 3_000,
     path: "/mcp",
-    allowedHosts: [],
     help: false,
   });
 });
@@ -19,7 +18,7 @@ test("parseCli accepts HTTP transport selectors", () => {
   assert.equal(parseCli(["--transport", "http"]).transport, "http");
 });
 
-test("parseCli accepts HTTP settings and repeated allowed hosts", () => {
+test("parseCli accepts HTTP settings", () => {
   assert.deepEqual(
     parseCli([
       "--http",
@@ -28,16 +27,12 @@ test("parseCli accepts HTTP settings and repeated allowed hosts", () => {
       "--port=4000",
       "--path",
       "/chess",
-      "--allowed-host",
-      "example.com",
-      "--allowed-host=localhost",
     ]),
     {
       transport: "http",
       host: "localhost",
       port: 4_000,
       path: "/chess",
-      allowedHosts: ["example.com", "localhost"],
       help: false,
     },
   );
@@ -45,18 +40,6 @@ test("parseCli accepts HTTP settings and repeated allowed hosts", () => {
 
 test("parseCli accepts port zero for an ephemeral HTTP listener", () => {
   assert.equal(parseCli(["--http", "--port", "0"]).port, 0);
-});
-
-test("parseCli canonicalizes allowed hostnames", () => {
-  assert.deepEqual(
-    parseCli([
-      "--http",
-      "--allowed-host=EXAMPLE.COM",
-      "--allowed-host=127.1",
-      "--allowed-host=0:0:0:0:0:0:0:1",
-    ]).allowedHosts,
-    ["example.com", "127.0.0.1", "[::1]"],
-  );
 });
 
 test("parseCli canonicalizes and validates the bind host", () => {
@@ -90,21 +73,8 @@ test("parseCli rejects unknown and valueless options", () => {
   assert.throws(() => parseCli(["--unknown"]), /unknown option: --unknown/);
   assert.throws(() => parseCli(["--transport"]), /--transport requires a value/);
   assert.throws(() => parseCli(["--http=1"]), /--http takes no value/);
-  assert.throws(
-    () => parseCli(["--http", "--allowed-host", "evil.com/path"]),
-    /HTTP hostnames must be non-empty hostnames/,
-  );
-  for (const host of [
-    "example.com:3000",
-    "user@example.com",
-    "[::1]:3000",
-    "evil\\path",
-  ]) {
-    assert.throws(
-      () => parseCli(["--http", "--allowed-host", host]),
-      /HTTP hostnames must be non-empty hostnames/,
-    );
-  }
+  assert.throws(() => parseCli(["--http", "--allowed-host", "example.com"]), /unknown option: --allowed-host/);
+  assert.throws(() => parseCli(["--http", "--allowed-host=example.com"]), /unknown option: --allowed-host/);
 });
 
 test("parseCli rejects invalid ports and paths", () => {
@@ -129,14 +99,13 @@ test("parseCli rejects HTTP settings with stdio transport", () => {
     ["--host", "localhost"],
     ["--port", "4000"],
     ["--path", "/chess"],
-    ["--allowed-host", "example.com"],
     ["--transport=stdio", "--host", "localhost"],
   ]) {
     assert.throws(() => parseCli(args), /HTTP options require --transport http/);
   }
 });
 
-test("parseCli requires allowed hosts for wildcard HTTP bindings", () => {
+test("parseCli accepts wildcard HTTP bindings without a host allowlist", () => {
   for (const host of [
     "0.0.0.0",
     "::",
@@ -145,20 +114,8 @@ test("parseCli requires allowed hosts for wildcard HTTP bindings", () => {
     "[0:0:0:0:0:0:0:0]",
     "0x0",
   ]) {
-    assert.throws(
-      () => parseCli(["--http", "--host", host]),
-      /wildcard HTTP binding requires at least one --allowed-host/,
-    );
+    assert.doesNotThrow(() => parseCli(["--http", "--host", host]));
   }
-
-  assert.deepEqual(parseCli(["--http", "--host", "0.0.0.0", "--allowed-host", "example.com"]), {
-    transport: "http",
-    host: "0.0.0.0",
-    port: 3_000,
-    path: "/mcp",
-    allowedHosts: ["example.com"],
-    help: false,
-  });
 });
 
 test("parseCli accepts bearer file, proxy, and rate-limit settings", () => {
@@ -181,7 +138,6 @@ test("parseCli accepts bearer file, proxy, and rate-limit settings", () => {
       host: "127.0.0.1",
       port: 3_000,
       path: "/mcp",
-      allowedHosts: [],
       bearerFile: "/etc/llm-chess/bearers",
       trustedProxies: ["10.0.0.0/8", "192.168.0.0/16"],
       rateLimits: {
@@ -230,7 +186,6 @@ test("parseCli accepts manual TLS and defaults its port to 443", () => {
       host: "127.0.0.1",
       port: 443,
       path: "/mcp",
-      allowedHosts: [],
       tls: { mode: "manual", certPath: "cert.pem", keyPath: "key.pem" },
       help: false,
     },
@@ -256,7 +211,6 @@ test("parseCli validates ACME settings", () => {
       host: "127.0.0.1",
       port: 443,
       path: "/mcp",
-      allowedHosts: [],
       tls: {
         mode: "acme",
         domain: "chess.example",
@@ -323,8 +277,10 @@ test("parseCli rejects an ACME challenge port equal to the HTTPS port", () => {
 });
 
 test("parseCli rejects malformed trusted proxy addresses", () => {
-  assert.throws(
-    () => parseCli(["--http", "--trusted-proxy", "not-an-ip"]),
-    /--trusted-proxy must contain valid IP addresses or CIDRs/,
-  );
+  for (const value of ["not-an-ip", "127.0.0.1/", "::1/", "127.0.0.1/0x0", "::1/0e0"]) {
+    assert.throws(
+      () => parseCli(["--http", "--trusted-proxy", value]),
+      /--trusted-proxy must contain valid IP addresses or CIDRs/,
+    );
+  }
 });

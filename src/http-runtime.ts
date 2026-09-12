@@ -4,7 +4,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   isInitializeRequest,
   SUPPORTED_PROTOCOL_VERSIONS,
-  validateHostHeader,
 } from "@modelcontextprotocol/server";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
@@ -56,7 +55,6 @@ export class HttpRuntime {
   constructor(
     private readonly services: AppServices,
     private readonly path: string,
-    private readonly allowedHosts: string[],
     private readonly limits: HttpLimits,
     private readonly security = new HttpSecurity(),
     auth = new BearerAuthenticator(),
@@ -65,7 +63,7 @@ export class HttpRuntime {
     if (auth.enabled && typeof services.games.forScope !== "function") {
       throw new Error("authenticated HTTP requires a scope-aware game repository");
     }
-    this.#policy = new HttpRequestPolicy(path, allowedHosts, security, auth, proxies);
+    this.#policy = new HttpRequestPolicy(path, security, auth, proxies);
     this.#sessions = new HttpSessionRegistry<Session>(limits.maxSessions);
     this.#bodyAdmission = new HttpBodyAdmission(
       limits.maxConcurrentPosts,
@@ -414,11 +412,6 @@ export class HttpRuntime {
     }
     if (requestPath(req) !== this.path) {
       closeWithError(req, res, 404, "MCP endpoint not found");
-      return;
-    }
-    const host = validateHostHeader(req.headers.host, this.allowedHosts);
-    if (!host.ok) {
-      closeWithError(req, res, 403, host.message);
       return;
     }
     if (req.method !== "POST" && req.method !== "GET" && req.method !== "DELETE") {

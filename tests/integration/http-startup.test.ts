@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -49,9 +49,15 @@ test("pre-aborted HTTP startup has no side effects", async () => {
   await assert.rejects(stat(storageDir), { code: "ENOENT" });
 });
 
-test("aborting ACME HTTP startup releases its lock and challenge listener", { timeout: 10_000 }, async (t) => {
+for (const readonlyStorage of [false, true]) test(`aborting ACME HTTP startup cleans up or reports lock failure (readonly=${readonlyStorage})`, {
+  timeout: 10_000,
+  skip: readonlyStorage && (process.platform === "win32" || process.getuid?.() === 0),
+}, async (t) => {
   const storageDir = await mkdtemp(join(tmpdir(), "llm-chess-mcp-startup-abort-"));
-  t.after(() => rm(storageDir, { recursive: true, force: true }));
+  t.after(async () => {
+    if (readonlyStorage) await chmod(storageDir, 0o700);
+    await rm(storageDir, { recursive: true, force: true });
+  });
 
   let received!: () => void;
   let disconnected!: () => void;
@@ -87,10 +93,20 @@ test("aborting ACME HTTP startup releases its lock and challenge listener", { ti
 
   await requestReceived;
   await stat(join(storageDir, "issue.lock"));
+  if (readonlyStorage) await chmod(storageDir, 0o500);
   controller.abort();
-  await assert.rejects(startup, /cancelled|closed|aborted/i);
+  if (readonlyStorage) {
+    await assert.rejects(startup, (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal((error.errors[1] as NodeJS.ErrnoException).code, "EACCES");
+      return true;
+    });
+  } else {
+    await assert.rejects(startup, /cancelled|closed|aborted/i);
+  }
   await requestDisconnected;
-  await assert.rejects(stat(join(storageDir, "issue.lock")), { code: "ENOENT" });
+  if (readonlyStorage) await stat(join(storageDir, "issue.lock"));
+  else await assert.rejects(stat(join(storageDir, "issue.lock")), { code: "ENOENT" });
   await canBind(challengePort);
 });
 

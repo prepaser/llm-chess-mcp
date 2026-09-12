@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, get as httpGet, type Server } from "node:http";
@@ -124,7 +124,6 @@ test("serveHttp uses HTTPS, authentication, and the TLS availability gate", asyn
     host: "127.0.0.1",
     port: 0,
     headersTimeoutMs: 500,
-    allowedHosts: ["127.0.0.1"],
     auth: { bearer: "tls-http-test" },
     tls: { mode: "manual", certPath, keyPath },
   });
@@ -163,6 +162,57 @@ test("serveHttp uses HTTPS, authentication, and the TLS availability gate", asyn
     }
   } finally {
     await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP shutdown reports ACME lock cleanup failures", {
+  skip: process.platform === "win32" || process.getuid?.() === 0,
+}, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "acme-close-permissions-"));
+  await writeFile(join(dir, "certificate-bundle.json"), JSON.stringify({
+    domain: "localhost", directoryUrl: "https://acme-v02.api.letsencrypt.org/directory", cert: TEST_CERT, key: TEST_KEY,
+  }));
+  const http = await serveHttp({ port: 0, tls: {
+    mode: "acme", domain: "localhost", email: "ops@example.com", storageDir: dir, termsOfServiceAgreed: true,
+  } });
+  try {
+    await chmod(dir, 0o500);
+    await assert.rejects(http.close(), { code: "EACCES" });
+    await chmod(dir, 0o700);
+    await stat(join(dir, "issue.lock"));
+  } finally {
+    await chmod(dir, 0o700);
+    await http.close().catch(() => {});
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ACME startup retains both issuance and lock cleanup errors", {
+  skip: process.platform === "win32" || process.getuid?.() === 0,
+}, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "acme-startup-permissions-"));
+  const issuanceError = new Error("client loading failed");
+  const tls = await prepareHttpTls({
+    mode: "acme", domain: "localhost", email: "ops@example.com", storageDir: dir,
+    termsOfServiceAgreed: true, challengeHost: "127.0.0.1", challengePort: 0,
+  }, { loadAcme: async () => {
+    await chmod(dir, 0o500);
+    throw issuanceError;
+  } });
+  try {
+    await assert.rejects(tls.start(), (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors[0], issuanceError);
+      assert.equal((error.errors[1] as NodeJS.ErrnoException).code, "EACCES");
+      return true;
+    });
+    await chmod(dir, 0o700);
+    await tls.close();
+    await stat(join(dir, "issue.lock"));
+  } finally {
+    await chmod(dir, 0o700);
+    await tls.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

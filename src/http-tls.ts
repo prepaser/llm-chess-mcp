@@ -16,6 +16,7 @@ import {
   type TlsCertificate,
 } from "./http-tls-cert.js";
 import { AcmeStorageLock, writePrivateFile } from "./http-tls-storage.js";
+import { failAfterCleanup } from "./lifecycle.js";
 
 const DEFAULT_DIRECTORY_URL =
   "https://acme-v02.api.letsencrypt.org/directory";
@@ -263,8 +264,7 @@ class TlsController implements HttpTlsController {
     const storageDir = resolve(options.storageDir);
     await this.storageLock.acquire(storageDir);
     if (this.closed) {
-      await this.storageLock.release(storageDir);
-      throw new Error("TLS controller is closed");
+      return failAfterCleanup(new Error("TLS controller is closed"), () => this.storageLock.release(storageDir), "ACME startup cancellation and lock cleanup failed");
     }
     const paths = {
       bundle: join(storageDir, "certificate-bundle.json"),
@@ -274,12 +274,10 @@ class TlsController implements HttpTlsController {
     try {
       existing = await this.readExisting(paths, options);
     } catch (error) {
-      await this.storageLock.release(storageDir);
-      throw error;
+      return failAfterCleanup(error, () => this.storageLock.release(storageDir), "ACME certificate loading and lock cleanup failed");
     }
     if (this.closed) {
-      await this.storageLock.release(storageDir);
-      throw new Error("TLS controller is closed");
+      return failAfterCleanup(new Error("TLS controller is closed"), () => this.storageLock.release(storageDir), "ACME startup cancellation and lock cleanup failed");
     }
     if (existing && existing.expiresAt > this.now()) {
       this.setCertificate(existing);
@@ -299,8 +297,7 @@ class TlsController implements HttpTlsController {
         console.error("ACME certificate renewal failed; serving the existing certificate", error);
         return;
       }
-      await this.storageLock.release(storageDir);
-      throw error;
+      return failAfterCleanup(error, () => this.storageLock.release(storageDir), "ACME issuance and lock cleanup failed");
     }
   }
 

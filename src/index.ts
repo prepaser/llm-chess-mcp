@@ -110,12 +110,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { allowedHosts, ...httpOptions } = options;
   const startupAbort = new AbortController();
   const startup = serveHttp({
-    ...httpOptions,
+    ...options,
     signal: startupAbort.signal,
-    ...(allowedHosts.length ? { allowedHosts } : {}),
     auth: {
       ...(process.env.HTTP_BEARER === undefined ? {} : { bearer: process.env.HTTP_BEARER }),
       ...(options.bearerFile === undefined ? {} : { bearerFile: options.bearerFile }),

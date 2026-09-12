@@ -522,7 +522,7 @@ test("Streamable HTTP serves an isolated game session", async (t) => {
   assert.equal(transport.sessionId, undefined);
 });
 
-test("Streamable HTTP rejects invalid routing, sessions, and browser headers", async (t) => {
+test("Streamable HTTP rejects invalid routing and sessions without restricting Host or Origin", async (t) => {
   const http = await serveHttp({ port: 0 }, fakeServices(new GameStore()));
   t.after(() => http.close());
 
@@ -535,8 +535,9 @@ test("Streamable HTTP rejects invalid routing, sessions, and browser headers", a
   assert.equal(invalidSession.status, 404);
   assert.match(invalidSession.body, /MCP session not found/);
 
-  const rejectedHost = await httpRequest(http.url, { headers: { host: "attacker.example" } });
-  assert.equal(rejectedHost.status, 403);
+  const otherHost = await httpRequest(http.url, { headers: { host: "other.example" } });
+  assert.equal(otherHost.status, 400);
+  assert.match(otherHost.body, /MCP session initialization requires POST/);
 
   const unrestrictedOrigin = await httpRequest(http.url, {
     headers: { origin: "https://attacker.example" },
@@ -547,7 +548,7 @@ test("Streamable HTTP rejects invalid routing, sessions, and browser headers", a
 test("Streamable HTTP validates resource limits before listening", async () => {
   await assert.rejects(
     serveHttp(
-      { host: "evil.com/path", port: 0, allowedHosts: ["localhost"] },
+      { host: "evil.com/path", port: 0 },
       fakeServices(new GameStore()),
     ),
     /invalid HTTP bind host/,
@@ -801,7 +802,7 @@ test("Streamable HTTP rejects noncanonical endpoint paths", async (t) => {
 
 test("Streamable HTTP canonicalizes IPv4 shorthand bind hosts", async (t) => {
   const http = await serveHttp(
-    { host: "127.1", port: 0, allowedHosts: ["127.1"] },
+    { host: "127.1", port: 0 },
     fakeServices(new GameStore()),
   );
   t.after(() => http.close());
@@ -811,7 +812,7 @@ test("Streamable HTTP canonicalizes IPv4 shorthand bind hosts", async (t) => {
   assert.equal((await httpRequest(http.url)).status, 400);
 });
 
-test("Streamable HTTP rejects allowed host paths", async () => {
+test("Streamable HTTP rejects invalid bind hosts", async () => {
   for (const host of [
     "evil.com/path",
     "example.com:3000",
@@ -821,31 +822,27 @@ test("Streamable HTTP rejects allowed host paths", async () => {
   ]) {
     await assert.rejects(
       serveHttp(
-        { port: 0, allowedHosts: [host] },
+        { port: 0, host },
         fakeServices(new GameStore()),
       ),
-      /at least one allowed HTTP hostname is required/,
+      /invalid HTTP bind host/,
     );
   }
 });
 
 test("Streamable HTTP closes rejected slow request bodies", async (t) => {
   const http = await serveHttp(
-    { port: 0, maxConnections: 1 },
+    { port: 0, maxConnections: 1, auth: { bearer: "test-token" } },
     fakeServices(new GameStore()),
   );
   t.after(() => http.close());
 
-  for (const [label, headers] of [
-    ["invalid Host", ["Host: attacker.example"]],
-  ] as const) {
-    const response = await slowRejectedRequest(http.url, headers, label);
-    assert.match(response, /^HTTP\/1\.1 403 /);
-    assert.match(response, /connection: close/i);
-    assert.match(response, /\"jsonrpc\":\"2\.0\"/);
-  }
+  const response = await slowRejectedRequest(http.url, ["Host: other.example"], "missing Bearer");
+  assert.match(response, /^HTTP\/1\.1 401 /);
+  assert.match(response, /connection: close/i);
+  assert.match(response, /\"jsonrpc\":\"2\.0\"/);
 
-  const admitted = await httpRequest(http.url);
+  const admitted = await httpRequest(http.url, { headers: { authorization: "Bearer test-token" } });
   assert.equal(admitted.status, 400);
 });
 
@@ -1077,27 +1074,13 @@ test("Streamable HTTP shutdown closes partial uploads promptly", async (t) => {
 });
 
 test("Streamable HTTP accepts bracketed IPv6 bind hosts", async (t) => {
-  for (const host of [
-    "[0:0:0:0:0:0:0:0]",
-    "0:0:0:0:0:0:0:0",
-    "0x0",
-    "[::ffff:0.0.0.0]",
-    "::ffff:0.0.0.0",
-    "[0:0:0:0:0:ffff:0:0]",
-  ]) {
-    await assert.rejects(
-      serveHttp({ host, port: 0 }, fakeServices(new GameStore())),
-      /wildcard HTTP binding requires allowed hostnames/,
-    );
-  }
-
   const loopback = await serveHttp({ host: "[::1]", port: 0 }, fakeServices(new GameStore()));
   const mapped = await serveHttp(
     { host: "[::ffff:127.0.0.1]", port: 0 },
     fakeServices(new GameStore()),
   );
   const wildcard = await serveHttp(
-    { host: "[::]", port: 0, allowedHosts: ["[::]"] },
+    { host: "[::]", port: 0 },
     fakeServices(new GameStore()),
   );
   t.after(async () => {
@@ -1124,18 +1107,21 @@ test("Streamable HTTP accepts bracketed IPv6 bind hosts", async (t) => {
   );
 });
 
-test("Streamable HTTP compares allowed hostnames case-insensitively", async (t) => {
+test("Streamable HTTP accepts arbitrary hosts on a wildcard bind", async (t) => {
   const http = await serveHttp(
-    { port: 0, allowedHosts: ["EXAMPLE.COM"] },
+    { host: "0.0.0.0", port: 0, rateLimits: { initialize: { ip: { ratePerMinute: 60, burst: 4 } } } },
     fakeServices(new GameStore()),
   );
   t.after(() => http.close());
 
-  const response = await httpRequest(http.url, {
-    headers: { host: "example.com", origin: "https://EXAMPLE.COM" },
-  });
-  assert.equal(response.status, 400);
-  assert.match(response.body, /MCP session initialization requires POST/);
+  for (const host of ["example.com", "other.example:8443", "203.0.113.7", "[2001:db8::1]:3000"]) {
+    const response = await httpRequest(`http://127.0.0.1:${http.port}/mcp`, {
+      method: "POST",
+      headers: { ...INIT_HEADERS, host, origin: "https://example.com" },
+      body: initializeBody(),
+    });
+    assert.equal(response.status, 200, response.body);
+  }
 });
 
 test("Streamable HTTP prefers bodyTimeoutMs over its legacy alias", async (t) => {

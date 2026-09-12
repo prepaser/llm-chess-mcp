@@ -19,7 +19,7 @@ for (const bearer of [undefined, "personal-e2e-bearer"] as const) test(
   async () => {
     const child = spawn(
       process.execPath,
-      ["dist/index.js", "--transport", "http", "--port", "0"],
+      ["dist/index.js", "--transport", "http", "--host", "0.0.0.0", "--port", "0"],
       {
         cwd: REPO,
         env: { ...childEnv(), ...(bearer ? { HTTP_BEARER: bearer } : {}) },
@@ -51,13 +51,16 @@ for (const bearer of [undefined, "personal-e2e-bearer"] as const) test(
     try {
       await ready;
       assert.ok(endpoint);
+      const url = new URL(endpoint);
+      assert.equal(url.hostname, "0.0.0.0");
+      url.hostname = "127.0.0.1";
       if (bearer) {
-        const unauthorized = await fetch(endpoint);
+        const unauthorized = await fetch(url, { headers: { Host: "chess.example" } });
         assert.equal(unauthorized.status, 401);
         await unauthorized.text();
       }
-      const transport = new StreamableHTTPClientTransport(new URL(endpoint), {
-        ...(bearer ? { requestInit: { headers: { Authorization: `Bearer ${bearer}` } } } : {}),
+      const transport = new StreamableHTTPClientTransport(url, {
+        requestInit: { headers: { Host: "chess.example", ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) } },
       });
       await client.connect(transport);
       const tools = await client.listTools();

@@ -13,7 +13,6 @@ export type HttpServerOptions = {
   host?: string;
   port?: number;
   path?: string;
-  allowedHosts?: readonly string[];
   auth?: BearerAuthOptions;
   trustedProxies?: readonly string[];
   rateLimits?: HttpSecurityLimits;
@@ -37,7 +36,7 @@ export type HttpServerOptions = {
 };
 
 export type HttpLimits = Required<
-  Omit<HttpServerOptions, "host" | "port" | "path" | "allowedHosts" | "requestTimeoutMs" | "auth" | "trustedProxies" | "rateLimits" | "tls" | "signal">
+  Omit<HttpServerOptions, "host" | "port" | "path" | "requestTimeoutMs" | "auth" | "trustedProxies" | "rateLimits" | "tls" | "signal">
 >;
 
 export type ResolvedHttpConfig = {
@@ -45,12 +44,10 @@ export type ResolvedHttpConfig = {
   listenHost: string;
   port: number;
   path: string;
-  allowedHosts: string[];
   tls: HttpTlsOptions;
   limits: HttpLimits;
 };
 
-const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"] as const;
 const DEFAULT_LIMITS: HttpLimits = {
   maxSessions: 64,
   sessionIdleTtlMs: 30 * 60 * 1_000,
@@ -71,21 +68,6 @@ export function bindHttpHost(host: string): string {
   return host.startsWith("[") && host.endsWith("]") && host.includes(":")
     ? host.slice(1, -1)
     : host;
-}
-
-export function isWildcardHttpBindHost(host: string): boolean {
-  const bindHost = bindHttpHost(host);
-  const ipVersion = isIP(bindHost);
-  if (ipVersion === 6) {
-    const canonical = new URL(`http://[${bindHost}]`).hostname;
-    return canonical === "[::]" || canonical === "[::ffff:0:0]";
-  }
-  if (ipVersion === 4) return bindHost === "0.0.0.0";
-  try {
-    return new URL(`http://${bindHost}`).hostname === "0.0.0.0";
-  } catch {
-    return false;
-  }
 }
 
 export function canonicalHttpHostname(host: string): string | null {
@@ -124,16 +106,6 @@ export function canonicalHttpPath(path: string): string | null {
 
 export function isCanonicalHttpPath(path: string): boolean {
   return canonicalHttpPath(path) !== null;
-}
-
-function isLocalHost(host: string): boolean {
-  const normalized = host.toLowerCase();
-  return (
-    normalized === "localhost" ||
-    normalized === "127.0.0.1" ||
-    normalized === "::1" ||
-    normalized === "[::1]"
-  );
 }
 
 function positiveInteger(name: string, value: number): void {
@@ -200,9 +172,6 @@ function resolveLimits(options: HttpServerOptions): HttpLimits {
 export function resolveHttpConfig(options: HttpServerOptions): ResolvedHttpConfig {
   const host = canonicalHttpHostname(options.host ?? DEFAULT_HTTP_HOST);
   if (host === null) throw new Error("invalid HTTP bind host");
-  if (isWildcardHttpBindHost(host) && options.allowedHosts === undefined) {
-    throw new Error("wildcard HTTP binding requires allowed hostnames");
-  }
   const port = options.port ?? (options.tls && options.tls.mode !== "off" ? 443 : DEFAULT_HTTP_PORT);
   if (!Number.isInteger(port) || port < 0 || port > 65_535) {
     throw new Error("invalid HTTP listen address");
@@ -211,22 +180,12 @@ export function resolveHttpConfig(options: HttpServerOptions): ResolvedHttpConfi
   if (canonicalHttpPath(path) === null) {
     throw new Error("invalid HTTP endpoint path");
   }
-  const normalizedAllowedHosts = [
-    ...(options.allowedHosts ?? (isLocalHost(host) ? LOCAL_HOSTS : [host])),
-  ].map(canonicalHttpHostname);
-  if (
-    normalizedAllowedHosts.length === 0 ||
-    normalizedAllowedHosts.some((value) => value === null)
-  ) {
-    throw new Error("at least one allowed HTTP hostname is required");
-  }
   const tls = resolveTlsOptions(options.tls, bindHttpHost(host), port);
   return {
     host,
     listenHost: bindHttpHost(host),
     port,
     path,
-    allowedHosts: normalizedAllowedHosts as string[],
     tls,
     limits: resolveLimits(options),
   };

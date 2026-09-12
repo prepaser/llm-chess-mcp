@@ -69,7 +69,6 @@ export async function serveHttp(
   const runtime = new HttpRuntime(
     appServices,
     config.path,
-    config.allowedHosts,
     config.limits,
     security,
     auth,
@@ -84,7 +83,8 @@ export async function serveHttp(
       await tls.start();
       signal?.throwIfAborted();
     } catch (error) {
-      return failAfterCleanup(signal?.aborted ? signal.reason : error, () => tls.close(), "TLS startup and cleanup failed");
+      const failure = signal?.aborted && !(error instanceof AggregateError) ? signal.reason : error;
+      return failAfterCleanup(failure, () => tls.close(), "TLS startup and cleanup failed");
     }
     const headerTimers = new WeakMap<Socket, NodeJS.Timeout>();
     const connections = new Set<Socket>();

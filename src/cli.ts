@@ -6,7 +6,6 @@ import {
   DEFAULT_HTTP_PATH,
   DEFAULT_HTTP_PORT,
   isCanonicalHttpPath,
-  isWildcardHttpBindHost,
   validateHttpTlsPortCollision,
 } from "./http-config.js";
 import { DEFAULT_HTTP_SECURITY_LIMITS, TrustedProxySet } from "./http-security.js";
@@ -30,7 +29,6 @@ export type CliOptions = {
   host: string;
   port: number;
   path: string;
-  allowedHosts: string[];
   bearerFile?: string;
   trustedProxies?: string[];
   rateLimits?: CliRateLimitOptions;
@@ -50,7 +48,6 @@ Options:
   --host <host>             HTTP bind host (default: 127.0.0.1)
   --port <port>             HTTP listen port; 0 selects an available port (default: 3000)
   --path <path>             HTTP endpoint path (default: /mcp)
-  --allowed-host <host>     Allowed HTTP Host hostname (repeatable)
   --bearer-file <path>      File containing one HTTP Bearer per line
   --trusted-proxy <cidr>    Trust X-Forwarded-For from this proxy (repeatable)
   --rate-limit-<dimension>-<kind>-per-minute <n>
@@ -145,7 +142,6 @@ export function parseCli(args: string[]): CliOptions {
   let help = false;
   let hasHttpOption = false;
   let explicitPort = false;
-  const allowedHosts: string[] = [];
   const trustedProxies: string[] = [];
   const rateLimits: HttpRateLimitOptions = {};
   let hasRateLimitOption = false;
@@ -166,7 +162,7 @@ export function parseCli(args: string[]): CliOptions {
   let maxConnections: number | undefined;
 
   if (args.includes("-h") || args.includes("--help")) {
-    return { transport, host, port, path, allowedHosts, help: true };
+    return { transport, host, port, path, help: true };
   }
 
   for (let index = 0; index < args.length; index += 1) {
@@ -235,10 +231,6 @@ export function parseCli(args: string[]): CliOptions {
       }
       case "--path":
         path = value();
-        hasHttpOption = true;
-        break;
-      case "--allowed-host":
-        allowedHosts.push(value());
         hasHttpOption = true;
         break;
       case "--bearer-file":
@@ -360,11 +352,7 @@ export function parseCli(args: string[]): CliOptions {
     throw new Error("--path must be an absolute URL path without query or fragment");
   }
   const canonicalHost = canonicalHttpHostname(host);
-  const canonicalAllowedHosts = allowedHosts.map(canonicalHttpHostname);
-  if (
-    canonicalHost === null ||
-    canonicalAllowedHosts.some((value) => value === null)
-  ) {
+  if (canonicalHost === null) {
     throw new Error("HTTP hostnames must be non-empty hostnames");
   }
   if (trustedProxies.length > 0) {
@@ -416,20 +404,12 @@ export function parseCli(args: string[]): CliOptions {
     }
     validateHttpTlsPortCollision(port, tls);
   }
-  if (
-    transport === "http" &&
-    isWildcardHttpBindHost(canonicalHost) &&
-    canonicalAllowedHosts.length === 0
-  ) {
-    throw new Error("wildcard HTTP binding requires at least one --allowed-host");
-  }
 
   const result: CliOptions = {
     transport,
     host: canonicalHost,
     port,
     path,
-    allowedHosts: canonicalAllowedHosts as string[],
     help,
   };
   if (bearerFile !== undefined) result.bearerFile = bearerFile;

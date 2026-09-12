@@ -11,7 +11,8 @@ and Lichess add independent signals without changing a game unless
 typed server APIs without loading `.env`; direct execution loads configuration,
 parses transport options, and creates servers through `buildServer`. stdio is
 the default; HTTP mode binds an explicit endpoint and creates one MCP server per
-Streamable HTTP session. All sessions share application services and game state.
+Streamable HTTP session. Sessions share application services and backing storage;
+game access is scoped by Bearer identity when authentication is enabled.
 Stdout is reserved for protocol traffic; diagnostics belong on stderr. stdin
 closure and process signals use idempotent shutdown that closes the active
 transport and terminates all active engines.
@@ -21,13 +22,12 @@ under `dist/` are implementation details and are not supported deep-import
 paths; integrations must import named APIs from `llm-chess-mcp`. Tool input and
 output contracts are rooted in Zod object schemas at the handler boundary.
 
-The HTTP listener is a backend, not a public edge. For non-local deployment it
-must bind to localhost or a private network reachable only by a reverse proxy.
-That proxy owns TLS, client authentication, external request/connection limits,
-and any CORS policy; the Node process must not be exposed directly. The proxy
-must preserve the public `Host` value and the process must list that hostname
-with `--allowed-host`, so the existing Host and Origin validation continues to
-apply after proxying.
+The HTTP listener can be exposed directly or placed behind a reverse proxy.
+TLS and Bearer authentication are optional; built-in request/connection limits
+also apply to anonymous HTTP traffic. A reverse proxy may terminate TLS or
+add another authentication and traffic-control layer; configure
+`--trusted-proxy` only for proxies whose forwarded client addresses should be
+used for IP limits.
 
 The server is assembled from injected `AppServices`, not from tool-level global
 lookups. Production constructs one service set for the process; tests pass
@@ -101,13 +101,11 @@ count is capped separately and restoration uses one case-insensitive index.
 Snapshots enforce the same PGN byte, header, token, and ply resource bounds as
 export before entering game storage.
 
-Games are process-shared. There is no per-user, per-client, or per-MCP-session
-ownership record: possession of an opaque `game_id` is the capability required
-to read, analyze, mutate, export, or delete that game. It is not an identity
-token and must not be shared outside the trusted deployment. Reverse-proxy
-authentication controls who can reach the service, but forwarded identity
-headers are deliberately not trusted by the application and cannot create game
-ownership.
+Games are stored per process. Anonymous HTTP and stdio clients share the
+anonymous scope; authenticated HTTP clients share games only with the same
+Bearer identity. A game ID does not bypass that ownership check. The raw
+`GameStore` API remains administrative, while tools receive scoped repository
+views. Forwarded identity headers do not establish ownership.
 
 All asynchronous readers clone the position first. The snapshot is rebuilt
 from the initial position and move history, preserving history-dependent chess
@@ -130,8 +128,8 @@ MCP sessions are transport state only. They are not authentication credentials,
 are held in memory, and are not a persistence or ownership boundary. The
 application provides no event-replay guarantee: clients must not rely on SSE
 replay, a disconnected session, a proxy retry, or a process restart to recover
-an event stream. Reconnect with a new session and re-read authoritative,
-process-shared game state.
+an event stream. Reconnect with a new session using the same Bearer, if enabled,
+and re-read authoritative game state.
 
 MCP cancellation notifications, session deletion, and server shutdown abort
 the request signal passed into tools and services. If an existing-session POST
@@ -168,11 +166,10 @@ Session reservations/expiry, POST admission, and downstream work admission are
 independent state owners. The listener orchestrates them without duplicating
 their counters or release rules.
 
-The server has no MCP OAuth endpoints, OAuth discovery metadata, bearer-token
-validation, or browser CORS support. A reverse proxy may implement its own
-access policy, but its forwarded user or identity headers have no meaning to
-this process. If browser access is introduced later, define the CORS policy at
-the proxy explicitly; do not treat an `Origin` header as authentication.
+The server supports optional static Bearer authentication and unrestricted
+browser CORS, but not MCP OAuth endpoints or OAuth discovery. A reverse proxy
+may add its own access policy; forwarded user or identity headers do not
+replace application Bearer authentication.
 
 ## Compute and network services
 

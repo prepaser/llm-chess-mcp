@@ -82,13 +82,21 @@ The server listens on `http://127.0.0.1:3000/mcp` and supports Streamable HTTP
 sessions, JSON responses, and SSE. The equivalent development command is
 `pnpm dev:http`.
 
+To accept external connections, bind to all IPv4 interfaces:
+
+```bash
+node dist/index.js --http --host 0.0.0.0 --port 3000
+```
+
+Use `--host ::` for IPv6. MCP requests are not restricted by hostname.
+Authentication and TLS can be configured independently.
+
 HTTP options:
 
 ```text
 --host <host>            Bind host (default: 127.0.0.1)
 --port <port>            Listen port (default: 3000)
 --path <path>            Endpoint path (default: /mcp)
---allowed-host <host>    Allowed Host hostname; repeat as needed
 ```
 
 The package also exposes a typed ESM API:
@@ -109,14 +117,11 @@ The root API also exports `buildServer`, `GameStore`, `ChessError`,
 and `snapshotChess`. The package root is the supported public API. Deep imports
 under `dist/` are intentionally not exported and will fail with
 `ERR_PACKAGE_PATH_NOT_EXPORTED`; use named root exports instead.
-This removes the previous `dist/*` compatibility exports and is a breaking
-change for integrations that imported internal modules.
 
 `bodyTimeoutMs` limits HTTP body upload time; it is not a whole-tool deadline.
 The deprecated `requestTimeoutMs` alias remains supported when `bodyTimeoutMs`
 is omitted.
 
-Binding to `0.0.0.0` or `::` requires at least one `--allowed-host`.
 Authentication and TLS are optional. Without Bearer configuration, HTTP is
 anonymous and sessions share games: anyone who knows a game ID can access it.
 With authentication enabled, each Bearer is a separate identity; sessions using
@@ -144,18 +149,12 @@ Clients send `Authorization: Bearer <key>` on every MCP request, including SSE
 and DELETE. This is static Bearer authentication, not OAuth discovery. Use HTTPS
 or a trusted TLS-terminating proxy to avoid sending keys in plaintext.
 
-Browser CORS is unrestricted (`Access-Control-Allow-Origin: *`), including MCP
-preflight requests. Cookies and credentialed CORS are not supported. Host
-validation remains enabled, but Origin is not an access restriction. An
-anonymous endpoint is therefore intentionally accessible to arbitrary websites;
-rate limits are resource controls, not authorization.
-
 ### HTTPS
 
 Use existing PEM files with manual TLS (restart after replacing them):
 
 ```bash
-node dist/index.js --http --host 0.0.0.0 --allowed-host chess.example.com \
+node dist/index.js --http --host 0.0.0.0 \
   --bearer-file /etc/llm-chess/bearers.txt \
   --tls-cert /etc/llm-chess/fullchain.pem --tls-key /etc/llm-chess/key.pem
 ```
@@ -163,7 +162,7 @@ node dist/index.js --http --host 0.0.0.0 --allowed-host chess.example.com \
 For built-in Let's Encrypt HTTP-01 issuance and renewal:
 
 ```bash
-node dist/index.js --http --host 0.0.0.0 --allowed-host chess.example.com \
+node dist/index.js --http --host 0.0.0.0 \
   --bearer-file /etc/llm-chess/bearers.txt \
   --acme-domain chess.example.com --acme-email admin@example.com \
   --acme-agree-tos --acme-storage /var/lib/llm-chess/acme
@@ -204,7 +203,7 @@ Both modes require TLS 1.2 or newer.
 
 ## Lichess token (optional)
 
-The opening explorer now requires authentication. Generate a personal access token
+To enable the opening explorer, generate a personal access token
 at <https://lichess.org/account/oauth/token/create> and set it in `.env`:
 
 ```bash
@@ -283,7 +282,7 @@ LICHESS_TOKEN = "your-token"
 Or via the CLI:
 
 ```bash
-codex mcp add llm-chess-mcp --command npx --args -y llm-chess-mcp --env LICHESS_TOKEN=your-token
+codex mcp add llm-chess-mcp --env LICHESS_TOKEN=your-token -- npx -y llm-chess-mcp
 ```
 
 ## Tools
@@ -291,9 +290,9 @@ codex mcp add llm-chess-mcp --command npx --args -y llm-chess-mcp --env LICHESS_
 | Tool | Description |
 |---|---|
 | `create_game` | Create a game (optionally from a FEN), returns `game_id` |
-| `delete_game` | Delete a process-shared game and free game capacity |
+| `delete_game` | Delete a game in the current scope and free game capacity |
 | `game_state` | Authoritative state: FEN, turn, revision, check/mate/draw flags, history, last move, castling (optional ASCII) |
-| `game_play_move` | Play a move (SAN or UCI) — the only mutating tool, with stale-position guard |
+| `game_play_move` | Play a move (SAN or UCI) with a stale-position guard |
 | `game_legal_moves` | All legal moves with metadata |
 | `game_pgn` | Export the game as PGN |
 | `game_import_pgn` | Import a PGN into a new game |
@@ -359,7 +358,7 @@ human-readable summary and must not be parsed as data.
 - `opening` — Lichess empirical frequency (a different signal from Maia3).
 
 `opening.status` is `available`, `no_data` (API ok but no games in this
-position), `unavailable` (timeout/429/401), or `disabled` (no token).
+position), `unavailable` (the explorer request failed), or `disabled` (no token).
 Explorer failure does not discard successful engine or Maia3 results. The
 selected engine mode controls which engines run. In `both` mode, one engine
 failure yields `partial: true`; both failing produces a tool error. Top-level
@@ -451,11 +450,12 @@ one server runtime and reset on restart; they are not distributed quotas.
 | Concurrent operations | 2 | 2 | 16 |
 | TCP connections | 8 | — | 128 |
 
-Failed authentication has an additional IP budget of 10/minute (burst 5).
+Failed authentication has additional budgets of 10/minute (burst 5) per IP
+and 120/minute (burst 20) globally.
 The failure budgets apply only to invalid credentials; exhausted failure budgets
 do not reject valid Bearers. Ordinary global/IP/Bearer request limits still apply.
-Cancellation and deletion use a separate bounded control budget. HTTP rejection
-returns `429` and `Retry-After`; tool-level throttling returns `RATE_LIMITED`
+Cancellation and deletion use a separate bounded control budget. Rate-limit
+rejection returns `429` and `Retry-After`; tool-level throttling returns `RATE_LIMITED`
 with `error.retry_after_seconds`. Existing upload and concurrency protections
 still apply. Identity state is bounded; new identities are rejected when the
 state table is full instead of evicting active quotas.
@@ -498,15 +498,16 @@ IP budgets, so adjust limits to your actual deployment.
 
 MCP cancellation notifications, session deletion, and server shutdown propagate
 to body uploads and Stockfish, Lc0, Maia, and Lichess work. Stockfish stops safely at
-its UCI queue boundary, drains queued work during shutdown, and rejects new
-analysis until teardown completes. Lc0 rejects active and queued work on shutdown
-and waits for its process to exit, escalating termination when necessary.
+its UCI queue boundary, cancels queued work and drains active work during
+shutdown, and rejects new analysis until teardown completes. Lc0 rejects active
+and queued work on shutdown and waits for its process to exit, escalating
+termination when necessary.
 Lichess fetch and retry waits abort
 immediately. Maia runs native inference in dedicated child processes; cancelling
 active work terminates its child, while queued cancellation is immediate. A raw
 response disconnect for an existing-session POST closes that session and aborts
-its work. Reconnect with a new session, then re-read the process-shared game
-state before retrying a move.
+its work. Reconnect with a new session using the same Bearer, if enabled, then
+re-read the game state before retrying a move.
 
 ## Intents
 
@@ -602,9 +603,9 @@ Absolute local checkpoint paths are also accepted; prefer relative paths for
 portable configs.
 `--cache-dir` optionally controls the Hugging Face download cache.
 
-Model/source selection now uses the config file instead of the old `--model`
-and `--checkpoint` flags. Export always verifies before replacing the bundle;
-there is no `--skip-verify` or custom `--out`. `pnpm export:maia3` is equivalent
+Model/source selection uses the config file. Export always verifies before
+replacing the bundle; there is no `--skip-verify` or custom `--out`.
+`pnpm export:maia3` is equivalent
 when the required Python environment is active.
 
 The workflow is: edit the root config, export, run `pnpm check`, then run
@@ -671,11 +672,11 @@ the packaged default. The real loader rejects an installed package version
 that differs from the pinned dependency. Consumers receive Stockfish as an
 exact npm dependency; the running server never installs or switches versions.
 
-`pnpm model:check` checks both engines without downloading or installing
-anything. Stockfish-only changes do not require Maia export: its manifest
-continues to record only normalized Maia settings. Schema version 1 build
-configs must be updated to the unified format above. Ordinary builds do
-not install engines. External NNUE replacement and flavor-specific package
+`pnpm model:check` validates Maia, Stockfish, and Lc0 artifacts without
+downloading or installing anything. Stockfish-only changes do not require Maia
+export: its manifest continues to record only normalized Maia settings. Build
+configs use the schema version shown above. Ordinary builds do not install
+engines. External NNUE replacement and flavor-specific package
 size optimization are not provided.
 
 ## Package verification

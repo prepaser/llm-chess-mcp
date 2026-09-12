@@ -1,5 +1,4 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { validateHostHeader } from "@modelcontextprotocol/server";
 import { canonicalHttpPath } from "./http-config.js";
 import { hasUnexpectedBody } from "./http-body.js";
 import { closeWithError } from "./http-response.js";
@@ -30,7 +29,6 @@ export function rateError(req: IncomingMessage, res: ServerResponse, decision: R
 export class HttpRequestPolicy {
   constructor(
     private readonly path: string,
-    private readonly allowedHosts: string[],
     private readonly security: HttpSecurity,
     private readonly auth: BearerAuthenticator,
     private readonly proxies: TrustedProxySet,
@@ -55,7 +53,6 @@ export class HttpRequestPolicy {
     if (req.method === "OPTIONS") {
       if (!admission.allowed) rateError(req, res, admission);
       else if (requestPath(req) !== this.path) closeWithError(req, res, 404, "MCP endpoint not found");
-      else if (!validateHostHeader(req.headers.host, this.allowedHosts).ok) closeWithError(req, res, 403, "invalid HTTP Host");
       else if (hasUnexpectedBody(req)) closeWithError(req, res, 400, "OPTIONS must not include a body");
       else {
         res.writeHead(204, {

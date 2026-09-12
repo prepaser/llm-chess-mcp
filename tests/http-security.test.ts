@@ -84,6 +84,27 @@ test("trusted proxies resolve X-Forwarded-For from right to left", () => {
   );
 });
 
+test("trusted proxy prefixes require decimal digits without implicit /0 coercion", () => {
+  for (const address of ["127.0.0.1", "::1"]) {
+    for (const prefix of ["", " ", "+0", "-0", "0x0", "0e0", "0.0", " 0", "Infinity", "NaN", "0/0"]) {
+      assert.throws(() => new TrustedProxySet([`${address}/${prefix}`]), /invalid trusted proxy CIDR/);
+    }
+  }
+  for (const address of ["127.0.0.1", "127.0.0.1/32", "::ffff:127.0.0.1/32"]) {
+    const proxies = new TrustedProxySet([address]);
+    assert.equal(proxies.contains("127.0.0.1"), true);
+    assert.equal(proxies.contains("198.51.100.9"), false);
+    assert.equal(resolveClientIp("198.51.100.9", "203.0.113.4", proxies).address, "198.51.100.9");
+  }
+  for (const address of ["::1", "::1/128"]) {
+    const proxies = new TrustedProxySet([address]);
+    assert.equal(proxies.contains("::1"), true);
+    assert.equal(proxies.contains("2001:db8::1"), false);
+  }
+  assert.equal(new TrustedProxySet(["127.0.0.1/0"]).contains("198.51.100.9"), true);
+  assert.equal(new TrustedProxySet(["::1/0"]).contains("2001:db8::1"), true);
+});
+
 test("HTTP security charges global and IP buckets and supports bearer-only charging", () => {
   let now = 0;
   const security = new HttpSecurity(

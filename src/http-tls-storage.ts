@@ -1,6 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { open, rename, unlink, chmod, lstat } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
+import { orderedTeardown } from "./lifecycle.js";
+
+function ignoreMissing(error: unknown): undefined {
+  if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+  return undefined;
+}
 
 export async function writePrivateFile(path: string, data: string): Promise<void> {
   const temp = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
@@ -45,22 +51,31 @@ export class AcmeStorageLock {
         throw error;
       }
     } catch (error) {
-      throw new Error("ACME storage is locked by another process", { cause: error });
+      if ((error as NodeJS.ErrnoException)?.code === "EEXIST") {
+        throw new Error("ACME storage is locked by another process", { cause: error });
+      }
+      throw error;
     }
   }
 
   async release(directory = this.directory): Promise<void> {
-    const identity = this.identity;
-    if (identity && directory) {
-      const path = `${directory}/issue.lock`;
-      const current = await lstat(path).catch(() => undefined);
-      if (current && current.dev === identity.dev && current.ino === identity.ino) {
-        await unlink(path).catch(() => undefined);
-      }
-    }
-    await this.handle?.close().catch(() => undefined);
-    this.handle = undefined;
-    this.identity = undefined;
-    this.directory = undefined;
+    await orderedTeardown([
+      async () => {
+        const identity = this.identity;
+        this.identity = undefined;
+        this.directory = undefined;
+        if (identity && directory) {
+          const path = `${directory}/issue.lock`;
+          const current = await lstat(path).catch(ignoreMissing);
+          if (current && current.dev === identity.dev && current.ino === identity.ino) {
+            await unlink(path).catch(ignoreMissing);
+          }
+        }
+      },
+      async () => {
+        await this.handle?.close();
+        this.handle = undefined;
+      },
+    ], "ACME storage lock cleanup failed");
   }
 }
